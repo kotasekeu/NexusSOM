@@ -14,29 +14,46 @@ from sklearn.datasets import make_blobs
 from som.kohonen import KohonenSOM
 from multiprocessing import Pool, cpu_count
 
-# import shutil
-# from sklearn.metrics import pairwise_distances_argmin_min
-# import sys
-# from som.project_processor import normalize_data
-# import pandas as pd
-# from os.path import exists
-# from som.utils import set_uid_hash
+# Weights for multi-objective fitness function
+W_ERROR = 0.7  # weight for quantization error
+W_TIME = 0.3   # weight for computation time
 
-# Váhy pro multi-kriteriální fitness funkci
-W_ERROR = 0.7  # váha pro kvantizační chybu
-W_TIME = 0.3   # váha pro dobu výpočtu
-
-# Globální proměnné
+# Global variables
 INPUT_FILE = None
 NORMALIZED_DATA = None
 WORKING_DIR = None
 
 
-# --- NOVÉ POMOCNÉ FUNKCE (musíte je implementovat) ---
-# Níže uvedené funkce jsou pro logiku NSGA-II klíčové.
-# Můžete pro ně najít hotové implementace online nebo v knihovnách jako 'deap'.
+def validate_and_repair(config: dict) -> dict:
+    repaired_config = config.copy()
+
+    if 'start_learning_rate' in repaired_config and 'end_learning_rate' in repaired_config:
+        if repaired_config['start_learning_rate'] < repaired_config['end_learning_rate']:
+            repaired_config['start_learning_rate'], repaired_config['end_learning_rate'] = \
+                repaired_config['end_learning_rate'], repaired_config['start_learning_rate']
+
+    if 'start_batch_percent' in repaired_config and 'end_batch_percent' in repaired_config:
+        if repaired_config['start_batch_percent'] > repaired_config['end_batch_percent']:
+            repaired_config['start_batch_percent'], repaired_config['end_batch_percent'] = \
+                repaired_config['end_batch_percent'], repaired_config['start_batch_percent']
+
+    if 'start_radius' in repaired_config and 'end_radius' in repaired_config:
+        if repaired_config['start_radius'] < repaired_config['end_radius']:
+            repaired_config['start_radius'], repaired_config['end_radius'] = \
+                repaired_config['end_radius'], repaired_config['start_radius']
+
+    return repaired_config
 
 def non_dominated_sort(objectives: np.ndarray) -> list:
+    """
+    Perform non-dominated sorting for NSGA-II.
+
+    Args:
+        objectives: Array of objective values for all individuals.
+
+    Returns:
+        List of fronts, each containing indices of individuals.
+    """
     n_individuals, n_objectives = objectives.shape
 
     domination_count = np.zeros(n_individuals, dtype=int)
@@ -60,39 +77,39 @@ def non_dominated_sort(objectives: np.ndarray) -> list:
             fronts[0].append(p)
 
     front_index = 0
-    # Smyčka poběží, dokud bude poslední vytvořená fronta obsahovat nějaké jedince
+    # The loop will run as long as the last created front contains any individuals
     while fronts[front_index]:
         next_front = []
-        # Projdeme jedince v aktuální (poslední vytvořené) frontě
+        # Process individuals in the current (last created) front
         for p in fronts[front_index]:
-            # Projdeme všechny, které dominují
+            # Process all that dominate
             for q in dominated_solutions[p]:
                 domination_count[q] -= 1
-                # Pokud už jedince q nikdo další nedominuje, patří do další fronty
+                # If no one else dominates individual q, it belongs to the next front
                 if domination_count[q] == 0:
                     next_front.append(q)
 
-        # Zvýšíme index pro další iteraci
+        # Increase the index for the next iteration
         front_index += 1
 
-        # Přidáme novou frontu do seznamu front.
-        # Pokud byla prázdná, cyklus v další iteraci skončí.
+        # Add the new front to the list of fronts.
+        # If it was empty, the loop will end in the next iteration.
         fronts.append(next_front)
 
-    # Poslední přidaná fronta bude vždy prázdná, takže ji odstraníme
+    # The last added front will always be empty, so we remove it
     return fronts[:-1]
 
 
 def crowding_distance_assignment(objectives: np.ndarray, fronts: list) -> np.ndarray:
     """
-    Vypočítá crowding distance pro každého jedince pro udržení diverzity.
+    Calculate crowding distance for each individual to maintain diversity.
 
     Args:
-        objectives: Stejné pole jako v non_dominated_sort.
-        fronts: Výstup z non_dominated_sort.
+        objectives: Same array as in non_dominated_sort.
+        fronts: Output from non_dominated_sort.
 
     Returns:
-        Numpy pole (vektor) s hodnotami crowding distance pro každého jedince.
+        Numpy array with crowding distance values for each individual.
     """
     n_individuals, n_objectives = objectives.shape
     crowding_distances = np.zeros(n_individuals)
@@ -105,20 +122,20 @@ def crowding_distance_assignment(objectives: np.ndarray, fronts: list) -> np.nda
         n_front_members = len(front)
 
         for m in range(n_objectives):
-            # Seřadíme jedince ve frontě podle aktuálního cíle
+            # Sort individuals in the front by the current objective
             sorted_indices = np.argsort(front_objectives[:, m])
 
-            # Extrémní body mají nekonečnou vzdálenost, aby byly vždy preferovány
+            # Extreme points have infinite distance to be always preferred
             crowding_distances[front[sorted_indices[0]]] = np.inf
             crowding_distances[front[sorted_indices[-1]]] = np.inf
 
             if n_front_members > 2:
-                # Normalizační faktor
+                # Normalization factor
                 obj_range = front_objectives[sorted_indices[-1], m] - front_objectives[sorted_indices[0], m]
-                if obj_range < 1e-8:  # Vyhneme se dělení nulou
+                if obj_range < 1e-8:  # Avoid division by zero
                     continue
 
-                # Pro ostatní body
+                # For other points
                 for i in range(1, n_front_members - 1):
                     dist = front_objectives[sorted_indices[i + 1], m] - front_objectives[sorted_indices[i - 1], m]
                     crowding_distances[front[sorted_indices[i]]] += dist / obj_range
@@ -128,27 +145,26 @@ def crowding_distance_assignment(objectives: np.ndarray, fronts: list) -> np.nda
 
 def tournament_selection(population: list, k: int = 3) -> dict:
     """
-    Provede turnajovou selekci na základě ranku a crowding distance.
+    Tournament selection based on rank and crowding distance.
 
     Args:
-        population: Seznam jedinců (slovníků), kde každý má klíče 'rank' a 'crowding_distance'.
-        k: Velikost turnaje.
+        population: List of individuals (dicts) with 'rank' and 'crowding_distance'.
+        k: Tournament size.
 
     Returns:
-        Vítězný jedinec (slovník).
+        Winning individual (dict).
     """
-    # Náhodně vybereme účastníky turnaje
+    # Randomly select tournament participants
     participants = random.sample(population, k)
 
     best_participant = participants[0]
 
     for i in range(1, k):
-        # Porovnáme s aktuálně nejlepším
         p = participants[i]
-        # Preferujeme lepší (nižší) rank
+        # Prefer better (lower) rank
         if p['rank'] < best_participant['rank']:
             best_participant = p
-        # Při stejném ranku preferujeme větší crowding distance pro diverzitu
+        # With the same rank, prefer larger crowding distance for diversity
         elif p['rank'] == best_participant['rank'] and \
                 p['crowding_distance'] > best_participant['crowding_distance']:
             best_participant = p
@@ -158,11 +174,11 @@ def tournament_selection(population: list, k: int = 3) -> dict:
 
 def log_pareto_front(generation: int, search_space: dict):
     """
-    Zapíše aktuální Pareto frontu (archiv) do souboru.
+    Write the current Pareto front (archive) to a file.
 
     Args:
-        archive: Seznam (config, results) tuples.
-        generation: Aktuální číslo generace.
+        generation: Current generation number.
+        search_space: Dictionary of search space parameters.
     """
     global WORKING_DIR
     global ARCHIVE
@@ -170,17 +186,17 @@ def log_pareto_front(generation: int, search_space: dict):
     log_path = os.path.join(WORKING_DIR, "pareto_front_log.txt")
 
     with open(log_path, "a", encoding="utf-8") as f:
-        f.write(f"--- Generace {generation + 1} | Počet řešení: {len(ARCHIVE)} ---\n")
+        f.write(f"--- Generation {generation + 1} | Number of solutions: {len(ARCHIVE)} ---\n")
 
-        # Seřadíme pro přehlednost podle prvního cíle (kvantizační chyba)
+        # Sort for clarity by the first goal (quantization error)
         sorted_archive = sorted(ARCHIVE, key=lambda x: x[1]['final_mqe'])
 
         for config, results in sorted_archive:
             qe = results['final_mqe']
             duration = results['training_duration']
-            f.write(f"QE: {qe:.8f} | Čas: {duration:.2f}s\n")
+            f.write(f"QE: {qe:.8f} | Time: {duration:.2f}s\n")
 
-            # Vypíšeme pouze parametry z prohledávacího prostoru
+            # Print only parameters from the search space
             search_params = {k: v for k, v in config.items() if k in search_space}
             for key, val in sorted(search_params.items()):
                 f.write(f"  - {key}: {val}\n")
@@ -189,6 +205,9 @@ def log_pareto_front(generation: int, search_space: dict):
 
 
 def get_working_directory(input_file: str = None) -> str:
+    """
+    Create and return a working directory for results, named by timestamp.
+    """
     if input_file:
         base_dir = os.path.dirname(os.path.abspath(input_file))
     else:
@@ -202,32 +221,49 @@ def get_working_directory(input_file: str = None) -> str:
 
 def load_configuration(json_path: str = None) -> dict:
     """
-        Načte konfiguraci. Priorita: JSON > ea_config.py.
+        Load configuration. Priority: JSON > ea_config.py.
+
+        Args:
+            json_path: Path to JSON config file.
+
+        Returns:
+            Configuration dictionary.
         """
     if json_path:
-        print(f"INFO: Používám konfigurační soubor z argumentu: {json_path}")
+        print(f"INFO: Using configuration file from argument: {json_path}")
         if not os.path.exists(json_path):
-            print(f"ERROR: Konfigurační soubor {json_path} neexistuje.")
+            print(f"ERROR: Configuration file {json_path} does not exist.")
             sys.exit(1)
         try:
             with open(json_path, 'r') as f:
                 return json.load(f)
         except json.JSONDecodeError as e:
-            print(f"ERROR: Soubor {json_path} není validní JSON: {e}")
+            print(f"ERROR: File {json_path} is not valid JSON: {e}")
             sys.exit(1)
     else:
-        print("INFO: Argument --config nebyl zadán, hledám ea_config.py.")
+        print("INFO: Argument --config not provided, searching for ea_config.py.")
         try:
             from ea_config import CONFIG
-            print("INFO: Soubor ea_config.py nalezen a načten.")
+            print("INFO: ea_config.py found and loaded.")
             return CONFIG
         except ImportError:
-            print("ERROR: Nebyl zadán konfigurační soubor a výchozí soubor ea_config.py nebyl nalezen.")
-            print("Řešení: Vytvořte ea_config.py nebo použijte argument --config <cesta_k_json> dle informací v dokumentaci.")
+            print("ERROR: No configuration file provided and default ea_config.py not found.")
+            print("Solution: Create ea_config.py or use --config <path_to_json> as described in the documentation.")
             sys.exit(1)
 
 
 def crossover(parent1: dict, parent2: dict, param_space: dict) -> dict:
+    """
+    Perform crossover between two parents.
+
+    Args:
+        parent1: First parent configuration.
+        parent2: Second parent configuration.
+        param_space: Search space dictionary.
+
+    Returns:
+        Child configuration dictionary.
+    """
     child = {}
     for key in param_space:
         if isinstance(param_space[key], list):
@@ -237,6 +273,15 @@ def crossover(parent1: dict, parent2: dict, param_space: dict) -> dict:
     return child
 
 def random_config(param_space: dict) -> dict:
+    """
+    Generate a random configuration from the search space.
+
+    Args:
+        param_space: Search space dictionary.
+
+    Returns:
+        Configuration dictionary.
+    """
     config = {}
     for key, value in param_space.items():
         if isinstance(value, list):
@@ -244,27 +289,34 @@ def random_config(param_space: dict) -> dict:
         else:
             config[key] = value
 
-    # Validace a oprava min/max batch
+    # Validate and fix min/max batch
     if 'min_batch_percent' in config and 'max_batch_percent' in config:
         if config['min_batch_percent'] > config['max_batch_percent']:
-            # Nejjednodušší oprava: prohodit hodnoty, varianta generovat tak dlouho, dokud nebude správné pořadí
+            # Simplest fix: swap values, variant generate until correct order
             config['min_batch_percent'], config['max_batch_percent'] = \
                 config['max_batch_percent'], config['min_batch_percent']
     return config
 
 def mutate(config: dict, param_space: dict) -> dict:
+    """
+    Mutate a configuration by randomly changing one parameter.
 
+    Args:
+        config: Configuration dictionary.
+        param_space: Search space dictionary.
+
+    Returns:
+        Mutated configuration dictionary.
+    """
     key = random.choice(list(param_space.keys()))
     if isinstance(param_space[key], list):
         config[key] = random.choice(param_space[key])
     return config
 
-def run_evolution(ea_config: dict) -> None:
+def run_evolution(ea_config: dict, data: np.ndarray) -> None:
     """
-    Hlavní smyčka evolučního algoritmu s Pareto optimalizací (NSGA-II).
+    Main loop of the evolutionary algorithm with Pareto optimization (NSGA-II).
 
-    Args:
-        config: Slovník s konfigurací (obsahuje EA_SETTINGS, SEARCH_SPACE, FIXED_PARAMS).
     """
     global ARCHIVE
     global WORKING_DIR
@@ -274,117 +326,121 @@ def run_evolution(ea_config: dict) -> None:
 
     fixed_params = ea_config["FIXED_PARAMS"]
     search_space = ea_config["SEARCH_SPACE"]
-    data_params = ea_config["DATA_PARAMS"]
 
-    # Získání nastavení z nové struktury konfigurace
-
-
-    # 1. Inicializace populace
     population = [random_config(search_space) for _ in range(population_size)]
 
-    # try:
-    for gen in range(generations):
-        print(f"Generace {gen + 1}/{generations}")
+    try:
+        for gen in range(generations):
+            print(f"Generation {gen + 1}/{generations}")
 
-        # 2. Vyhodnocení populace (paralelně)
-        with Pool(processes=min(12, cpu_count(), population_size)) as pool:
-            # Předáváme i fixní parametry do každého procesu
-            args = [(ind, i, gen, fixed_params, data_params) for i, ind in enumerate(population)]
-            results_async = [pool.apply_async(evaluate_individual, arg) for arg in args]
-            evaluated_population = []
-            for r in results_async:
-                try:
-                    # Očekáváme návrat (results_dict, config_dict)
-                    training_results, config = r.get(timeout=3600)
-                    evaluated_population.append((config, training_results))
-                except Exception as e:
-                    print(f"[CHYBA] Jedinec selhal: {e}")
+            # Population evaluation (parallel)
+            with Pool(processes=min(12, cpu_count(), population_size)) as pool:
+                args = [(ind, i, gen, fixed_params, data) for i, ind in enumerate(population)]
+                results_async = [pool.apply_async(evaluate_individual, arg) for arg in args]
+                evaluated_population = []
+                for r in results_async:
+                    try:
+                        training_results, config = r.get(timeout=3600)
+                        evaluated_population.append((config, training_results))
+                    except Exception as e:
+                        print(f"[ERROR] Individual failed: {e}")
 
-        if not evaluated_population:
-            print("Chyba: Žádný jedinec nebyl úspěšně vyhodnocen. Ukončuji.")
-            return
+            if not evaluated_population:
+                print("Error: No individual was successfully evaluated. Exiting.")
+                return
 
-        # 3. Kombinace populace a archivu (Elitářství)
-        # Spojíme aktuální vyhodnocenou populaci s nejlepšími jedinci z minulých generací
-        combined_population = evaluated_population + ARCHIVE
+            # Combine population and archive (elitism)
+            # Combine current evaluated population with the best individuals from previous generations
+            combined_population = evaluated_population + ARCHIVE
 
-        # 4. Výpočet fitness pomocí Non-dominated Sorting a Crowding Distance
-        # Získáme pole cílů (qe, duration), které chceme minimalizovat
-        objectives = np.array([
-            [res['final_mqe'], res['training_duration']]
-            for cfg, res in combined_population
-        ])
+            # Fitness calculation using Non-dominated Sorting and Crowding Distance
+            # Get the objectives array (qe, duration) that we want to minimize
+            objectives = np.array([
+                [res['final_mqe'], res['training_duration']]
+                for cfg, res in combined_population
+            ])
 
-        # A. Seřazení do Pareto front (ranků)
-        fronts = non_dominated_sort(objectives)
+            # Sorting into Pareto fronts (ranks)
+            fronts = non_dominated_sort(objectives)
 
-        # B. Výpočet "vzdálenosti od sousedů" pro udržení diverzity
-        crowding_distances = crowding_distance_assignment(objectives, fronts)
+            # Calculate "distance to neighbors" to maintain diversity
+            crowding_distances = crowding_distance_assignment(objectives, fronts)
 
-        # C. Přiřazení ranku a crowding distance každému jedinci
-        for i, front in enumerate(fronts):
-            for individual_idx in front:
-                # Přidáváme fitness metriky přímo do slovníku s konfigurací
-                combined_population[individual_idx][0]['rank'] = i
-                combined_population[individual_idx][0]['crowding_distance'] = crowding_distances[individual_idx]
+            # Assign rank and crowding distance to each individual
+            for i, front in enumerate(fronts):
+                for individual_idx in front:
+                    # Add fitness metrics directly to the configuration dictionary
+                    combined_population[individual_idx][0]['rank'] = i
+                    combined_population[individual_idx][0]['crowding_distance'] = crowding_distances[individual_idx]
 
-        # 5. Selekce pro další generaci
-        # Seřadíme kombinovanou populaci: primárně podle ranku (vzestupně), sekundárně podle crowding distance (sestupně)
-        combined_population.sort(key=lambda x: (x[0]['rank'], -x[0]['crowding_distance']))
+            # Selection for next generation
+            # Sort the combined population: primarily by rank (ascending), secondarily by crowding distance (descending)
+            combined_population.sort(key=lambda x: (x[0]['rank'], -x[0]['crowding_distance']))
 
-        # A. Nová populace je prvních N nejlepších jedinců z seřazeného seznamu
-        # Uchováváme pouze slovníky s konfigurací, ne výsledky
-        population = [cfg for cfg, res in combined_population[:population_size]]
+            # New population is the first N best individuals from the sorted list
+            # Keep only the dictionaries with configuration, not results
+            population = [cfg for cfg, res in combined_population[:population_size]]
 
-        # B. Aktualizujeme archiv - obsahuje pouze jedince z nejlepší fronty (rank 0)
-        ARCHIVE = [combined_population[i] for i in fronts[0]]
-        print(f" Nejlepší Pareto fronta má {len(ARCHIVE)} řešení.")
-        log_pareto_front(gen, search_space)  # Zápis aktuální nejlepší fronty
+            # Update archive - contains only individuals from the best front (rank 0)
+            ARCHIVE = [combined_population[i] for i in fronts[0]]
+            print(f" Best Pareto front has {len(ARCHIVE)} solutions.")
+            log_pareto_front(gen, search_space)  # Log the current best front
 
-        # 6. Reprodukce (vytvoření potomků)
-        mating_pool = []
-        # Naplníme "mating pool" pomocí turnajové selekce
-        for _ in range(population_size):
-            winner = tournament_selection(population, k=3)
-            mating_pool.append(winner)
+            # Reproduction (offspring creation)
+            mating_pool = []
+            # Fill the "mating pool" using tournament selection
+            for _ in range(population_size):
+                winner = tournament_selection(population, k=3)
+                mating_pool.append(winner)
 
-        next_gen_offspring = []
-        i = 0
-        while i < population_size:
-            p1_full = mating_pool[i]
-            if i + 1 < population_size:
-                p2_full = mating_pool[i + 1]
-            else:
-                # Pokud je počet lichý, spárujeme posledního s náhodným jiným
-                p2_full = random.choice(mating_pool[:-1])
+            next_gen_offspring = []
+            i = 0
+            while i < population_size:
+                p1_full = mating_pool[i]
+                if i + 1 < population_size:
+                    p2_full = mating_pool[i + 1]
+                else:
+                    # If the number is odd, pair the last one with a random other
+                    p2_full = random.choice(mating_pool[:-1])
 
-            # Před křížením a mutací odstraníme fitness klíče
-            p1_genes = {k: v for k, v in p1_full.items() if k in search_space}
-            p2_genes = {k: v for k, v in p2_full.items() if k in search_space}
+                # Remove fitness keys before crossover and mutation
+                p1_genes = {k: v for k, v in p1_full.items() if k in search_space}
+                p2_genes = {k: v for k, v in p2_full.items() if k in search_space}
 
-            child1 = crossover(p1_genes, p2_genes, search_space)
-            child2 = crossover(p2_genes, p1_genes, search_space)
+                child1 = crossover(p1_genes, p2_genes, search_space)
+                child2 = crossover(p2_genes, p1_genes, search_space)
 
-            next_gen_offspring.append(mutate(child1, search_space))
-            next_gen_offspring.append(mutate(child2, search_space))
-            i += 2
+                mutated_child1 = mutate(child1, search_space)
+                repaired_child1 = validate_and_repair(mutated_child1)
+                next_gen_offspring.append(repaired_child1)
 
-        # 7. Nová populace pro další iteraci
-        population = next_gen_offspring[:population_size]
+                if len(next_gen_offspring) < population_size:
+                    mutated_child2 = mutate(child2, search_space)
+                    repaired_child2 = validate_and_repair(mutated_child2)
+                    next_gen_offspring.append(repaired_child2)
 
-    # except KeyboardInterrupt:
-    #     print("\nUkončuji evoluční algoritmus...")
-    # except Exception as e:
-    #     print(f"\nFatální chyba při běhu evolučního algoritmu: {str(e)}")
+                i += 2
 
-    print("Evoluce dokončena.")
+            # New population for the next iteration
+            population = next_gen_offspring[:population_size]
+    except KeyboardInterrupt:
+        print("\nTerminating evolutionary algorithm...")
+    except Exception as e:
+        print(f"\nFatal error during execution of the evolutionary algorithm: {str(e)}")
+
+    print("Evolution completed.")
 
 def get_uid(config: dict) -> str:
-
+    """
+    Generate a unique identifier for a configuration.
+    """
     config_str = str(sorted(config.items()))
     return hashlib.md5(config_str.encode()).hexdigest()
 
 def log_message(uid: str, message: str) -> None:
+    """
+    Log a message to the log file.
+    """
     global WORKING_DIR
     log_path = os.path.join(WORKING_DIR, "log.txt")
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -392,6 +448,9 @@ def log_message(uid: str, message: str) -> None:
         f.write(f"[{now}] [{uid}] {message}\n")
 
 def log_result_to_csv(uid: str, config: dict, score: float, duration: float, total_weight_updates: int) -> None:
+    """
+    Log evaluation results to a CSV file.
+    """
     global WORKING_DIR
     csv_path = os.path.join(WORKING_DIR, "results.csv")
 
@@ -405,12 +464,25 @@ def log_result_to_csv(uid: str, config: dict, score: float, duration: float, tot
         writer.writerow(row)
 
 def log_progress(current: int, total: int) -> None:
+    """
+    Log progress to a file.
+    """
     global WORKING_DIR
     progress_path = os.path.join(WORKING_DIR, "progress.log")
     with open(progress_path, "a") as f:
-        f.write(f"{current}/{total} dokončeno\n")
+        f.write(f"{current}/{total} completed\n")
 
 def get_or_generate_data(sample_size: int, input_dim: int) -> np.ndarray:
+    """
+    Load or generate synthetic data for SOM training.
+
+    Args:
+        sample_size: Number of samples.
+        input_dim: Number of features.
+
+    Returns:
+        Numpy array with data.
+    """
     global WORKING_DIR
     file_name = f"data_{sample_size}x{input_dim}.npy"
     file_path = os.path.join(WORKING_DIR, file_name)
@@ -420,11 +492,14 @@ def get_or_generate_data(sample_size: int, input_dim: int) -> np.ndarray:
 
     data, _ = make_blobs(n_samples=sample_size, n_features=input_dim, centers=5)
     np.save(file_path, data)
-    log_message("SYSTEM", f"Vygenerována nová data: {file_name}")
+    log_message("SYSTEM", f"Generated new data: {file_name}")
     return data
 
 def log_status_to_csv(uid: str, population_id: int, generation: int, status: str, 
                      start_time: str = None, end_time: str = None) -> None:
+    """
+    Log the status of an individual's evaluation to a CSV file.
+    """
     global WORKING_DIR
     csv_path = os.path.join(WORKING_DIR, "status.csv")
     write_header = not os.path.exists(csv_path) or os.path.getsize(csv_path) == 0
@@ -446,6 +521,9 @@ def log_status_to_csv(uid: str, population_id: int, generation: int, status: str
         writer.writerow(row)
 
 def log_final_best(uid: str, config: dict, score: float, duration: float) -> None:
+    """
+    Log the best final result to a file.
+    """
     global WORKING_DIR
     best_path = os.path.join(WORKING_DIR, "final_best.txt")
     with open(best_path, "a") as f:
@@ -457,6 +535,15 @@ def log_final_best(uid: str, config: dict, score: float, duration: float) -> Non
             f.write(f"  {k}: {v}\n")
 
 def load_input_data(input_file: str) -> np.ndarray:
+    """
+    Load and normalize input data from a CSV file.
+
+    Args:
+        input_file: Path to input CSV file.
+
+    Returns:
+        Numpy array with normalized data.
+    """
     global NORMALIZED_DATA
     global WORKING_DIR
     
@@ -467,18 +554,33 @@ def load_input_data(input_file: str) -> np.ndarray:
     if not os.path.exists(preprocess_file):
         preprocess_file = normalize_data(input_file, {}, {})
     NORMALIZED_DATA = pd.read_csv(preprocess_file, delimiter=',').values
-    log_message("SYSTEM", f"Načtena a normalizována data z externího souboru: {input_file}")
+    log_message("SYSTEM", f"Loaded and normalized data from external file: {input_file}")
     return NORMALIZED_DATA
 
 def extract_uid_from_path(file_path: str) -> str:
+    """
+    Extract UID from file path.
+    """
     parts = file_path.split('/')
     for part in parts:
         if part.startswith('nxmpp'):
             return part
     return None
 
-def evaluate_individual(ind: dict, population_id: int, generation: int, fixed_params: dict, data_config: dict) -> tuple:
+def evaluate_individual(ind: dict, population_id: int, generation: int, fixed_params: dict, data: np.ndarray) -> tuple:
+    """
+    Evaluate a single individual (configuration) for SOM training.
 
+    Args:
+        ind: Individual configuration dictionary.
+        population_id: Index in population.
+        generation: Current generation number.
+        fixed_params: Fixed parameters for SOM.
+        data_config: Data generation parameters.
+
+    Returns:
+        Tuple of (training_results, configuration).
+    """
     start_time = time.monotonic()
     uid = get_uid(ind)
     
@@ -486,16 +588,6 @@ def evaluate_individual(ind: dict, population_id: int, generation: int, fixed_pa
         print(f"[GEN {generation + 1}] Total RAM used: {psutil.virtual_memory().used // (1024 ** 2)} MB")
         log_status_to_csv(uid, population_id, generation, "started", 
                          datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-
-        if INPUT_FILE:
-            data = load_input_data(INPUT_FILE)
-        else:
-            if "sample_size" in data_config and "input_dim" in data_config:
-                sample_size = data_config["sample_size"]
-                input_dim = data_config["input_dim"]
-                data = get_or_generate_data(sample_size, input_dim)
-            else:
-                raise ValueError("Není použit vstupní soubor ani nastaveny rozměry pro generování automaticky generovaného souboru")
 
         som_params = {**ind, **fixed_params}
 
@@ -516,7 +608,7 @@ def evaluate_individual(ind: dict, population_id: int, generation: int, fixed_pa
         training_results = som.train(data)
         
         duration = time.monotonic() - start_time
-        log_message(uid, f"Konfigurace vyhodnocena – kvantizační chyba: {som.best_mqe:.8f}, čas: {duration:.2f}s")
+        log_message(uid, f"Configuration evaluated – quantization error: {som.best_mqe:.8f}, time: {duration:.2f}s")
         log_result_to_csv(uid, ind, som.best_mqe, duration, som.total_weight_updates)
         
         log_status_to_csv(uid, population_id, generation, "completed", 
@@ -529,25 +621,37 @@ def evaluate_individual(ind: dict, population_id: int, generation: int, fixed_pa
         log_status_to_csv(uid, population_id, generation, "failed", 
                          datetime.fromtimestamp(start_time).strftime("%Y-%m-%d %H:%M:%S"),
                          datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-        log_message(uid, f"Chyba při vyhodnocování: {str(e)}")
+        log_message(uid, f"Error during evaluation: {str(e)}")
         raise e
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Evoluční optimalizace SOM algoritmu')
-    parser.add_argument('-i', '--input', help='Cesta k vstupnímu CSV souboru')
-    parser.add_argument('-c', '--config', help='Cesta k vlastnímu konfiguračnímu souboru (JSON)')
+    parser = argparse.ArgumentParser(description='Evolutionary optimization of the SOM algorithm')
+    parser.add_argument('-i', '--input', help='Path to the input CSV file')
+    parser.add_argument('-c', '--config', help='Path to a custom configuration file (JSON)')
     args = parser.parse_args()
 
     if args.input:
         if not os.path.exists(args.input):
-            print(f"Chyba: Vstupní soubor {args.input} neexistuje.")
+            print(f"Error: Input file {args.input} does not exist.")
             sys.exit(1)
         INPUT_FILE = args.input
 
     WORKING_DIR = get_working_directory(INPUT_FILE)
-
     config = load_configuration(args.config)
+
+    print("INFO: Preparing data for evolution...")
+    if INPUT_FILE:
+        normalized_file = normalize_data(INPUT_FILE, {}, {})
+        loaded_data = pd.read_csv(normalized_file, delimiter=',').values
+        print(
+            f"INFO: Data loaded and normalized from file {INPUT_FILE}. Number of samples: {loaded_data.shape[0]}, dimension: {loaded_data.shape[1]}")
+    else:
+        data_params = config.get("DATA_PARAMS", {})
+        sample_size = data_params.get("sample_size", 1000)
+        input_dim = data_params.get("input_dim", 10)
+        loaded_data = get_or_generate_data(sample_size, input_dim)
+        print(f"INFO: Data has been generated. Number of samples: {sample_size}, dimension: {input_dim}")
 
     ARCHIVE = []
 
-    run_evolution(config)
+    run_evolution(config, loaded_data)

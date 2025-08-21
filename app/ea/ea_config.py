@@ -21,7 +21,7 @@ CONFIG = {
         "batch_growth_type": ["exp-growth", "linear-growth"],
 
         "epoch_multiplier": [0.5, 1.0, 2.0, 5.0],
-        "normalize_weights_flag": [false, true],
+        "normalize_weights_flag": [False, True],
         "growth_g": [5.0, 15.0, 30.0, 50.0]
     },
 
