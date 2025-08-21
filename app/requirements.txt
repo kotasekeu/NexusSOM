@@ -1,0 +1,11 @@
+passlib
+pydantic
+pytest
+httpx
+pandas
+numpy
+matplotlib
+scikit-learn
+scipy
+psutil
+tqdm

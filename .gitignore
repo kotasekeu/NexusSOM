@@ -1,0 +1,64 @@
+/app/ea/results/*
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.egg
+*.egg-info/
+dist/
+build/
+*.log
+
+# Virtualenv
+venv/
+ENV/
+env/
+.venv/
+.ENV/
+.env/
+
+# IDEs
+.idea/
+*.iml
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Thumbs.db
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints
+
+# Test/coverage
+.coverage
+.tox/
+htmlcov/
+.cache/
+.pytest_cache/
+
+# Misc
+*.swp
+*.swo
+*.bak
+*.tmp
+*.orig
+
+# VSCode (pokud používáš)
+.vscode/
+
+# Profiling
+.prof
+
+# Soubory s hesly, konfigurace
+*.secret
+*.env.local
+*.env.*
+/var/*
+kohonen-log.txt
+/app/ea/ea-config.json

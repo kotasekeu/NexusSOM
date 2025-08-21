@@ -1,0 +1,10 @@
+name: NexusSom
+
+services:
+  data_analysis:
+    container_name: python
+    build:
+      context: ./app
+      dockerfile: ../docker/Dockerfile
+    volumes:
+      - ./app:/app
