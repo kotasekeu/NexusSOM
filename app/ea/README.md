@@ -8,9 +8,9 @@ The primary goal is to discover not a single "best" configuration, but a set of 
 
 ## 📚 Documentation
 
-- [Configuration Guide](app/docs/ea/CONFIG.md) ⚙️ — Details on how to set up and customize the evolutionary algorithm via `config.json`.
-- [Run Instructions](app/docs/ea/RUN.md) ▶️ — How to execute the algorithm, including command-line usage and output structure.
-- [FAQ](app/docs/ea/FAQ.md) ❓ — Frequently asked questions and troubleshooting.
+- [Configuration Guide](../docs/ea/CONFIG.md) ⚙️ — Details on how to set up and customize the evolutionary algorithm via `config.json`.
+- [Run Instructions](../docs/ea/RUN.md) ▶️ — How to execute the algorithm, including command-line usage and output structure.
+- [FAQ](../docs/ea/FAQ.md) ❓ — Frequently asked questions and troubleshooting.
 
 ---
 
@@ -65,10 +65,10 @@ To run the algorithm, use the following command structure:
 python evolution.py --config <path_to_config.json> --input <path_to_data.csv>
 ```
 
--   `--config`: Path to the JSON configuration file. See [Configuration Guide](app/docs/ea/CONFIG.md).
+-   `--config`: Path to the JSON configuration file. See [Configuration Guide](../docs/ea/CONFIG.md).
 -   `--input`: (Optional) Path to the input data file. If omitted, synthetic data will be generated based on `DATA_PARAMS` in the config.
 
-The results, including the generation-by-generation Pareto front, are logged in a new directory created in the same location as the input file. For details on output structure and further usage scenarios, refer to [Run Instructions](app/docs/ea/RUN.md).
+The results, including the generation-by-generation Pareto front, are logged in a new directory created in the same location as the input file. For details on output structure and further usage scenarios, refer to [Run Instructions](../docs/ea/RUN.md).
 
 ---
 
@@ -87,4 +87,5 @@ While the current implementation is robust and effective, there are several area
 
 ---
 
-For further details, troubleshooting, and updates, consult the [FAQ](app/docs/ea/FAQ.md) or other documentation files in this directory.
+For further details, troubleshooting, and updates, consult the [FAQ](../docs/ea/FAQ.md) or other documentation files in this directory.
+
