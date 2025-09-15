@@ -37,6 +37,7 @@ class KohonenSOM:
         self.total_weight_updates = 0
 
         self.mqe_history = []
+        self.batch_size_history = []
         self.best_mqe = float('inf')
 
         self.set_radius()
@@ -186,7 +187,7 @@ class KohonenSOM:
 
             elif self.processing_type == 'hybrid':
                 batch_percent = self.get_batch_percent(iteration, total_iterations)
-                samples_per_section_float = (total_samples * batch_percent / 100.0) / self.num_batches
+                samples_per_section_float = (total_samples * batch_percent / 100.0)
                 samples_per_section = max(1, math.ceil(samples_per_section_float))
 
                 selected_indices = []
@@ -196,6 +197,7 @@ class KohonenSOM:
                     selected_indices.extend(chosen)
 
                 samples_to_process = data[selected_indices]
+                self.batch_size_history.append(len(samples_to_process))
 
             if len(samples_to_process) == 0:
                 continue
@@ -235,5 +237,6 @@ class KohonenSOM:
             'total_weight_updates': self.total_weight_updates,
             "mqe_history": self.mqe_history,
             "epochs_ran": iteration + 1,
-            "converged": converged
+            "converged": converged,
+            "batch_size_history": self.batch_size_history
         }

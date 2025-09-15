@@ -4,6 +4,8 @@ import sys
 from datetime import datetime
 import pandas as pd
 from analysis import perform_analysis
+from graphs import generate_training_plots
+
 
 from preprocess import validate_input_data, preprocess_data
 from utils import load_configuration, log_message, \
@@ -40,6 +42,7 @@ def main():
         log_message(working_dir, "SYSTEM", "Starting data validation and preprocessing...")
 
         input_data_df = validate_input_data(args.input, working_dir, config) # TODO project settings like delimiter, selected columns etc. update config
+        config['num_samples'] = len(input_data_df)
 
         log_message(working_dir, "SYSTEM",
                     f"Input data '{args.input}' validated successfully. Shape: {input_data_df.shape}")
@@ -75,6 +78,8 @@ def main():
         perform_analysis(som, input_data_df, training_data, config, working_dir)
 
         log_message(working_dir, "SYSTEM", "Generating visualizations... (TODO)")
+        generate_training_plots(som, training_results, config, working_dir)
+
         # vizualization.generate_map_plots(som, original_data, normalized_data, working_dir, config['PREPROCESS_INFO'])
 
         # log_final_best(uid, som_config, training_results['final_mqe'], training_results['training_duration'])
