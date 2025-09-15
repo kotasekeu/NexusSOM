@@ -1,6 +1,10 @@
 # som.py
 import sys
 import numpy as np
+import time
+import math
+from datetime import datetime
+from tqdm import tqdm
 
 class KohonenSOM:
     def __init__(self, **kwargs):
@@ -10,6 +14,7 @@ class KohonenSOM:
         self.lr_decay_type = kwargs.get('lr_decay_type')
 
         self.start_radius_init_ratio = kwargs.get('start_radius_init_ratio')
+        self.start_radius = 1
         self.end_radius = kwargs.get('end_radius')
         self.radius_decay_type = kwargs.get('radius_decay_type')
 
@@ -28,8 +33,27 @@ class KohonenSOM:
         self.n = kwargs.get('n', 10)
         self.dim = kwargs.get('dim', 3)
 
+        self.processing_type = kwargs.get('processing_type', 'hybrid')  # 'stochastic', 'deterministic', 'hybrid'
+        self.total_weight_updates = 0
+
+        self.mqe_history = []
+        self.best_mqe = float('inf')
+
+        self.set_radius()
+        self.weights = np.random.rand(self.m, self.n, self.dim)
+
         if self.random_seed is not None:
             np.random.seed(self.random_seed)
+
+        self.neuron_coords = np.indices((self.m, self.n)).transpose(1, 2, 0)
+
+        if self.map_type == 'hex':
+            q_coords = self.neuron_coords[:, :, 1] - np.floor(self.neuron_coords[:, :, 0] / 2)
+            r_coords = self.neuron_coords[:, :, 0]
+            x = q_coords
+            z = r_coords
+            y = -x - z
+            self.cube_coords = np.stack([x, y, z], axis=-1)
 
     def normalize_weights(self) -> None:
         norms = np.linalg.norm(self.weights, axis=2, keepdims=True)
@@ -90,13 +114,11 @@ class KohonenSOM:
 
         self.weights += influence[:, :, np.newaxis] * current_learning_rate * (sample - self.weights)
 
-    def set_radius(self, radius: float | None) -> None:
-        if radius is None:
-            self.start_radius = max(self.m, self.n) / 2
-        elif radius < self.end_radius:
-            self.start_radius = self.end_radius
-        else:
-            self.start_radius = radius
+    def set_radius(self) -> None:
+        ratio = self.start_radius_init_ratio
+        if ratio is None:
+            ratio = 1.0
+        self.start_radius = ratio * max(self.m, self.n)
 
     def grid_distance(self, a: tuple[int, int], b: tuple[int, int]) -> float:
         i1, j1 = a
@@ -116,7 +138,7 @@ class KohonenSOM:
         flat_weights = self.weights.reshape(num_neurons, self.dim)
 
         dists = np.linalg.norm(data[:, np.newaxis, :] - flat_weights[np.newaxis, :, :], axis=2)
-        bmu_indexes = np.argmin(dists, axis=1)  # Plochý index BMU pro každý vzorek
+        bmu_indexes = np.argmin(dists, axis=1)
 
         winning_weights = flat_weights[bmu_indexes]
         errors_per_sample = np.linalg.norm(data - winning_weights, axis=1)
@@ -130,119 +152,88 @@ class KohonenSOM:
 
         return neuron_error_map, total_qe
 
-    def train(self, data: np.ndarray) -> None:
+    def train(self, data: np.ndarray) -> dict:
         start_time = time.monotonic()
+
         self.mqe_history = []
         self.best_mqe = float('inf')
         epochs_without_improvement = 0
         converged = False
-        start = datetime.now()
-        log_message(f"Začátek trénování: {start.strftime('%Y-%m-%d %H:%M:%S')}")
+        self.total_weight_updates = 0
+
         total_samples = data.shape[0]
-        total_epochs = int(total_samples * self.epoch_multiplier)
-        no_improvement_count = 0
-        self.epochs_run = 0
-        self.mqe_history = []
-        self.epochs_history = []
-        pbar = tqdm(total=total_epochs, desc=f"Epochy (začátek: {start.strftime('%H:%M:%S')})",
-                   bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]')
-        for epoch in range(total_epochs):
-            samples_per_batch = 1;
-            current_lr = self.get_decay_value(epoch, total_epochs, self.start_learning_rate, self.end_learning_rate, self.lr_decay_type)
-            current_radius = self.get_decay_value(epoch, total_epochs, self.start_radius, self.end_radius, self.radius_decay_type)
-            if self.processing_type == 'hybrid':
-                batch_percent = self.get_batch_percent(epoch, total_epochs)
-                samples_per_batch = math.ceil(total_samples * batch_percent / 100)
+        total_iterations = int(total_samples * self.epoch_multiplier)
+
+        if self.processing_type == 'hybrid':
+            shuffled_indices = np.random.permutation(total_samples)
+            section_indices = np.array_split(shuffled_indices, self.num_batches)
+
+        pbar = tqdm(range(total_iterations), desc="Trénink SOM", unit="iter")
+        for iteration in pbar:
+            current_lr = self.get_decay_value(iteration, total_iterations, self.start_learning_rate,
+                                              self.end_learning_rate, self.lr_decay_type)
+            current_radius = self.get_decay_value(iteration, total_iterations, self.start_radius, self.end_radius,
+                                                  self.radius_decay_type)
+
+            samples_to_process = []
+
             if self.processing_type == 'stochastic':
-                if self.base_seed is not None:
-                    np.random.seed(self.base_seed + epoch)
                 idx = np.random.randint(0, total_samples)
-                sample = data[idx]
+                samples_to_process = data[idx:idx + 1]
+
+            elif self.processing_type == 'deterministic':
+                samples_to_process = data
+
+            elif self.processing_type == 'hybrid':
+                batch_percent = self.get_batch_percent(iteration, total_iterations)
+                samples_per_section_float = (total_samples * batch_percent / 100.0) / self.num_batches
+                samples_per_section = max(1, math.ceil(samples_per_section_float))
+
+                selected_indices = []
+                for section in section_indices:
+                    num_to_take = min(samples_per_section, len(section))
+                    chosen = np.random.choice(section, num_to_take, replace=False)
+                    selected_indices.extend(chosen)
+
+                samples_to_process = data[selected_indices]
+
+            if len(samples_to_process) == 0:
+                continue
+
+            for sample in samples_to_process:
                 bmu_idx = self.find_bmu(sample)
                 self.update_weights(sample, bmu_idx, current_lr, current_radius)
-            elif self.processing_type == 'deterministic':
-                for sample in data:
-                    bmu_idx = self.find_bmu(sample)
-                    self.update_weights(sample, bmu_idx, current_lr, current_radius)
-            else:
-                if self.base_seed is not None:
-                    np.random.seed(self.base_seed + epoch)
-                indices = np.random.permutation(total_samples)
-                for batch_idx in range(self.num_batches):
-                    start_idx = batch_idx * (total_samples // self.num_batches)
-                    end_idx = min((batch_idx + 1) * (total_samples // self.num_batches), total_samples)
-                    batch_indices = indices[start_idx:end_idx]
-                    if samples_per_batch < len(batch_indices):
-                        batch_indices = batch_indices[:samples_per_batch]
-                    for idx in batch_indices:
-                        sample = data[idx]
-                        bmu_idx = self.find_bmu(sample)
-                        self.update_weights(sample, bmu_idx, current_lr, current_radius)
-            if self.processing_type == 'stochastic':
-                self.total_weight_updates += 1
-            else:
-                self.total_weight_updates += total_samples
+
+            self.total_weight_updates += len(samples_to_process)
+
             if self.normalize_weights_flag:
                 self.normalize_weights()
-            should_compute_mqe = False
-            total_qe = None
-            if self.processing_type == 'deterministic':
-                should_compute_mqe = True
-            else:
-                interval = max(1, total_epochs // 500)
-                if epoch % interval == 0:
-                    should_compute_mqe = True
-            if should_compute_mqe:
-                codebook_vectors = self.weights.reshape(-1, self.dim)
-                bmu_indexes = np.array([self.find_bmu(x)[0] * self.n + self.find_bmu(x)[1] for x in data])
-                _, total_qe = self.compute_quantization_error(data, codebook_vectors, bmu_indexes, (self.m, self.n), compute_neuron_map=False)
-                self.mqe_history.append(total_qe)
-                self.epochs_history.append(epoch)
-                self.learning_rate_history.append(current_lr)
-                self.radius_history.append(current_radius)
-                if self.processing_type == 'hybrid':
-                    self.batch_size_history.append(samples_per_batch)
-                if self.min_q_error is not None and total_qe <= self.min_q_error:
-                    log_message(f"Dosažena limitní MQE {self.min_q_error}. Ukončuji trénování.")
-                    break
-                if total_qe < self.best_mqe:
-                    self.best_mqe = total_qe
-                    no_improvement_count = 0
-                else:
-                    no_improvement_count += 1
-                    if self.max_epochs_without_improvement is not None and no_improvement_count >= self.max_epochs_without_improvement:
-                        log_message(f"Žádné zlepšení po {self.max_epochs_without_improvement} epochách. Ukončuji trénování.")
-                        break
-            current_mqe = np.random.rand()
+
+            _, current_mqe = self.compute_quantization_error(data)
             self.mqe_history.append(current_mqe)
+
             if current_mqe < self.best_mqe:
                 self.best_mqe = current_mqe
                 epochs_without_improvement = 0
             else:
                 epochs_without_improvement += 1
-            if self.max_epochs_without_improvement is not None and \
-                    epochs_without_improvement >= self.max_epochs_without_improvement:
+
+            pbar.set_postfix(best_mqe=f"{self.best_mqe:.6f}", epochs_no_imp=epochs_without_improvement)
+
+            if epochs_without_improvement >= self.max_epochs_without_improvement:
+                print(f"\nUkončuji trénink: Žádné zlepšení po {self.max_epochs_without_improvement} iteracích.")
                 converged = True
                 break
-            if epoch % 100 == 0:
-                elapsed_time = time.monotonic() - start_time
-                if total_qe is not None:
-                    log_message(f"{epoch}|{total_samples}|{samples_per_batch}|{current_radius:.4f}|{current_lr:.6f}|{total_qe:.6f} (čas: {str(elapsed_time).split('.')[0]})")
-                else:
-                    log_message(f"{epoch}|{total_samples}|{samples_per_batch}|{current_radius:.4f}|{current_lr:.6f}|N/A (čas: {str(elapsed_time).split('.')[0]})")
-            pbar.update(1)
-            self.epochs_run = epoch + 1
+
         pbar.close()
-        training_duration = time.monotonic() - start_time
+
+        duration = time.monotonic() - start_time
+
         return {
-            "final_mqe": self.best_mqe,
+            'best_mqe': self.best_mqe,
+            'duration': duration,
+            'total_weight_updates': self.total_weight_updates,
             "mqe_history": self.mqe_history,
-            "total_weight_updates": self.total_weight_updates,
-            "training_duration": training_duration,
-            "epochs_ran": epoch + 1,
+            "epochs_ran": iteration + 1,
             "converged": converged
         }
-
-    @property
-    def best_mqe(self):
-        return 0.05

@@ -3,6 +3,7 @@ import os
 import sys
 from datetime import datetime
 import pandas as pd
+from analysis import perform_analysis
 
 from preprocess import validate_input_data, preprocess_data
 from utils import load_configuration, log_message, \
@@ -63,23 +64,15 @@ def main():
         som_params['n'] = map_height
         som_params['dim'] = normalized_df.shape[1]
 
-        som_params.pop('map_size', None)
-        som_params.pop('input_file_name', None)
-        som_params.pop('delimiter', None)
-        som_params.pop('categorical_threshold_numeric', None)
-
-        print(som_params)
-        # {'start_learning_rate': 0.9, 'end_learning_rate': 0.1, 'lr_decay_type': 'linear-drop',
-        #  'start_radius_init_ratio': None, 'end_radius': 1, 'radius_decay_type': 'linear-drop',
-        #  'start_batch_percent': 0.1, 'end_batch_percent': 5.0, 'batch_growth_type': 'exp-growth',
-        #  'epoch_multiplier': 50.0, 'normalize_weights_flag': False, 'growth_g': 15.0, 'random_seed': 42,
-        #  'map_type': 'hex', 'num_batches': 10, 'max_epochs_without_improvement': 500, 'm': 10, 'n': 10, 'dim': 6}
-
         som = KohonenSOM(**som_params)
 
         training_results = som.train(normalized_df.values)
 
-        log_message(working_dir, "SYSTEM", f"SOM training completed. Best MQE: {training_results['final_mqe']:.6f}")
+        log_message(working_dir, "SYSTEM", f"SOM training completed. Best MQE: {training_results['best_mqe']:.6f}")
+
+        training_data = normalized_df.values
+
+        perform_analysis(som, input_data_df, training_data, config, working_dir)
 
         log_message(working_dir, "SYSTEM", "Generating visualizations... (TODO)")
         # vizualization.generate_map_plots(som, original_data, normalized_data, working_dir, config['PREPROCESS_INFO'])

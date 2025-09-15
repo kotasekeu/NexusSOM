@@ -137,4 +137,6 @@ def preprocess_data(df: pd.DataFrame, config_settings: dict, working_dir: str) -
     with open(categorical_info_path, "w", encoding="utf-8") as f:
         json.dump(categorical_info, f, ensure_ascii=False, indent=2)
 
+    config_settings.update(categorical_info)
+
     return output_path, normalized_df, categorical_info
