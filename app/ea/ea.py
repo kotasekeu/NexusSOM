@@ -8,15 +8,14 @@ import psutil
 import csv
 import hashlib
 import time
+import pandas as pd
+import sys
 
 from datetime import datetime
 from sklearn.datasets import make_blobs
 from som.kohonen import KohonenSOM
 from multiprocessing import Pool, cpu_count
-
-# Weights for multi-objective fitness function
-W_ERROR = 0.7  # weight for quantization error
-W_TIME = 0.3   # weight for computation time
+from som.preprocess import normalize_data
 
 # Global variables
 INPUT_FILE = None
@@ -623,6 +622,7 @@ def evaluate_individual(ind: dict, population_id: int, generation: int, fixed_pa
                          datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         log_message(uid, f"Error during evaluation: {str(e)}")
         raise e
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Evolutionary optimization of the SOM algorithm')

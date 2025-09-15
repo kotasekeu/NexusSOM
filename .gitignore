@@ -62,3 +62,4 @@ htmlcov/
 /var/*
 kohonen-log.txt
 /app/ea/ea-config.json
+/app/test/
