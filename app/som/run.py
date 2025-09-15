@@ -70,7 +70,13 @@ def main():
 
         som = KohonenSOM(**som_params)
 
-        training_results = som.train(normalized_df.values)
+        primary_id_col = config.get('primary_id')
+        if primary_id_col and primary_id_col in normalized_df.columns:
+            training_data_for_som = normalized_df.drop(columns=[primary_id_col]).values
+        else:
+            training_data_for_som = normalized_df.values
+
+        training_results = som.train(training_data_for_som)
 
         log_message(working_dir, "SYSTEM", f"SOM training completed. Best MQE: {training_results['best_mqe']:.6f}")
 

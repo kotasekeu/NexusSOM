@@ -165,6 +165,8 @@ class KohonenSOM:
         total_samples = data.shape[0]
         total_iterations = int(total_samples * self.epoch_multiplier)
 
+        mqe_compute_interval = max(1, total_iterations // 500)
+
         if self.processing_type == 'hybrid':
             shuffled_indices = np.random.permutation(total_samples)
             section_indices = np.array_split(shuffled_indices, self.num_batches)
@@ -211,21 +213,22 @@ class KohonenSOM:
             if self.normalize_weights_flag:
                 self.normalize_weights()
 
-            _, current_mqe = self.compute_quantization_error(data)
-            self.mqe_history.append(current_mqe)
+            if iteration % mqe_compute_interval == 0 or iteration == total_iterations - 1:
+                _, current_mqe = self.compute_quantization_error(data)
+                self.mqe_history.append((iteration, current_mqe))  # Ukládáme i iteraci pro správný graf
 
-            if current_mqe < self.best_mqe:
-                self.best_mqe = current_mqe
-                epochs_without_improvement = 0
-            else:
-                epochs_without_improvement += 1
+                if current_mqe < self.best_mqe:
+                    self.best_mqe = current_mqe
+                    epochs_without_improvement = 0
+                else:
+                    epochs_without_improvement += 1
 
-            pbar.set_postfix(best_mqe=f"{self.best_mqe:.6f}", epochs_no_imp=epochs_without_improvement)
+                pbar.set_postfix(best_mqe=f"{self.best_mqe:.6f}", epochs_no_imp=epochs_without_improvement)
 
-            if epochs_without_improvement >= self.max_epochs_without_improvement:
-                print(f"\nUkončuji trénink: Žádné zlepšení po {self.max_epochs_without_improvement} iteracích.")
-                converged = True
-                break
+                if epochs_without_improvement * mqe_compute_interval >= self.max_epochs_without_improvement:
+                    print(f"\nUkončuji trénink: Žádné zlepšení po ~{self.max_epochs_without_improvement} iteracích.")
+                    converged = True
+                    break
 
         pbar.close()
 

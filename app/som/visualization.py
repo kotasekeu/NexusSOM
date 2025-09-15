@@ -51,7 +51,7 @@ def _create_map(som: KohonenSOM, values: np.ndarray, title: str, output_file: st
 
     # Zobrazení textových hodnot (např. pro Hit Map)
     if show_text is not None:
-        coords = np.array([p.get_center() for p in patches])
+        coords = np.array([p.xy for p in patches])
         for i, txt in enumerate(show_text):
             if txt > 0:
                 ax.text(coords[i, 0], coords[i, 1], str(int(txt)),
