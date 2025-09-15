@@ -140,6 +140,67 @@ def generate_pie_maps(som: KohonenSOM, config: dict, working_dir: str, output_di
     pass
 
 
+def generate_component_planes(som: KohonenSOM, original_df: pd.DataFrame, config: dict, output_dir: str):
+    """
+    Vykreslí komponentní roviny pro VŠECHNY sloupce použité v tréninku.
+    """
+    # Získáme seznam všech sloupců, které reálně vstoupily do SOM
+    # (po odstranění primary_id v preprocess.py)
+    # TENTO SEZNAM MUSÍ ODPOVÍDAT POŘADÍ DIMENZÍ V SOM
+    primary_id_col = config.get('primary_id')
+    training_columns = [col for col in original_df.columns if col != primary_id_col]
+
+    weights_reshaped = som.weights.reshape(som.m, som.n, -1)
+
+    # Ujistíme se, že máme správný počet sloupců
+    if len(training_columns) != som.dim:
+        print(
+            f"WARNING: Počet trénovacích sloupců ({len(training_columns)}) nesouhlasí s dimenzí SOM ({som.dim}). Component planes mohou mít špatné popisky.")
+        training_columns = [f"dim_{i}" for i in range(som.dim)]
+
+    for i, col_name in enumerate(training_columns):
+        plane_values = weights_reshaped[:, :, i]
+
+        # De-normalizace hodnot pro lepší interpretaci v legendě (pouze pro numerické sloupce)
+        if col_name in config.get('numerical_column', []):
+            col_min = original_df[col_name].min()
+            col_max = original_df[col_name].max()
+            de_normalized_values = plane_values * (col_max - col_min) + col_min
+            cbar_label_text = f"Hodnota váhy pro {col_name}"
+        else:
+            # Pro kategorické sloupce zobrazíme normalizované váhy (0-1)
+            de_normalized_values = plane_values
+            cbar_label_text = f"Hodnota váhy pro {col_name} (kategorický)"
+
+        output_file = os.path.join(output_dir, f"component_{col_name}.png")
+        _create_map(som, de_normalized_values, f"Component Plane: {col_name}", output_file,
+                    cmap='coolwarm', cbar_label=cbar_label_text)
+
+
+def generate_cluster_map(som: KohonenSOM, clusters: dict, output_file: str):
+    """Vykreslí mapu aktivních neuronů (shluků)."""
+    m, n = som.m, som.n
+
+    # Vytvoříme mapu, kde každý aktivní neuron bude mít unikátní celé číslo
+    labels = np.full((m, n), -1, dtype=int)  # -1 pro neaktivní neurony
+    active_neuron_keys = sorted(clusters.keys())
+
+    for idx, key in enumerate(active_neuron_keys):
+        i, j = map(int, key.split('_'))
+        if 0 <= i < m and 0 <= j < n:
+            labels[i, j] = idx
+
+    # Vytvoříme diskrétní barevnou mapu
+    num_clusters = len(active_neuron_keys)
+    if num_clusters == 0:
+        print("WARNING: Žádné aktivní shluky k vykreslení v Cluster Map.")
+        return
+
+    cmap = plt.get_cmap('viridis', num_clusters)
+
+    _create_map(som, labels, "Cluster Map", output_file, cmap=cmap)
+
+
 def generate_all_maps(som: KohonenSOM, original_df: pd.DataFrame, normalized_data: np.ndarray, config: dict,
                       working_dir: str):
     """Hlavní orchestrátor pro generování všech map."""
@@ -154,10 +215,17 @@ def generate_all_maps(som: KohonenSOM, original_df: pd.DataFrame, normalized_dat
     # 2. Hit Map
     generate_hit_map(som, normalized_data, os.path.join(maps_dir, "hit_map.png"))
 
-    # 3. Component Planes
+    # 3. Component Planes (nyní pro všechny sloupce)
     generate_component_planes(som, original_df, config, maps_dir)
 
-    # 4. Pie Maps
+    # 4. Cluster Map (přidáno zpět)
+    clusters_path = os.path.join(working_dir, "clusters.json")
+    if os.path.exists(clusters_path):
+        with open(clusters_path, 'r', encoding='utf-8') as f:
+            clusters = json.load(f)
+        generate_cluster_map(som, clusters, os.path.join(maps_dir, "cluster_map.png"))
+
+    # 5. Pie Maps
     generate_pie_maps(som, config, working_dir, maps_dir)
 
     print("INFO: Generování map dokončeno.")
