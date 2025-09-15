@@ -9,6 +9,35 @@ from som import KohonenSOM
 from scipy.spatial.distance import cdist
 
 
+def _prepare_pie_map_data(df_assigned: pd.DataFrame, categorical_cols: list) -> dict:
+    pie_data = {}
+    for col in categorical_cols:
+        # Převedeme kategorické hodnoty na standardní stringy hned na začátku
+        df_assigned[col] = df_assigned[col].astype(str)
+
+        counts_df = df_assigned.groupby(['bmu_key', col]).size().unstack(fill_value=0)
+
+        all_categories = sorted(df_assigned[col].dropna().unique())
+        # Hodnoty v category_map jsou teď zaručeně stringy
+        category_map = {str(i + 1): cat for i, cat in enumerate(all_categories)}
+
+        counts_dict = {}
+        # Explicitně převedeme index (bmu_key) na string
+        for bmu_key_np, row in counts_df.iterrows():
+            bmu_key = str(bmu_key_np)
+
+            counts_dict[bmu_key] = {
+                # Ujistíme se, že i klíče i hodnoty jsou standardní typy
+                str(next(k for k, v in category_map.items() if v == cat_name)): int(count)
+                for cat_name, count in row.items()
+            }
+
+        pie_data[col] = {
+            "categories": category_map,
+            "counts": counts_dict
+        }
+    return pie_data
+
 def _save_quantization_errors(som: KohonenSOM, normalized_data: np.ndarray, working_dir: str):
     neuron_error_map, total_qe = som.compute_quantization_error(normalized_data)
 
@@ -148,5 +177,14 @@ def perform_analysis(som: KohonenSOM, original_df: pd.DataFrame, normalized_data
     with open(extremes_path, 'w', encoding='utf-8') as f:
         json.dump(extremes_data, f, indent=2, ensure_ascii=False)
     print(f"INFO: Analýza extrémů uložena do '{extremes_path}'")
+
+    categorical_cols = config.get('categorical_column', [])
+    if categorical_cols:
+        pie_map_data = _prepare_pie_map_data(df_assigned, categorical_cols)
+        for col, data in pie_map_data.items():
+            pie_data_path = os.path.join(working_dir, f"pie_data_{col}.json")
+            with open(pie_data_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+        print(f"INFO: Data pro koláčové mapy uložena.")
 
     print("INFO: Analýza dat dokončena.")

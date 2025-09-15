@@ -5,6 +5,7 @@ from datetime import datetime
 import pandas as pd
 from analysis import perform_analysis
 from graphs import generate_training_plots
+from visualization import generate_all_maps
 
 
 from preprocess import validate_input_data, preprocess_data
@@ -75,14 +76,16 @@ def main():
 
         training_data = normalized_df.values
 
+        log_message(working_dir, "SYSTEM", "perform_analysis")
         perform_analysis(som, input_data_df, training_data, config, working_dir)
 
-        log_message(working_dir, "SYSTEM", "Generating visualizations... (TODO)")
+        log_message(working_dir, "SYSTEM", "Generating visualizations")
         generate_training_plots(som, training_results, config, working_dir)
 
         # vizualization.generate_map_plots(som, original_data, normalized_data, working_dir, config['PREPROCESS_INFO'])
 
-        # log_final_best(uid, som_config, training_results['final_mqe'], training_results['training_duration'])
+        generate_all_maps(som, input_data_df, training_data, config, working_dir)
+
         log_message(working_dir, "SYSTEM", "SOM analysis finished successfully.")
 
     except FileNotFoundError as e:
