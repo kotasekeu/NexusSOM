@@ -6,7 +6,7 @@ import math
 from datetime import datetime
 from tqdm import tqdm
 import os
-from som.utils import log_message
+from .utils import log_message
 from collections import deque
 
 class KohonenSOM:

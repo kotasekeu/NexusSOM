@@ -17,6 +17,7 @@ from multiprocessing import Pool, cpu_count
 from som.preprocess import validate_input_data, preprocess_data
 from som.som import KohonenSOM
 from som.graphs import generate_training_plots
+from som.visualization import generate_individual_maps
 
 # Global variables
 INPUT_FILE = None
@@ -192,10 +193,11 @@ def log_pareto_front(generation: int, search_space: dict):
         sorted_archive = sorted(ARCHIVE, key=lambda x: x[1]['best_mqe'])
 
         for config, results in sorted_archive:
+            uid = results['uid']
             qe = results['best_mqe']
             te = results.get('topographic_error', -1)
             duration = results['training_duration']
-            f.write(f"QE: {qe:.6f} | TE: {te:.4f} | Time: {duration:.2f}s\n")
+            f.write(f"UID: {uid} | QE: {qe:.6f} | TE: {te:.4f} | Time: {duration:.2f}s\n")
 
             # Print only parameters from the search space
             search_params = {k: v for k, v in config.items() if k in search_space}
@@ -452,12 +454,13 @@ def log_message(uid: str, message: str) -> None:
     with open(log_path, "a") as f:
         f.write(f"[{now}] [{uid}] {message}\n")
 
-def log_result_to_csv(uid: str, config: dict, results: dict) -> None:
+def log_result_to_csv(config: dict, results: dict) -> None:
     """
     Log evaluation results to a CSV file.
     """
     global WORKING_DIR
     csv_path = os.path.join(WORKING_DIR, "results.csv")
+    uid = results['uid']
 
     file_exists = os.path.isfile(csv_path)
     base_fields = ['uid', 'best_mqe', 'duration', 'topographic_error',
@@ -627,6 +630,8 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
 
         training_results = som.train(data, ignore_mask=ignore_mask, working_dir=individual_dir)
 
+        training_results['uid'] = uid
+
         topographic_error = som.calculate_topographic_error(data, mask=ignore_mask)
         u_matrix_metrics = som.calculate_u_matrix_metrics()
 
@@ -636,13 +641,15 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
         training_results['training_duration'] = training_results.get('duration', None)
 
         log_message(uid, f"Evaluated – QE: {training_results['best_mqe']:.6f}, TE: {topographic_error:.4f}, Time: {training_results['duration']:.2f}s")
-        log_result_to_csv(uid, ind, training_results)
+        log_result_to_csv(ind, training_results)
 
         log_status_to_csv(uid, population_id, generation, "completed", 
                          datetime.fromtimestamp(start_time).strftime("%Y-%m-%d %H:%M:%S"),
                          datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
         generate_training_plots(training_results, individual_dir)
+
+        generate_individual_maps(som, data, ignore_mask, individual_dir)
 
         return (training_results, copy.deepcopy(ind))
 

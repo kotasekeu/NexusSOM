@@ -6,7 +6,7 @@ import pandas as pd
 import json
 from matplotlib.patches import Rectangle, RegularPolygon, Wedge, Circle, Patch
 from matplotlib.colors import Normalize, ListedColormap
-from som import KohonenSOM
+from .som import KohonenSOM
 
 
 # Central drawing function for SOM maps
@@ -180,6 +180,25 @@ def generate_cluster_map(som: KohonenSOM, clusters: dict, output_file: str):
     cmap = plt.get_cmap('viridis', num_clusters)
 
     _create_map(som, labels, "Cluster Map", output_file, cmap=cmap)
+
+
+def generate_distance_map(som: KohonenSOM, normalized_data: np.ndarray,
+                          mask: np.ndarray, output_file: str):
+
+    neuron_error_map, _ = som.compute_quantization_error(normalized_data, mask=mask)
+
+    if neuron_error_map is not None:
+        _create_map(som, neuron_error_map, "Distance Map (Neuron QE)", output_file,
+                    cmap='magma', cbar_label="Quantization Error")
+
+
+def generate_individual_maps(som: KohonenSOM, normalized_data: np.ndarray,
+                             mask: np.ndarray, output_dir: str):
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    generate_u_matrix(som, os.path.join(output_dir, "u_matrix.png"))
+    generate_distance_map(som, normalized_data, mask, os.path.join(output_dir, "distance_map.png"))
 
 
 def generate_all_maps(som: KohonenSOM, original_df: pd.DataFrame, normalized_data: np.ndarray, config: dict,

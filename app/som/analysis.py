@@ -5,7 +5,7 @@ import numpy as np
 import os
 import json
 from collections import defaultdict
-from som import KohonenSOM
+from .som import KohonenSOM
 from scipy.spatial.distance import cdist
 
 

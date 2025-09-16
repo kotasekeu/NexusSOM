@@ -3,7 +3,7 @@ from sklearn.preprocessing import MinMaxScaler
 import os
 import numpy as np
 import json
-from som.utils import log_message
+from .utils import log_message
 
 def _clean_dataframe_boundaries(df: pd.DataFrame, working_dir: str) -> pd.DataFrame:
     # Remove completely empty rows from the dataframe
