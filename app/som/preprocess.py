@@ -1,7 +1,6 @@
 import pandas as pd
 from sklearn.preprocessing import MinMaxScaler
 import os
-import sys
 import numpy as np
 import json
 from utils import log_message
@@ -15,7 +14,7 @@ def _clean_dataframe_boundaries(df: pd.DataFrame, working_dir: str) -> pd.DataFr
     return df_cleaned
 
 def _read_csv_robust(input_path: str, working_dir: str, delimiter: str = ',', **kwargs) -> pd.DataFrame:
-    # Robust CSV reading with error handling and logging
+    # Read CSV file with error handling and logging
     try:
         df = pd.read_csv(input_path, delimiter=delimiter, skipinitialspace=True, skip_blank_lines=True, **kwargs)
         log_message(working_dir, "SYSTEM", f"CSV file '{input_path}' loaded successfully.")
@@ -61,94 +60,108 @@ def validate_input_data(input_path: str, working_dir: str, config_settings: dict
     log_message(working_dir, "SYSTEM", f"Input data validation completed for '{input_path}'.")
     return df
 
-def preprocess_data(df: pd.DataFrame, config_settings: dict, working_dir: str) -> tuple[str, pd.DataFrame, dict]:
-    # Preprocess and normalize input data for SOM training
-    data = df.copy()
-    log_message(working_dir, "SYSTEM", "Starting preprocessing and normalization of input data.")
+def preprocess_data(df: pd.DataFrame, config: dict, working_dir: str) -> tuple[str, pd.DataFrame, np.ndarray]:
+    """
+    Main function for data preprocessing.
+    """
+    log_message(working_dir, "SYSTEM", "--- Starting Data Preprocessing ---")
 
-    # Fill missing values in numerical columns with median
-    for col in data.select_dtypes(include=np.number).columns:
-        if data[col].isnull().any():
-            median_val = data[col].median()
-            data[col] = data[col].fillna(median_val)
-            log_message(working_dir, "SYSTEM", f"Filled NaN in numerical column '{col}' with median ({median_val}).")
+    # Prepare output directories and save original input
+    csv_dir = os.path.join(working_dir, "csv")
+    json_dir = os.path.join(working_dir, "json")
+    os.makedirs(csv_dir, exist_ok=True)
+    os.makedirs(json_dir, exist_ok=True)
+    df.to_csv(os.path.join(csv_dir, "original_input.csv"), index=False)
 
-    # Fill missing values in categorical/text columns with empty string
-    for col in data.select_dtypes(include=['object']).columns:
-        if data[col].isnull().any():
-            data[col] = data[col].fillna("")
-            log_message(working_dir, "SYSTEM", f"Filled NaN in text/categorical column '{col}' with empty string.")
+    analysis_df = df.copy()
+    total_rows = len(analysis_df)
+    primary_id_col = config.get('primary_id', 'primary_id')
 
-    processed = pd.DataFrame()
-    categorical_info = {'categorical_column': [], 'numerical_column': [], 'string_column': [], 'categorical_groups': {}}
+    # Analyze columns and generate metadata
+    preprocessing_info = {}
+    cols_to_ignore = []
 
-    # Encode columns and categorize them for SOM
-    for col in data.columns:
-        series = data[col]
+    for col in analysis_df.columns:
+        series = analysis_df[col]
+        nunique = series.nunique()
+        nunique_ratio = nunique / total_rows if total_rows > 0 else 0
 
-        # Special case for ID column
-        if col.startswith('id_') or col.endswith('_id') or col == config_settings.get('primary_id'):
-            processed[col], _ = pd.factorize(series.fillna(""), sort=True)
-            categorical_info['categorical_column'].append(col)
-            log_message(working_dir, "SYSTEM", f"Encoded primary ID column '{col}' as categorical.")
-            continue
+        col_info = {'status': 'used', 'reason': ''}
 
-        n_uniques = series.nunique(dropna=True)
+        col_info.update({'type': str(series.dtype), 'nunique': nunique, 'nunique_ratio': nunique_ratio})
 
         if pd.api.types.is_numeric_dtype(series):
-            # Treat numeric columns with few unique values as categorical
-            if n_uniques <= config_settings.get("categorical_threshold_numeric", 30):
-                processed[col], _ = pd.factorize(series, sort=True)
-                categorical_info['categorical_column'].append(col)
-                log_message(working_dir, "SYSTEM", f"Encoded numeric column '{col}' as categorical (unique values: {n_uniques}).")
-            else:
-                processed[col] = series
-                categorical_info['numerical_column'].append(col)
-                log_message(working_dir, "SYSTEM", f"Numeric column '{col}' kept as continuous (unique values: {n_uniques}).")
+            col_info['base_type'] = 'numeric'
+            col_info['is_categorical'] = nunique <= config.get('categorical_threshold_numeric', 30)
         else:
-            # Treat text/object columns with few unique values as categorical
-            if n_uniques <= config_settings.get("categorical_threshold_text", 30):
-                processed[col], _ = pd.factorize(series, sort=True)
-                categorical_info['categorical_column'].append(col)
-                log_message(working_dir, "SYSTEM", f"Encoded text column '{col}' as categorical (unique values: {n_uniques}).")
-                # ... (grouping code if needed) ...
+            col_info['base_type'] = 'text'
+            if nunique_ratio > config.get('noise_threshold_ratio', 0.2):
+                col_info.update({'status': 'ignored', 'reason': 'High cardinality / noise', 'is_noise': True})
+                cols_to_ignore.append(col)
             else:
-                processed[col], _ = pd.factorize(series, sort=True)
-                categorical_info['string_column'].append(col)
-                log_message(working_dir, "SYSTEM", f"Encoded text column '{col}' as string (unique values: {n_uniques}).")
+                col_info['is_categorical'] = nunique <= config.get('categorical_threshold_text', 30)
 
-    # Remove primary_id from numerical and categorical lists
-    primary_id = config_settings.get('primary_id')
-    if primary_id:
-        categorical_info['numerical_column'] = [c for c in categorical_info['numerical_column'] if c != primary_id]
-        categorical_info['categorical_column'] = [c for c in categorical_info['categorical_column'] if c != primary_id]
-        log_message(working_dir, "SYSTEM", f"Primary ID column '{primary_id}' excluded from scaling columns.")
+        preprocessing_info[col] = col_info
 
-    # Scale all columns (except primary_id) to [0,1] range
-    cols_for_scaling = [c for c in processed.columns if c != primary_id]
+    log_message(working_dir, "SYSTEM", f"Columns ignored as noise: {cols_to_ignore}")
 
-    if not cols_for_scaling:
-        log_message(working_dir, "ERROR", "No columns available for scaling after removing primary_id.")
-        raise ValueError("No columns available for scaling after removing primary_id.")
+    info_path = os.path.join(json_dir, "preprocessing_info.json")
+    with open(info_path, 'w', encoding='utf-8') as f:
+        json.dump(preprocessing_info, f, indent=2, ensure_ascii=False, default=str)
+    log_message(working_dir, "SYSTEM", f"Preprocessing analysis saved to '{info_path}'")
 
+    # Create training dataframe by excluding ignored columns
+    cols_for_training = [col for col in analysis_df.columns if col not in cols_to_ignore]
+    training_df = analysis_df[cols_for_training].copy()
+
+    # Create and save ignore mask for NaN values and primary ID column
+    ignore_mask = training_df.isnull()
+
+    if primary_id_col and primary_id_col in training_df.columns:
+        ignore_mask[primary_id_col] = True
+        log_message(working_dir, "SYSTEM", f"Primary ID column '{primary_id_col}' marked to be ignored in the mask.")
+
+    ignore_mask_np = ignore_mask.values
+
+    mask_path = os.path.join(csv_dir, "ignore_mask.csv")
+    pd.DataFrame(ignore_mask_np).to_csv(mask_path, index=False, header=False)
+    log_message(working_dir, "SYSTEM",
+                f"Created and saved ignore mask to '{mask_path}' ({ignore_mask_np.sum()} marked values).")
+
+    # Fill missing values in training dataframe
+    fill_values = {}
+    for col in training_df.columns:
+        if training_df[col].isnull().any():
+            if pd.api.types.is_numeric_dtype(training_df[col]):
+                fill_values[col] = training_df[col].median()
+            else:
+                fill_values[col] = ""
+    if fill_values:
+        training_df.fillna(value=fill_values, inplace=True)
+
+    # Encode categorical columns to numeric values
+    encoded_df = pd.DataFrame()
+    for col in training_df.columns:
+        if pd.api.types.is_numeric_dtype(training_df[col]):
+            encoded_df[col] = training_df[col]
+        else:
+            encoded_df[col], _ = pd.factorize(training_df[col], sort=True)
+
+    # Normalize encoded data and save results
     scaler = MinMaxScaler()
-    scaled_values = scaler.fit_transform(processed[cols_for_scaling])
-    log_message(working_dir, "SYSTEM", f"Scaled columns: {cols_for_scaling}")
+    scaled_values = scaler.fit_transform(encoded_df)
 
-    # Create final normalized DataFrame
-    normalized_df = pd.DataFrame(scaled_values, columns=cols_for_scaling)
-    # Add primary_id back (unscaled) if present
-    if primary_id and primary_id in processed.columns:
-        normalized_df.insert(0, primary_id, processed[primary_id])
-        log_message(working_dir, "SYSTEM", f"Primary ID column '{primary_id}' added back to normalized data.")
+    npy_path = os.path.join(csv_dir, "training_data.npy")
+    np.save(npy_path, scaled_values)
+    log_message(working_dir, "SYSTEM", f"Normalized training data saved to '{npy_path}'")
 
-    # Save normalized data to output file
-    output_filename = "normalized_" + os.path.basename(config_settings.get("input_file_name", "data.csv"))
-    output_path = os.path.join(working_dir, output_filename)
-    normalized_df.to_csv(output_path, index=False, sep=',')
-    log_message(working_dir, "SYSTEM", f"Normalized data saved to '{output_path}'.")
+    readable_csv_path = os.path.join(csv_dir, "training_data_readable.csv")
+    pd.DataFrame(scaled_values).to_csv(readable_csv_path, index=False, header=False)
+    log_message(working_dir, "SYSTEM", f"Readable training data saved to '{readable_csv_path}'")
 
-    config_settings.update(categorical_info)
-    log_message(working_dir, "SYSTEM", "Preprocessing and normalization completed successfully.")
+    config.update({'preprocessing_info': preprocessing_info})
 
-    return output_path, normalized_df, categorical_info
+    log_message(working_dir, "SYSTEM", "--- Data Preprocessing Finished ---")
+
+    # Return path to .npy, original dataframe, and final ignore mask
+    return npy_path, df, ignore_mask_np
