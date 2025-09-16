@@ -13,9 +13,10 @@ import sys
 
 from datetime import datetime
 from sklearn.datasets import make_blobs
-from som.kohonen import KohonenSOM
 from multiprocessing import Pool, cpu_count
-from som.preprocess import normalize_data
+from som.preprocess import validate_input_data, preprocess_data
+from som.som import KohonenSOM
+from som.graphs import generate_training_plots
 
 # Global variables
 INPUT_FILE = None
@@ -188,12 +189,13 @@ def log_pareto_front(generation: int, search_space: dict):
         f.write(f"--- Generation {generation + 1} | Number of solutions: {len(ARCHIVE)} ---\n")
 
         # Sort for clarity by the first goal (quantization error)
-        sorted_archive = sorted(ARCHIVE, key=lambda x: x[1]['final_mqe'])
+        sorted_archive = sorted(ARCHIVE, key=lambda x: x[1]['best_mqe'])
 
         for config, results in sorted_archive:
-            qe = results['final_mqe']
+            qe = results['best_mqe']
+            te = results.get('topographic_error', -1)
             duration = results['training_duration']
-            f.write(f"QE: {qe:.8f} | Time: {duration:.2f}s\n")
+            f.write(f"QE: {qe:.6f} | TE: {te:.4f} | Time: {duration:.2f}s\n")
 
             # Print only parameters from the search space
             search_params = {k: v for k, v in config.items() if k in search_space}
@@ -312,7 +314,7 @@ def mutate(config: dict, param_space: dict) -> dict:
         config[key] = random.choice(param_space[key])
     return config
 
-def run_evolution(ea_config: dict, data: np.ndarray) -> None:
+def run_evolution(ea_config: dict, data: np.ndarray, ignore_mask: np.ndarray) -> None:
     """
     Main loop of the evolutionary algorithm with Pareto optimization (NSGA-II).
 
@@ -334,7 +336,7 @@ def run_evolution(ea_config: dict, data: np.ndarray) -> None:
 
             # Population evaluation (parallel)
             with Pool(processes=min(12, cpu_count(), population_size)) as pool:
-                args = [(ind, i, gen, fixed_params, data) for i, ind in enumerate(population)]
+                args = [(ind, i, gen, fixed_params, data, ignore_mask) for i, ind in enumerate(population)]
                 results_async = [pool.apply_async(evaluate_individual, arg) for arg in args]
                 evaluated_population = []
                 for r in results_async:
@@ -344,7 +346,7 @@ def run_evolution(ea_config: dict, data: np.ndarray) -> None:
                     except Exception as e:
                         print(f"[ERROR] Individual failed: {e}")
 
-            if not evaluated_population:
+            if len(evaluated_population) == 0:
                 print("Error: No individual was successfully evaluated. Exiting.")
                 return
 
@@ -355,7 +357,11 @@ def run_evolution(ea_config: dict, data: np.ndarray) -> None:
             # Fitness calculation using Non-dominated Sorting and Crowding Distance
             # Get the objectives array (qe, duration) that we want to minimize
             objectives = np.array([
-                [res['final_mqe'], res['training_duration']]
+                [
+                    res['best_mqe'],
+                    res['duration'],
+                    res.get('topographic_error', 1.0)  # Default to 1.0 (bad) if not present
+                ]
                 for cfg, res in combined_population
             ])
 
@@ -446,7 +452,7 @@ def log_message(uid: str, message: str) -> None:
     with open(log_path, "a") as f:
         f.write(f"[{now}] [{uid}] {message}\n")
 
-def log_result_to_csv(uid: str, config: dict, score: float, duration: float, total_weight_updates: int) -> None:
+def log_result_to_csv(uid: str, config: dict, results: dict) -> None:
     """
     Log evaluation results to a CSV file.
     """
@@ -454,12 +460,19 @@ def log_result_to_csv(uid: str, config: dict, score: float, duration: float, tot
     csv_path = os.path.join(WORKING_DIR, "results.csv")
 
     file_exists = os.path.isfile(csv_path)
+    base_fields = ['uid', 'best_mqe', 'duration', 'topographic_error',
+                   'u_matrix_mean', 'u_matrix_std', 'total_weight_updates']
     with open(csv_path, mode="a", newline="") as f:
-        fieldnames = ['uid', 'best MQE', 'duration', 'total_weight_updates'] + list(config.keys())
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        row = {'uid': uid}
+        for key in base_fields[1:]:
+            row[key] = results.get(key)
+        row.update(config)
+
+        fieldnames = ['uid'] + [k for k in base_fields[1:]] + list(config.keys())
+
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
         if not file_exists:
             writer.writeheader()
-        row = {'uid': uid, 'best MQE': score, 'duration': duration, 'total_weight_updates': total_weight_updates, **config}
         writer.writerow(row)
 
 def log_progress(current: int, total: int) -> None:
@@ -534,6 +547,7 @@ def log_final_best(uid: str, config: dict, score: float, duration: float) -> Non
             f.write(f"  {k}: {v}\n")
 
 def load_input_data(input_file: str) -> np.ndarray:
+    sys.exit(0)
     """
     Load and normalize input data from a CSV file.
 
@@ -550,8 +564,8 @@ def load_input_data(input_file: str) -> np.ndarray:
         return NORMALIZED_DATA
 
     preprocess_file = os.path.join(WORKING_DIR, "preprocess-input.csv")
-    if not os.path.exists(preprocess_file):
-        preprocess_file = normalize_data(input_file, {}, {})
+    # if not os.path.exists(preprocess_file):
+    #     preprocess_file = normalize_data(input_file, {}, {})
     NORMALIZED_DATA = pd.read_csv(preprocess_file, delimiter=',').values
     log_message("SYSTEM", f"Loaded and normalized data from external file: {input_file}")
     return NORMALIZED_DATA
@@ -566,7 +580,9 @@ def extract_uid_from_path(file_path: str) -> str:
             return part
     return None
 
-def evaluate_individual(ind: dict, population_id: int, generation: int, fixed_params: dict, data: np.ndarray) -> tuple:
+def evaluate_individual(ind: dict, population_id: int, generation: int,
+                        fixed_params: dict, data: np.ndarray,
+                        ignore_mask: np.ndarray) -> tuple:
     """
     Evaluate a single individual (configuration) for SOM training.
 
@@ -588,6 +604,10 @@ def evaluate_individual(ind: dict, population_id: int, generation: int, fixed_pa
         log_status_to_csv(uid, population_id, generation, "started", 
                          datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
+        global WORKING_DIR
+        individual_dir = os.path.join(WORKING_DIR, "individuals", uid)
+        os.makedirs(individual_dir, exist_ok=True)
+
         som_params = {**ind, **fixed_params}
 
         map_width, map_height = som_params['map_size']
@@ -604,19 +624,33 @@ def evaluate_individual(ind: dict, population_id: int, generation: int, fixed_pa
 
         som = KohonenSOM(dim=data.shape[1], **som_params)
 
-        training_results = som.train(data)
-        
-        duration = time.monotonic() - start_time
-        log_message(uid, f"Configuration evaluated – quantization error: {som.best_mqe:.8f}, time: {duration:.2f}s")
-        log_result_to_csv(uid, ind, som.best_mqe, duration, som.total_weight_updates)
-        
+
+        training_results = som.train(data, ignore_mask=ignore_mask, working_dir=individual_dir)
+
+        topographic_error = som.calculate_topographic_error(data, mask=ignore_mask)
+        u_matrix_metrics = som.calculate_u_matrix_metrics()
+
+        training_results['topographic_error'] = topographic_error
+        training_results.update(u_matrix_metrics)
+
+        training_results['training_duration'] = training_results.get('duration', None)
+
+        log_message(uid, f"Evaluated – QE: {training_results['best_mqe']:.6f}, TE: {topographic_error:.4f}, Time: {training_results['duration']:.2f}s")
+        log_result_to_csv(uid, ind, training_results)
+
         log_status_to_csv(uid, population_id, generation, "completed", 
                          datetime.fromtimestamp(start_time).strftime("%Y-%m-%d %H:%M:%S"),
                          datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-        
+
+        generate_training_plots(training_results, individual_dir)
+
         return (training_results, copy.deepcopy(ind))
 
     except Exception as e:
+        import traceback
+        log_message(uid, f"ERROR during evaluation: {e}")
+        log_message(uid, f"Full traceback:\n{traceback.format_exc()}")
+
         log_status_to_csv(uid, population_id, generation, "failed", 
                          datetime.fromtimestamp(start_time).strftime("%Y-%m-%d %H:%M:%S"),
                          datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
@@ -638,20 +672,25 @@ if __name__ == "__main__":
 
     WORKING_DIR = get_working_directory(INPUT_FILE)
     config = load_configuration(args.config)
+    preprocess_config = config.get("PREPROCES_DATA", {})
 
     print("INFO: Preparing data for evolution...")
     if INPUT_FILE:
-        normalized_file = normalize_data(INPUT_FILE, {}, {})
-        loaded_data = pd.read_csv(normalized_file, delimiter=',').values
+        input_data_df = validate_input_data(INPUT_FILE, WORKING_DIR, preprocess_config)
+        training_data_path, _, ignore_mask = preprocess_data(input_data_df, preprocess_config, WORKING_DIR)
+        loaded_data = np.load(training_data_path)
+        config['PREPROCES_DATA'] = preprocess_config
+
         print(
-            f"INFO: Data loaded and normalized from file {INPUT_FILE}. Number of samples: {loaded_data.shape[0]}, dimension: {loaded_data.shape[1]}")
+            f"INFO: Data loaded and normalized from file {training_data_path}. Shape: {loaded_data.shape}")
     else:
         data_params = config.get("DATA_PARAMS", {})
         sample_size = data_params.get("sample_size", 1000)
         input_dim = data_params.get("input_dim", 10)
         loaded_data = get_or_generate_data(sample_size, input_dim)
+        ignore_mask = None
         print(f"INFO: Data has been generated. Number of samples: {sample_size}, dimension: {input_dim}")
 
     ARCHIVE = []
 
-    run_evolution(config, loaded_data)
+    run_evolution(config, loaded_data, ignore_mask)

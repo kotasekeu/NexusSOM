@@ -6,7 +6,7 @@ import math
 from datetime import datetime
 from tqdm import tqdm
 import os
-from utils import log_message
+from som.utils import log_message
 from collections import deque
 
 class KohonenSOM:
@@ -78,6 +78,73 @@ class KohonenSOM:
             z = r_coords
             y = -x - z
             self.cube_coords = np.stack([x, y, z], axis=-1)
+
+    def _get_neighbors(self, i: int, j: int) -> list[tuple[int, int]]:
+        """Pomocná metoda pro získání sousedů neuronu."""
+        neighbors = []
+        # Jednoduchá verze pro oba typy map (vždy 4-8 sousedů)
+        # Pro přesné hexa sousedy by to bylo složitější, ale toto stačí.
+        for di in [-1, 0, 1]:
+            for dj in [-1, 0, 1]:
+                if di == 0 and dj == 0:
+                    continue
+                ni, nj = i + di, j + dj
+                if 0 <= ni < self.m and 0 <= nj < self.n:
+                    neighbors.append((ni, nj))
+        return neighbors
+
+    def calculate_topographic_error(self, data: np.ndarray, mask: np.ndarray = None) -> float:
+        """
+        Calculates the topographic error.
+        An error occurs if the BMU and the second-best neuron are not neighbors.
+        """
+        error_count = 0
+        flat_weights = self.weights.reshape(-1, self.dim)
+
+        for i in range(data.shape[0]):
+            sample = data[i]
+            sample_mask = mask[i] if mask is not None else None
+
+            diffs = flat_weights - sample
+            if sample_mask is not None:
+                diffs *= ~sample_mask
+
+            dists = np.linalg.norm(diffs, axis=1)
+
+            best_two_indices = np.argsort(dists)[:2]
+
+            bmu1_i, bmu1_j = divmod(best_two_indices[0], self.n)
+            bmu2_i, bmu2_j = divmod(best_two_indices[1], self.n)
+
+            if (bmu2_i, bmu2_j) not in self._get_neighbors(bmu1_i, bmu1_j):
+                error_count += 1
+
+        return error_count / data.shape[0]
+
+    def calculate_u_matrix_metrics(self) -> dict:
+        """
+        Vypočítá metriky z U-Matrix (průměr a rozptyl).
+        """
+        m, n, weights = self.m, self.n, self.weights
+        u_matrix = np.zeros((m, n))
+
+        # Vektorizovaný výpočet (stejný jako ve visualization.py)
+        diffs_v = np.linalg.norm(weights[1:, :, :] - weights[:-1, :, :], axis=2)
+        u_matrix[1:, :] += diffs_v
+        u_matrix[:-1, :] += diffs_v
+        diffs_h = np.linalg.norm(weights[:, 1:, :] - weights[:, :-1, :], axis=2)
+        u_matrix[:, 1:] += diffs_h
+        u_matrix[:, :-1] += diffs_h
+
+        counts = np.full((m, n), 4.0)
+        counts[[0, -1], :] -= 1
+        counts[:, [0, -1]] -= 1
+        u_matrix /= counts
+
+        return {
+            'u_matrix_mean': np.mean(u_matrix),
+            'u_matrix_std': np.std(u_matrix)
+        }
 
     def normalize_weights(self) -> None:
         # Normalize weights for each neuron to unit norm
@@ -224,6 +291,11 @@ class KohonenSOM:
             shuffled_indices = np.random.permutation(total_samples)
             section_indices = np.array_split(shuffled_indices, self.num_batches)
 
+        if self.mqe_evaluations_per_run > 0:
+            mqe_compute_interval = max(1, total_iterations // self.mqe_evaluations_per_run)
+        else:
+            mqe_compute_interval = total_iterations
+
         pbar = tqdm(range(total_iterations), desc="SOM Training", unit="iter")
         for iteration in pbar:
             current_lr = self.get_decay_value(iteration, total_iterations, self.start_learning_rate,
@@ -257,7 +329,7 @@ class KohonenSOM:
 
             self.history['batch_size'].append((iteration, len(indices_to_process)))
 
-            if not indices_to_process:
+            if np.size(indices_to_process) == 0:
                 continue
 
             samples_to_process = data[indices_to_process]
@@ -275,13 +347,8 @@ class KohonenSOM:
             if self.normalize_weights_flag:
                 self.normalize_weights()
 
-            if self.mqe_evaluations_per_run > 0:
-                mqe_compute_interval = max(1, total_iterations // self.mqe_evaluations_per_run)
-            else:
-                mqe_compute_interval = total_iterations
-
                 # Compute MQE and check stopping criteria
-            if iteration % self.mqe_evaluations_per_run == 0 or iteration == total_iterations - 1:
+            if iteration % mqe_compute_interval == 0 or iteration == total_iterations - 1:
                 _, current_mqe = self.compute_quantization_error(data, mask=ignore_mask)
                 self.history['mqe'].append((iteration, current_mqe))
 

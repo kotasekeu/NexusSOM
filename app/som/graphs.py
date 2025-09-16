@@ -28,13 +28,13 @@ def _plot_history(ax, history_data: list, label: str, color: str, drawstyle: str
     plt.tight_layout()
 
 
-def generate_training_plots(training_results: dict, working_dir: str):
+def generate_training_plots(training_results: dict, output_dir: str):
     """
     Generate and save training progress plots (MQE, learning rate, radius, batch size).
     """
-    plots_dir = os.path.join(working_dir, "visualizations")
+    plots_dir = os.path.join(output_dir, "visualizations")
     os.makedirs(plots_dir, exist_ok=True)
-    print("INFO: Generating training progress plots...")
+    # print("INFO: Generating training progress plots...")
 
     history = training_results.get('history', {})
     if not history:
@@ -77,4 +77,4 @@ def generate_training_plots(training_results: dict, working_dir: str):
         plt.savefig(os.path.join(plots_dir, "batch_size_growth.png"), dpi=150)
         plt.close()
 
-    print("INFO: Training plots successfully generated.")
+    # print("INFO: Training plots successfully generated.")

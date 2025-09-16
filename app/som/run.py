@@ -44,8 +44,6 @@ def main():
         config = load_configuration(args.config)
         log_message(working_dir, "SYSTEM", f"Configuration file '{args.config}' loaded successfully.")
 
-        config['input_file_name'] = os.path.basename(args.input)
-
         # Data validation and preprocessing
         log_message(working_dir, "SYSTEM", "Starting data validation and preprocessing...")
 
