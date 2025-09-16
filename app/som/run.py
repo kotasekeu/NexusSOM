@@ -73,9 +73,10 @@ def main():
 
         # Train SOM
         log_message(working_dir, "SYSTEM", "Starting SOM training...")
-        training_results = som.train(training_data, ignore_mask=ignore_mask)
+        training_results = som.train(training_data, ignore_mask=ignore_mask, working_dir=working_dir)
+
         log_message(working_dir, "SYSTEM", f"SOM training completed. Best MQE: {training_results['best_mqe']:.6f}")
-        sys.exit(0)
+
         # Analysis phase
         log_message(working_dir, "SYSTEM", "Starting analysis phase...")
         perform_analysis(som, input_data_df, training_data, config, working_dir)

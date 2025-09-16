@@ -81,6 +81,9 @@ def preprocess_data(df: pd.DataFrame, config: dict, working_dir: str) -> tuple[s
     preprocessing_info = {}
     cols_to_ignore = []
 
+    numerical_column = []
+    categorical_column = []
+
     for col in analysis_df.columns:
         series = analysis_df[col]
         nunique = series.nunique()
@@ -92,14 +95,26 @@ def preprocess_data(df: pd.DataFrame, config: dict, working_dir: str) -> tuple[s
 
         if pd.api.types.is_numeric_dtype(series):
             col_info['base_type'] = 'numeric'
-            col_info['is_categorical'] = nunique <= config.get('categorical_threshold_numeric', 30)
+            if nunique <= config.get('categorical_threshold_numeric', 30):
+                col_info['is_categorical'] = True
+                if col_info.get('status') == 'used':
+                    categorical_column.append(col)
+            else:
+                col_info['is_categorical'] = False
+                if col_info.get('status') == 'used':
+                    numerical_column.append(col)
         else:
             col_info['base_type'] = 'text'
             if nunique_ratio > config.get('noise_threshold_ratio', 0.2):
                 col_info.update({'status': 'ignored', 'reason': 'High cardinality / noise', 'is_noise': True})
                 cols_to_ignore.append(col)
+
+            elif nunique <= config.get('categorical_threshold_text', 30):
+                col_info['is_categorical'] = True
+                if col_info.get('status') == 'used':
+                    categorical_column.append(col)
             else:
-                col_info['is_categorical'] = nunique <= config.get('categorical_threshold_text', 30)
+                col_info['is_categorical'] = False
 
         preprocessing_info[col] = col_info
 
@@ -109,6 +124,9 @@ def preprocess_data(df: pd.DataFrame, config: dict, working_dir: str) -> tuple[s
     with open(info_path, 'w', encoding='utf-8') as f:
         json.dump(preprocessing_info, f, indent=2, ensure_ascii=False, default=str)
     log_message(working_dir, "SYSTEM", f"Preprocessing analysis saved to '{info_path}'")
+
+    config['numerical_column'] = numerical_column
+    config['categorical_column'] = categorical_column
 
     # Create training dataframe by excluding ignored columns
     cols_for_training = [col for col in analysis_df.columns if col not in cols_to_ignore]
@@ -159,7 +177,9 @@ def preprocess_data(df: pd.DataFrame, config: dict, working_dir: str) -> tuple[s
     pd.DataFrame(scaled_values).to_csv(readable_csv_path, index=False, header=False)
     log_message(working_dir, "SYSTEM", f"Readable training data saved to '{readable_csv_path}'")
 
-    config.update({'preprocessing_info': preprocessing_info})
+    config.update({
+        'preprocessing_info': preprocessing_info
+    })
 
     log_message(working_dir, "SYSTEM", "--- Data Preprocessing Finished ---")
 

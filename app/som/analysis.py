@@ -12,22 +12,18 @@ from scipy.spatial.distance import cdist
 def _prepare_pie_map_data(df_assigned: pd.DataFrame, categorical_cols: list) -> dict:
     pie_data = {}
     for col in categorical_cols:
-        # Převedeme kategorické hodnoty na standardní stringy hned na začátku
+        # Convert categorical values to strings for consistency
         df_assigned[col] = df_assigned[col].astype(str)
 
         counts_df = df_assigned.groupby(['bmu_key', col]).size().unstack(fill_value=0)
 
         all_categories = sorted(df_assigned[col].dropna().unique())
-        # Hodnoty v category_map jsou teď zaručeně stringy
         category_map = {str(i + 1): cat for i, cat in enumerate(all_categories)}
 
         counts_dict = {}
-        # Explicitně převedeme index (bmu_key) na string
         for bmu_key_np, row in counts_df.iterrows():
             bmu_key = str(bmu_key_np)
-
             counts_dict[bmu_key] = {
-                # Ujistíme se, že i klíče i hodnoty jsou standardní typy
                 str(next(k for k, v in category_map.items() if v == cat_name)): int(count)
                 for cat_name, count in row.items()
             }
@@ -57,13 +53,13 @@ def _save_quantization_errors(som: KohonenSOM, normalized_data: np.ndarray, work
     try:
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(output_data, f, indent=2, ensure_ascii=False)
-        print(f"INFO: Kvantizační chyby uloženy do '{output_path}'")
+        print(f"INFO: Quantization errors saved to '{output_path}'")
     except Exception as e:
-        print(f"ERROR: Nepodařilo se uložit kvantizační chyby: {e}")
+        print(f"ERROR: Failed to save quantization errors: {e}")
 
 def _get_bmu_assignments(som: KohonenSOM, normalized_data: np.ndarray, original_df: pd.DataFrame,
                          primary_id_col: str) -> pd.DataFrame:
-
+    # Calculate BMU assignments for each data point
     num_neurons = som.m * som.n
     flat_weights = som.weights.reshape(num_neurons, som.dim)
 
@@ -81,7 +77,6 @@ def _get_bmu_assignments(som: KohonenSOM, normalized_data: np.ndarray, original_
 
     return df_assigned, clusters
 
-
 def _detect_extremes(df_assigned: pd.DataFrame, numerical_cols: list, primary_id_col: str,
                      std_threshold: float) -> dict:
     extremes = defaultdict(list)
@@ -89,6 +84,7 @@ def _detect_extremes(df_assigned: pd.DataFrame, numerical_cols: list, primary_id
     if df_assigned.empty or not numerical_cols:
         return {}
 
+    # Compute global statistics for each numerical column
     global_stats = df_assigned[numerical_cols].agg(['mean', 'std', 'min', 'max'])
 
     for col in numerical_cols:
@@ -99,21 +95,20 @@ def _detect_extremes(df_assigned: pd.DataFrame, numerical_cols: list, primary_id
             lower_bound, upper_bound = mean - std_threshold * std, mean + std_threshold * std
             outliers = df_assigned[(df_assigned[col] < lower_bound) | (df_assigned[col] > upper_bound)]
             for _, row in outliers.iterrows():
-                reason = f"Hodnota '{col}' ({row[col]:.2f}) je o více než {std_threshold} std. odchylek od globálního průměru ({mean:.2f})."
+                reason = f"Value '{col}' ({row[col]:.2f}) is more than {std_threshold} std deviations from the global mean ({mean:.2f})."
                 extremes[row[primary_id_col]].append(reason)
 
         min_rows = df_assigned[df_assigned[col] == min_val]
         for _, row in min_rows.iterrows():
-            extremes[row[primary_id_col]].append(f"Hodnota '{col}' ({min_val:.2f}) je globální minimum.")
+            extremes[row[primary_id_col]].append(f"Value '{col}' ({min_val:.2f}) is the global minimum.")
 
         max_rows = df_assigned[df_assigned[col] == max_val]
         for _, row in max_rows.iterrows():
-            extremes[row[primary_id_col]].append(f"Hodnota '{col}' ({max_val:.2f}) je globální maximum.")
+            extremes[row[primary_id_col]].append(f"Value '{col}' ({max_val:.2f}) is the global maximum.")
 
+    # Local (neuron-level) statistics
     grouped = df_assigned.groupby('bmu_key')[numerical_cols]
-
     counts = grouped.size()
-
     neurons_for_local_analysis = counts[counts > 1].index
 
     if len(neurons_for_local_analysis) > 0:
@@ -141,24 +136,21 @@ def _detect_extremes(df_assigned: pd.DataFrame, numerical_cols: list, primary_id
             local_outliers = df_with_local_stats[mask_outliers]
 
             for _, row in local_outliers.iterrows():
-                reason = f"Hodnota '{col}' ({row[col]:.2f}) se o více než {std_threshold} std. odchylek liší od průměru svého neuronu ({row[mean_col_local]:.2f})."
+                reason = f"Value '{col}' ({row[col]:.2f}) differs by more than {std_threshold} std deviations from its neuron's mean ({row[mean_col_local]:.2f})."
                 extremes[row[primary_id_col]].append(reason)
 
     return dict(extremes)
 
-
 def perform_analysis(som: KohonenSOM, original_df: pd.DataFrame, normalized_data: np.ndarray, config: dict,
                      working_dir: str):
-    print("INFO: Spouštím analýzu organizovaných dat...")
+    print("INFO: Starting organized data analysis...")
 
-    primary_id_col = config.get('primary_id')
-    if primary_id_col is None and 'primary_id' in original_df.columns:
-        primary_id_col = 'primary_id'
+    primary_id_col = config.get('primary_id', 'primary_id')
     numerical_cols = config.get('numerical_column', [])
     std_threshold = config.get('std_threshold', 2.5)
 
     if not primary_id_col or not numerical_cols:
-        print("ERROR: V konfiguraci chybí 'primary_id' nebo 'numerical_column' pro analýzu.")
+        print("ERROR: 'primary_id' or 'numerical_column' missing in config for analysis.")
         return
 
     df_assigned, clusters = _get_bmu_assignments(som, normalized_data, original_df, primary_id_col)
@@ -166,17 +158,16 @@ def perform_analysis(som: KohonenSOM, original_df: pd.DataFrame, normalized_data
     clusters_path = os.path.join(working_dir, "clusters.json")
     with open(clusters_path, 'w', encoding='utf-8') as f:
         json.dump(clusters, f, indent=2, ensure_ascii=False)
-    print(f"INFO: Mapování shluků uloženo do '{clusters_path}'")
+    print(f"INFO: Cluster mapping saved to '{clusters_path}'")
 
     _save_quantization_errors(som, normalized_data, working_dir)
-
 
     extremes_data = _detect_extremes(df_assigned, numerical_cols, primary_id_col, std_threshold)
 
     extremes_path = os.path.join(working_dir, "extremes.json")
     with open(extremes_path, 'w', encoding='utf-8') as f:
         json.dump(extremes_data, f, indent=2, ensure_ascii=False)
-    print(f"INFO: Analýza extrémů uložena do '{extremes_path}'")
+    print(f"INFO: Extremes analysis saved to '{extremes_path}'")
 
     categorical_cols = config.get('categorical_column', [])
     if categorical_cols:
@@ -185,6 +176,6 @@ def perform_analysis(som: KohonenSOM, original_df: pd.DataFrame, normalized_data
             pie_data_path = os.path.join(working_dir, f"pie_data_{col}.json")
             with open(pie_data_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
-        print(f"INFO: Data pro koláčové mapy uložena.")
+        print(f"INFO: Pie map data saved.")
 
-    print("INFO: Analýza dat dokončena.")
+    print("INFO: Data analysis completed.")

@@ -5,10 +5,13 @@ import time
 import math
 from datetime import datetime
 from tqdm import tqdm
+import os
+from utils import log_message
+from collections import deque
 
 class KohonenSOM:
     def __init__(self, **kwargs):
-
+        # Initialize SOM hyperparameters from kwargs
         self.start_learning_rate = kwargs.get('start_learning_rate')
         self.end_learning_rate = kwargs.get('end_learning_rate')
         self.lr_decay_type = kwargs.get('lr_decay_type')
@@ -29,13 +32,23 @@ class KohonenSOM:
         self.map_type = kwargs.get('map_type')
         self.num_batches = kwargs.get('num_batches')
         self.max_epochs_without_improvement = kwargs.get('max_epochs_without_improvement')
-        self.m = kwargs.get('m', 10)
-        self.n = kwargs.get('n', 10)
+
+        # Determine SOM map size
+        if 'map_size' in kwargs and isinstance(kwargs['map_size'], list):
+            map_width, map_height = kwargs['map_size'][0] if isinstance(kwargs['map_size'][0], list) else \
+                kwargs['map_size']
+        else:
+            map_width, map_height = (10, 10)  # TODO: Replace with automatic calculation based on data size
+
+        self.m = map_width
+        self.n = map_height
+
         self.dim = kwargs.get('dim', 3)
 
         self.processing_type = kwargs.get('processing_type', 'hybrid')  # 'stochastic', 'deterministic', 'hybrid'
         self.total_weight_updates = 0
 
+        # History tracking for training metrics
         self.history = {
             'mqe': [],
             'learning_rate': [],
@@ -50,9 +63,15 @@ class KohonenSOM:
         if self.random_seed is not None:
             np.random.seed(self.random_seed)
 
+        # Precompute neuron coordinates for distance calculations
         self.neuron_coords = np.indices((self.m, self.n)).transpose(1, 2, 0)
 
+        self.early_stopping_window = kwargs.get('early_stopping_window', 5)
+        self.early_stopping_patience = kwargs.get('max_epochs_without_improvement', 25)
+        self.mqe_evaluations_per_run = kwargs.get('mqe_evaluations_per_run', 20)
+
         if self.map_type == 'hex':
+            # Calculate cube coordinates for hexagonal grid
             q_coords = self.neuron_coords[:, :, 1] - np.floor(self.neuron_coords[:, :, 0] / 2)
             r_coords = self.neuron_coords[:, :, 0]
             x = q_coords
@@ -61,12 +80,13 @@ class KohonenSOM:
             self.cube_coords = np.stack([x, y, z], axis=-1)
 
     def normalize_weights(self) -> None:
+        # Normalize weights for each neuron to unit norm
         norms = np.linalg.norm(self.weights, axis=2, keepdims=True)
         norms[norms == 0] = 1
-
         self.weights /= norms
 
     def get_decay_value(self, t: int, N: int, start: float, end: float, decay_type: str) -> float:
+        # Compute decayed value for learning rate, radius, or batch percent
         if N <= 1:
             return start
         if decay_type == 'static':
@@ -95,17 +115,26 @@ class KohonenSOM:
             raise ValueError(f"Unknown decay_type: {decay_type}")
 
     def get_batch_percent(self, t: int, N: int) -> float:
+        # Get current batch percent for hybrid processing
         return self.get_decay_value(t, N, self.start_batch_percent, self.end_batch_percent, self.batch_growth_type)
 
-    def find_bmu(self, sample: np.ndarray) -> tuple[int, int]:
-        flat = self.weights.reshape(-1, self.dim)
-        diffs = flat - sample
-        dists = np.linalg.norm(diffs, axis=1)
-        idx = np.argmin(dists)
-        return divmod(idx, self.n)
+    def find_bmu(self, sample: np.ndarray, mask: np.ndarray = None) -> tuple[int, int]:
+        # Find Best Matching Unit (BMU) for a given sample
+        flat_weights = self.weights.reshape(-1, self.dim)
+        diffs = flat_weights - sample
 
-    def update_weights(self, sample: np.ndarray, bmu_idx: tuple[int, int], current_learning_rate: float,
-                       radius: float) -> None:
+        if mask is not None:
+            valid_dims_mask = ~mask
+            diffs *= valid_dims_mask
+
+        dists = np.linalg.norm(diffs, axis=1)
+        bmu_flat_idx = np.argmin(dists)
+        return divmod(bmu_flat_idx, self.n)
+
+    def update_weights(self, sample: np.ndarray, bmu_idx: tuple[int, int],
+                       current_learning_rate: float, radius: float,
+                       mask: np.ndarray = None) -> None:
+        # Update weights of neurons based on BMU and neighborhood function
         bmu_i, bmu_j = bmu_idx
 
         if self.map_type == 'square':
@@ -117,15 +146,23 @@ class KohonenSOM:
         radius_squared = radius ** 2
         influence = np.exp(-distances ** 2 / (2 * radius_squared + 1e-8))
 
-        self.weights += influence[:, :, np.newaxis] * current_learning_rate * (sample - self.weights)
+        update_term = current_learning_rate * (sample - self.weights)
+
+        if mask is not None:
+            valid_dims_mask = ~mask
+            update_term *= valid_dims_mask
+
+        self.weights += influence[:, :, np.newaxis] * update_term
 
     def set_radius(self) -> None:
+        # Set initial neighborhood radius based on ratio and map size
         ratio = self.start_radius_init_ratio
         if ratio is None:
             ratio = 1.0
         self.start_radius = ratio * max(self.m, self.n)
 
     def grid_distance(self, a: tuple[int, int], b: tuple[int, int]) -> float:
+        # Compute grid distance between two neurons (square or hex)
         i1, j1 = a
         i2, j2 = b
         if self.map_type == 'square':
@@ -138,7 +175,9 @@ class KohonenSOM:
         y2 = -x2 - z2
         return (abs(x1 - x2) + abs(y1 - y2) + abs(z1 - z2)) / 2
 
-    def compute_quantization_error(self, data: np.ndarray) -> tuple[np.ndarray | None, float]:
+    def compute_quantization_error(self, data: np.ndarray,
+                                   mask: np.ndarray = None) -> tuple[np.ndarray | None, float]:
+        # Compute quantization error for all samples and per neuron
         num_neurons = self.m * self.n
         flat_weights = self.weights.reshape(num_neurons, self.dim)
 
@@ -146,7 +185,13 @@ class KohonenSOM:
         bmu_indexes = np.argmin(dists, axis=1)
 
         winning_weights = flat_weights[bmu_indexes]
-        errors_per_sample = np.linalg.norm(data - winning_weights, axis=1)
+        diffs = data - winning_weights
+
+        if mask is not None:
+            valid_dims_mask = ~mask
+            diffs *= valid_dims_mask
+
+        errors_per_sample = np.linalg.norm(diffs, axis=1)
         total_qe = errors_per_sample.mean()
 
         sum_errors = np.bincount(bmu_indexes, weights=errors_per_sample, minlength=num_neurons)
@@ -157,7 +202,8 @@ class KohonenSOM:
 
         return neuron_error_map, total_qe
 
-    def train(self, data: np.ndarray) -> dict:
+    def train(self, data: np.ndarray, ignore_mask: np.ndarray = None, working_dir: str = '.') -> dict:
+        # Main training loop for SOM
         start_time = time.monotonic()
 
         self.mqe_history = []
@@ -169,15 +215,16 @@ class KohonenSOM:
         total_samples = data.shape[0]
         total_iterations = int(total_samples * self.epoch_multiplier)
 
-        # mqe_compute_interval = max(1, total_iterations // 500)
-        # print(mqe_compute_interval)
-        mqe_compute_interval = max(10, total_iterations // 20)
+        best_moving_avg = float('inf')
+        epochs_without_improvement = 0
+        recent_mqe_history = deque(maxlen=self.early_stopping_window)
 
+        # Prepare batch indices for hybrid processing
         if self.processing_type == 'hybrid':
             shuffled_indices = np.random.permutation(total_samples)
             section_indices = np.array_split(shuffled_indices, self.num_batches)
 
-        pbar = tqdm(range(total_iterations), desc="Trénink SOM", unit="iter")
+        pbar = tqdm(range(total_iterations), desc="SOM Training", unit="iter")
         for iteration in pbar:
             current_lr = self.get_decay_value(iteration, total_iterations, self.start_learning_rate,
                                               self.end_learning_rate, self.lr_decay_type)
@@ -187,14 +234,14 @@ class KohonenSOM:
             self.history['learning_rate'].append((iteration, current_lr))
             self.history['radius'].append((iteration, current_radius))
 
-            samples_to_process = []
-
+            # Unified logic for sample selection
+            indices_to_process = []
             if self.processing_type == 'stochastic':
                 idx = np.random.randint(0, total_samples)
-                samples_to_process = data[idx:idx + 1]
+                indices_to_process = [idx]
 
             elif self.processing_type == 'deterministic':
-                samples_to_process = data
+                indices_to_process = np.arange(total_samples)
 
             elif self.processing_type == 'hybrid':
                 batch_percent = self.get_batch_percent(iteration, total_iterations)
@@ -206,42 +253,84 @@ class KohonenSOM:
                     num_to_take = min(samples_per_section, len(section))
                     chosen = np.random.choice(section, num_to_take, replace=False)
                     selected_indices.extend(chosen)
+                indices_to_process = selected_indices
 
-                samples_to_process = data[selected_indices]
-                self.history['batch_size'].append((iteration, len(samples_to_process)))
+            self.history['batch_size'].append((iteration, len(indices_to_process)))
 
-            if len(samples_to_process) == 0:
+            if not indices_to_process:
                 continue
 
-            for sample in samples_to_process:
-                bmu_idx = self.find_bmu(sample)
-                self.update_weights(sample, bmu_idx, current_lr, current_radius)
+            samples_to_process = data[indices_to_process]
+            sample_masks = ignore_mask[indices_to_process] if ignore_mask is not None else None
+
+            # Update weights for each selected sample
+            for i, sample in enumerate(samples_to_process):
+                sample_mask = sample_masks[i] if sample_masks is not None else None
+
+                bmu_idx = self.find_bmu(sample, mask=sample_mask)
+                self.update_weights(sample, bmu_idx, current_lr, current_radius, mask=sample_mask)
 
             self.total_weight_updates += len(samples_to_process)
 
             if self.normalize_weights_flag:
                 self.normalize_weights()
 
-            if iteration % mqe_compute_interval == 0 or iteration == total_iterations - 1:
-                _, current_mqe = self.compute_quantization_error(data)
+            if self.mqe_evaluations_per_run > 0:
+                mqe_compute_interval = max(1, total_iterations // self.mqe_evaluations_per_run)
+            else:
+                mqe_compute_interval = total_iterations
+
+                # Compute MQE and check stopping criteria
+            if iteration % self.mqe_evaluations_per_run == 0 or iteration == total_iterations - 1:
+                _, current_mqe = self.compute_quantization_error(data, mask=ignore_mask)
                 self.history['mqe'].append((iteration, current_mqe))
 
                 if current_mqe < self.best_mqe:
                     self.best_mqe = current_mqe
-                    epochs_without_improvement = 0
-                else:
-                    epochs_without_improvement += 1
 
-                pbar.set_postfix(best_mqe=f"{self.best_mqe:.6f}", epochs_no_imp=epochs_without_improvement)
+                recent_mqe_history.append(current_mqe)
 
-                if epochs_without_improvement * mqe_compute_interval >= self.max_epochs_without_improvement:
-                    print(f"\nUkončuji trénink: Žádné zlepšení po ~{self.max_epochs_without_improvement} iteracích.")
-                    converged = True
-                    break
+                if len(recent_mqe_history) == self.early_stopping_window:
+                    current_moving_avg = np.mean(recent_mqe_history)
+
+                    if current_moving_avg < best_moving_avg:
+                        best_moving_avg = current_moving_avg
+                        epochs_without_improvement = 0
+                    else:
+                        epochs_without_improvement += 1
+
+                    pbar.set_postfix(
+                        best_mqe=f"{self.best_mqe:.6f}",
+                        moving_avg=f"{best_moving_avg:.6f}",
+                        checks_no_imp=epochs_without_improvement
+                    )
+
+                    if epochs_without_improvement >= self.early_stopping_patience:
+                        print(
+                            f"\nStopping training: The moving average did not improve after {self.early_stopping_patience} checks.")
+                        converged = True
+                        break
 
         pbar.close()
 
         duration = time.monotonic() - start_time
+        csv_dir = os.path.join(working_dir, "csv")
+        os.makedirs(csv_dir, exist_ok=True)
+
+        # Save final weights as binary .npy file
+        npy_path = os.path.join(csv_dir, "weights.npy")
+        np.save(npy_path, self.weights)
+        log_message(working_dir, "SYSTEM", f"Final weights saved to '{npy_path}'")
+
+        # Save final weights as readable .csv file for inspection
+        weights_reshaped = self.weights.reshape(-1, self.dim)
+        coords = np.indices((self.m, self.n)).transpose(1, 2, 0).reshape(-1, 2)
+        header = ['neuron_i', 'neuron_j'] + [f'dim_{d}' for d in range(self.dim)]
+        csv_data = np.hstack([coords, weights_reshaped])
+
+        csv_path = os.path.join(csv_dir, "weights_readable.csv")
+        np.savetxt(csv_path, csv_data, delimiter=',', header=','.join(header), comments='')
+        log_message(working_dir, "SYSTEM", f"Readable final weights saved to '{csv_path}'")
 
         return {
             'best_mqe': self.best_mqe,

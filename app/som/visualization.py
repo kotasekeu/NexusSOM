@@ -9,20 +9,19 @@ from matplotlib.colors import Normalize, ListedColormap
 from som import KohonenSOM
 
 
-# --- CENTRÁLNÍ KRESLÍCÍ FUNKCE ---
-
+# Central drawing function for SOM maps
 def _create_map(som: KohonenSOM, values: np.ndarray, title: str, output_file: str,
                 cmap: str, cbar_label: str = None, show_text: list = None):
     """
-    Univerzální funkce pro vykreslení jakékoliv SOM mapy (U-Matrix, Hitmap, atd.).
+    Universal function for rendering any SOM map (U-Matrix, Hitmap, etc.).
     """
     m, n, map_type = som.m, som.n, som.map_type
 
-    fig, ax = plt.subplots(figsize=(n * 1.2, m * 1.2))  # Dynamická velikost
+    fig, ax = plt.subplots(figsize=(n * 1.2, m * 1.2))
     ax.set_aspect('equal')
     ax.axis('off')
 
-    # Výpočet pozic a velikostí
+    # Calculate neuron positions and sizes
     if map_type == 'hex':
         side_len = 0.5
         radius = side_len / np.cos(np.pi / 6)
@@ -40,7 +39,7 @@ def _create_map(som: KohonenSOM, values: np.ndarray, title: str, output_file: st
             for j in range(n):
                 patches.append(Rectangle((j - side_len / 2, i - side_len / 2), side_len, side_len))
 
-    # Vytvoření kolekce patchů s barvami
+    # Create patch collection with colors
     collection = plt.matplotlib.collections.PatchCollection(patches)
     collection.set_array(values.flatten())
     collection.set_cmap(cmap)
@@ -49,7 +48,7 @@ def _create_map(som: KohonenSOM, values: np.ndarray, title: str, output_file: st
 
     ax.autoscale_view()
 
-    # Zobrazení textových hodnot (např. pro Hit Map)
+    # Display text values (e.g., for Hit Map)
     if show_text is not None:
         coords = np.array([p.xy for p in patches])
         for i, txt in enumerate(show_text):
@@ -57,13 +56,13 @@ def _create_map(som: KohonenSOM, values: np.ndarray, title: str, output_file: st
                 ax.text(coords[i, 0], coords[i, 1], str(int(txt)),
                         color='red', ha='center', va='center', weight='bold')
 
-    # Uložení hlavní mapy
+    # Save main map
     plt.title(title, fontsize=20)
     plt.tight_layout()
     plt.savefig(output_file, dpi=150)
     plt.close(fig)
 
-    # Uložení samostatné legendy (colorbar)
+    # Save separate legend (colorbar)
     if cbar_label:
         fig_legend, ax_legend = plt.subplots(figsize=(1.5, 6))
         norm = Normalize(vmin=values.min(), vmax=values.max())
@@ -75,34 +74,30 @@ def _create_map(som: KohonenSOM, values: np.ndarray, title: str, output_file: st
         plt.close(fig_legend)
 
 
-# --- WRAPPER FUNKCE PRO JEDNOTLIVÉ MAPY ---
-
 def generate_u_matrix(som: KohonenSOM, output_file: str):
-    """Vektorizovaný výpočet a vykreslení U-Matrix."""
+    """Vectorized calculation and rendering of U-Matrix."""
     m, n, weights = som.m, som.n, som.weights
     u_matrix = np.zeros((m, n))
 
-    # Vektorizovaný výpočet vzdáleností k sousedům
-    # Vertikální sousedi
+    # Vectorized calculation of neighbor distances
     diffs_v = np.linalg.norm(weights[1:, :, :] - weights[:-1, :, :], axis=2)
     u_matrix[1:, :] += diffs_v
     u_matrix[:-1, :] += diffs_v
-    # Horizontální sousedi
     diffs_h = np.linalg.norm(weights[:, 1:, :] - weights[:, :-1, :], axis=2)
     u_matrix[:, 1:] += diffs_h
     u_matrix[:, :-1] += diffs_h
 
-    # Normalizace počtem sousedů (rohy 2, hrany 3, střed 4)
+    # Normalize by number of neighbors (corners 2, edges 3, center 4)
     counts = np.full((m, n), 4)
     counts[[0, -1], :] -= 1
     counts[:, [0, -1]] -= 1
     u_matrix /= counts
 
-    _create_map(som, u_matrix, "U-Matrix", output_file, cmap='viridis', cbar_label="Průměrná vzdálenost k sousedům")
+    _create_map(som, u_matrix, "U-Matrix", output_file, cmap='viridis', cbar_label="Average distance to neighbors")
 
 
 def generate_hit_map(som: KohonenSOM, normalized_data: np.ndarray, output_file: str):
-    """Vektorizovaný výpočet a vykreslení Hit Mapy."""
+    """Vectorized calculation and rendering of Hit Map."""
     num_neurons = som.m * som.n
     flat_weights = som.weights.reshape(num_neurons, som.dim)
 
@@ -112,77 +107,64 @@ def generate_hit_map(som: KohonenSOM, normalized_data: np.ndarray, output_file: 
     hit_counts = np.bincount(bmu_indices, minlength=num_neurons).reshape(som.m, som.n)
 
     _create_map(som, hit_counts, "Hit Map", output_file, cmap='Blues',
-                cbar_label="Počet přiřazených vzorků", show_text=hit_counts.flatten())
-
-
-def generate_component_planes(som: KohonenSOM, original_df: pd.DataFrame, config: dict, output_dir: str):
-    """Vykreslí komponentní roviny pro všechny numerické sloupce."""
-    numerical_cols = config.get('numerical_column', [])
-    weights_reshaped = som.weights.reshape(som.m, som.n, -1)
-
-    for i, col_name in enumerate(numerical_cols):
-        plane_values = weights_reshaped[:, :, i]
-
-        # De-normalizace hodnot pro lepší interpretaci v legendě
-        col_min = original_df[col_name].min()
-        col_max = original_df[col_name].max()
-        de_normalized_values = plane_values * (col_max - col_min) + col_min
-
-        output_file = os.path.join(output_dir, f"component_{col_name}.png")
-        _create_map(som, de_normalized_values, f"Component Plane: {col_name}", output_file,
-                    cmap='coolwarm', cbar_label=f"Hodnota váhy pro {col_name}")
-
-
-def generate_pie_maps(som: KohonenSOM, config: dict, working_dir: str, output_dir: str):
-    """Vykreslí koláčové mapy pro všechny kategorické sloupce."""
-    # Implementace této funkce je komplexnější, prozatím placeholder
-    print("INFO: Generování koláčových map (TODO)...")
-    pass
+                cbar_label="Number of assigned samples", show_text=hit_counts.flatten())
 
 
 def generate_component_planes(som: KohonenSOM, original_df: pd.DataFrame, config: dict, output_dir: str):
     """
-    Vykreslí komponentní roviny pro VŠECHNY sloupce použité v tréninku.
+    Render component planes for ALL columns used in training.
     """
-    # Získáme seznam všech sloupců, které reálně vstoupily do SOM
-    # (po odstranění primary_id v preprocess.py)
-    # TENTO SEZNAM MUSÍ ODPOVÍDAT POŘADÍ DIMENZÍ V SOM
-    primary_id_col = config.get('primary_id')
-    training_columns = [col for col in original_df.columns if col != primary_id_col]
+    # Get all columns that were actually used for SOM training
+    training_columns = [col for col in original_df.columns]
+    primary_id_col = config.get('primary_id', 'primary_id')
+
+    try:
+        pid_index = training_columns.index(primary_id_col)
+    except ValueError:
+        pid_index = -1
 
     weights_reshaped = som.weights.reshape(som.m, som.n, -1)
 
-    # Ujistíme se, že máme správný počet sloupců
+    # Ensure correct number of columns
     if len(training_columns) != som.dim:
         print(
-            f"WARNING: Počet trénovacích sloupců ({len(training_columns)}) nesouhlasí s dimenzí SOM ({som.dim}). Component planes mohou mít špatné popisky.")
+            f"WARNING: Number of training columns ({len(training_columns)}) does not match SOM dimension ({som.dim}). Component planes may have incorrect labels.")
         training_columns = [f"dim_{i}" for i in range(som.dim)]
 
     for i, col_name in enumerate(training_columns):
+        if i == pid_index:
+            continue
         plane_values = weights_reshaped[:, :, i]
 
-        # De-normalizace hodnot pro lepší interpretaci v legendě (pouze pro numerické sloupce)
+        # Denormalize values for better legend interpretation (only for numerical columns)
         if col_name in config.get('numerical_column', []):
             col_min = original_df[col_name].min()
             col_max = original_df[col_name].max()
             de_normalized_values = plane_values * (col_max - col_min) + col_min
-            cbar_label_text = f"Hodnota váhy pro {col_name}"
+            cbar_label_text = f"Weight value for {col_name}"
         else:
-            # Pro kategorické sloupce zobrazíme normalizované váhy (0-1)
+            # For categorical columns show normalized weights (0-1)
             de_normalized_values = plane_values
-            cbar_label_text = f"Hodnota váhy pro {col_name} (kategorický)"
+            cbar_label_text = f"Weight value for {col_name} (categorical)"
 
         output_file = os.path.join(output_dir, f"component_{col_name}.png")
         _create_map(som, de_normalized_values, f"Component Plane: {col_name}", output_file,
                     cmap='coolwarm', cbar_label=cbar_label_text)
 
 
+def generate_pie_maps(som: KohonenSOM, config: dict, working_dir: str, output_dir: str):
+    """Render pie maps for all categorical columns."""
+    # Placeholder for future implementation
+    print("INFO: Pie map generation (TODO)...")
+    pass
+
+
 def generate_cluster_map(som: KohonenSOM, clusters: dict, output_file: str):
-    """Vykreslí mapu aktivních neuronů (shluků)."""
+    """Render map of active neurons (clusters)."""
     m, n = som.m, som.n
 
-    # Vytvoříme mapu, kde každý aktivní neuron bude mít unikátní celé číslo
-    labels = np.full((m, n), -1, dtype=int)  # -1 pro neaktivní neurony
+    # Create map where each active neuron has a unique integer label
+    labels = np.full((m, n), -1, dtype=int)
     active_neuron_keys = sorted(clusters.keys())
 
     for idx, key in enumerate(active_neuron_keys):
@@ -190,10 +172,9 @@ def generate_cluster_map(som: KohonenSOM, clusters: dict, output_file: str):
         if 0 <= i < m and 0 <= j < n:
             labels[i, j] = idx
 
-    # Vytvoříme diskrétní barevnou mapu
     num_clusters = len(active_neuron_keys)
     if num_clusters == 0:
-        print("WARNING: Žádné aktivní shluky k vykreslení v Cluster Map.")
+        print("WARNING: No active clusters to render in Cluster Map.")
         return
 
     cmap = plt.get_cmap('viridis', num_clusters)
@@ -203,29 +184,22 @@ def generate_cluster_map(som: KohonenSOM, clusters: dict, output_file: str):
 
 def generate_all_maps(som: KohonenSOM, original_df: pd.DataFrame, normalized_data: np.ndarray, config: dict,
                       working_dir: str):
-    """Hlavní orchestrátor pro generování všech map."""
+    """Main orchestrator for generating all maps."""
     maps_dir = os.path.join(working_dir, "visualizations")
     os.makedirs(maps_dir, exist_ok=True)
 
-    print("INFO: Generuji vizualizace map...")
+    print("INFO: Generating visualizations...")
 
-    # 1. U-Matrix
     generate_u_matrix(som, os.path.join(maps_dir, "u_matrix.png"))
-
-    # 2. Hit Map
     generate_hit_map(som, normalized_data, os.path.join(maps_dir, "hit_map.png"))
-
-    # 3. Component Planes (nyní pro všechny sloupce)
     generate_component_planes(som, original_df, config, maps_dir)
 
-    # 4. Cluster Map (přidáno zpět)
     clusters_path = os.path.join(working_dir, "clusters.json")
     if os.path.exists(clusters_path):
         with open(clusters_path, 'r', encoding='utf-8') as f:
             clusters = json.load(f)
         generate_cluster_map(som, clusters, os.path.join(maps_dir, "cluster_map.png"))
 
-    # 5. Pie Maps
     generate_pie_maps(som, config, working_dir, maps_dir)
 
-    print("INFO: Generování map dokončeno.")
+    print("INFO: Map generation completed.")
