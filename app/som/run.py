@@ -86,7 +86,7 @@ def main():
         perform_analysis(som, input_data_df, training_data, config, working_dir)
 
         log_message(working_dir, "SYSTEM", "Generating visualizations")
-        generate_training_plots(som, training_results, config, working_dir)
+        generate_training_plots( training_results, working_dir)
 
         # vizualization.generate_map_plots(som, original_data, normalized_data, working_dir, config['PREPROCESS_INFO'])
 

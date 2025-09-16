@@ -36,8 +36,12 @@ class KohonenSOM:
         self.processing_type = kwargs.get('processing_type', 'hybrid')  # 'stochastic', 'deterministic', 'hybrid'
         self.total_weight_updates = 0
 
-        self.mqe_history = []
-        self.batch_size_history = []
+        self.history = {
+            'mqe': [],
+            'learning_rate': [],
+            'radius': [],
+            'batch_size': []
+        }
         self.best_mqe = float('inf')
 
         self.set_radius()
@@ -165,7 +169,9 @@ class KohonenSOM:
         total_samples = data.shape[0]
         total_iterations = int(total_samples * self.epoch_multiplier)
 
-        mqe_compute_interval = max(1, total_iterations // 500)
+        # mqe_compute_interval = max(1, total_iterations // 500)
+        # print(mqe_compute_interval)
+        mqe_compute_interval = max(10, total_iterations // 20)
 
         if self.processing_type == 'hybrid':
             shuffled_indices = np.random.permutation(total_samples)
@@ -177,6 +183,9 @@ class KohonenSOM:
                                               self.end_learning_rate, self.lr_decay_type)
             current_radius = self.get_decay_value(iteration, total_iterations, self.start_radius, self.end_radius,
                                                   self.radius_decay_type)
+
+            self.history['learning_rate'].append((iteration, current_lr))
+            self.history['radius'].append((iteration, current_radius))
 
             samples_to_process = []
 
@@ -199,7 +208,7 @@ class KohonenSOM:
                     selected_indices.extend(chosen)
 
                 samples_to_process = data[selected_indices]
-                self.batch_size_history.append(len(samples_to_process))
+                self.history['batch_size'].append((iteration, len(samples_to_process)))
 
             if len(samples_to_process) == 0:
                 continue
@@ -215,7 +224,7 @@ class KohonenSOM:
 
             if iteration % mqe_compute_interval == 0 or iteration == total_iterations - 1:
                 _, current_mqe = self.compute_quantization_error(data)
-                self.mqe_history.append((iteration, current_mqe))  # Ukládáme i iteraci pro správný graf
+                self.history['mqe'].append((iteration, current_mqe))
 
                 if current_mqe < self.best_mqe:
                     self.best_mqe = current_mqe
@@ -238,8 +247,7 @@ class KohonenSOM:
             'best_mqe': self.best_mqe,
             'duration': duration,
             'total_weight_updates': self.total_weight_updates,
-            "mqe_history": self.mqe_history,
             "epochs_ran": iteration + 1,
             "converged": converged,
-            "batch_size_history": self.batch_size_history
+            "history": self.history
         }
