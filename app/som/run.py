@@ -6,6 +6,7 @@ import pandas as pd
 from analysis import perform_analysis
 from graphs import generate_training_plots
 from visualization import generate_all_maps
+import numpy as np
 
 from preprocess import validate_input_data, preprocess_data
 from utils import load_configuration, log_message, \
@@ -57,27 +58,24 @@ def main():
                     f"Input data '{args.input}' validated successfully. Shape: {input_data_df.shape}")
 
         # Preprocess and normalize data
-        normalized_output_path, normalized_df, categorical_info = \
-            preprocess_data(input_data_df, config, working_dir)
+        training_data_path, _, ignore_mask = preprocess_data(input_data_df, config, working_dir)
         log_message(working_dir, "SYSTEM", "Data preprocessing completed.")
 
-        log_message(working_dir, "SYSTEM", f"Data preprocessed and normalized. Saved to '{normalized_output_path}'.")
-        log_message(working_dir, "SYSTEM", f"Normalized data shape: {normalized_df.shape}")
+        training_data = np.load(training_data_path)
+        log_message(working_dir, "SYSTEM",
+                    f"Training data loaded from '{training_data_path}'. Shape: {training_data.shape}")
 
         # SOM initialization and training
         log_message(working_dir, "SYSTEM", "Initializing and training SOM...")
-
-        som_params = {**config, 'dim': normalized_df.shape[1]}
+        som_params = {**config, 'dim': training_data.shape[1]}
 
         som = KohonenSOM(**som_params)
 
         # Train SOM
         log_message(working_dir, "SYSTEM", "Starting SOM training...")
-        training_results = som.train(normalized_df.values)
+        training_results = som.train(training_data, ignore_mask=ignore_mask)
         log_message(working_dir, "SYSTEM", f"SOM training completed. Best MQE: {training_results['best_mqe']:.6f}")
-
-        training_data = normalized_df.values
-
+        sys.exit(0)
         # Analysis phase
         log_message(working_dir, "SYSTEM", "Starting analysis phase...")
         perform_analysis(som, input_data_df, training_data, config, working_dir)
