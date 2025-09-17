@@ -67,7 +67,7 @@ The project is extensively documented to guide users and developers. All documen
     *See [`som/RUN.md`](./docs/som/RUN.md) for more details.*
 
 3.  **Find optimal hyperparameters with the Evolutionary Algorithm:**
-    To unleash the full power of the platform, run the `ea.py` script. This will start the multi-objective optimization process.
+    To unleash the full power of the platform, run the `run_ea.py` script. This will start the multi-objective optimization process.
 
     ```bash
     python3 -m ea.ea -i path/to/data.csv -c path/to/ea_config.json
