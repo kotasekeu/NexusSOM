@@ -74,24 +74,53 @@ def _create_map(som: KohonenSOM, values: np.ndarray, title: str, output_file: st
         plt.close(fig_legend)
 
 
+def generate_categorical_legend(categories: dict, cmap_name: str, title: str, output_file: str):
+    """Generates a standalone legend for categorical data."""
+    fig, ax = plt.subplots(figsize=(3, max(2, len(categories) * 0.4)))
+    ax.axis('off')
+
+    cmap = plt.get_cmap(cmap_name)
+    handles = [
+        Patch(facecolor=cmap(i / (len(categories) - 1 if len(categories) > 1 else 1)), label=label)
+        for i, label in enumerate(categories.values())
+    ]
+
+    ax.legend(handles=handles, title=title, loc='center', frameon=False, fontsize='large')
+
+    legend_path = os.path.join(os.path.dirname(output_file), "legends", os.path.basename(output_file))
+    os.makedirs(os.path.dirname(legend_path), exist_ok=True)
+    fig.savefig(legend_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+
 def generate_u_matrix(som: KohonenSOM, output_file: str):
-    """Vectorized calculation and rendering of U-Matrix."""
+    """Calculates and visualizes the U-Matrix, supporting both square and hex grids."""
     m, n, weights = som.m, som.n, som.weights
     u_matrix = np.zeros((m, n))
 
-    # Vectorized calculation of neighbor distances
-    diffs_v = np.linalg.norm(weights[1:, :, :] - weights[:-1, :, :], axis=2)
-    u_matrix[1:, :] += diffs_v
-    u_matrix[:-1, :] += diffs_v
-    diffs_h = np.linalg.norm(weights[:, 1:, :] - weights[:, :-1, :], axis=2)
-    u_matrix[:, 1:] += diffs_h
-    u_matrix[:, :-1] += diffs_h
+    # Iterate over each neuron to calculate its average distance to neighbors
+    for i in range(m):
+        for j in range(n):
+            neuron_weights = weights[i, j]
+            neighbor_distances = []
 
-    # Normalize by number of neighbors (corners 2, edges 3, center 4)
-    counts = np.full((m, n), 4)
-    counts[[0, -1], :] -= 1
-    counts[:, [0, -1]] -= 1
-    u_matrix /= counts
+            # Define neighbors based on map type
+            if som.map_type == 'hex':
+                # Hexagonal neighbors have complex offsets
+                if i % 2 == 0:  # Even rows
+                    neighbors = [(i - 1, j), (i - 1, j + 1), (i, j - 1), (i, j + 1), (i + 1, j), (i + 1, j + 1)]
+                else:  # Odd rows
+                    neighbors = [(i - 1, j - 1), (i - 1, j), (i, j - 1), (i, j + 1), (i + 1, j - 1), (i + 1, j)]
+            else:  # Square neighbors
+                neighbors = [(i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1)]
+
+            # Calculate distances to valid neighbors
+            for ni, nj in neighbors:
+                if 0 <= ni < m and 0 <= nj < n:
+                    neighbor_weights = weights[ni, nj]
+                    neighbor_distances.append(np.linalg.norm(neuron_weights - neighbor_weights))
+
+            if neighbor_distances:
+                u_matrix[i, j] = np.mean(neighbor_distances)
 
     _create_map(som, u_matrix, "U-Matrix", output_file, cmap='viridis', cbar_label="Average distance to neighbors")
 
@@ -152,11 +181,94 @@ def generate_component_planes(som: KohonenSOM, original_df: pd.DataFrame, config
                     cmap='coolwarm', cbar_label=cbar_label_text)
 
 
+def generate_pie_map(som: KohonenSOM, pie_data: dict, output_file: str, cmap_name: str = 'tab20b'):
+    """
+    Visualizes categorical data distribution on the SOM grid using pie charts.
+    """
+    m, n, map_type = som.m, som.n, som.map_type
+
+    fig, ax = plt.subplots(figsize=(n * 1.2, m * 1.2))
+    ax.set_aspect('equal')
+    ax.axis('off')
+
+    if map_type == 'hex':
+        side_len = 0.5;
+        radius = side_len / np.cos(np.pi / 6);
+        dy = 2 * radius * (3 / 4)
+        patches = [RegularPolygon((j * (2 * side_len) + (i % 2) * side_len, i * dy), numVertices=6, radius=radius) for i
+                   in range(m) for j in range(n)]
+    else:  # square
+        side_len = 1.0
+        patches = [Rectangle((j - side_len / 2, i - side_len / 2), side_len, side_len) for i in range(m) for j in
+                   range(n)]
+
+    bg_collection = plt.matplotlib.collections.PatchCollection(patches, facecolor='#f0f0f0', edgecolor='white')
+    ax.add_collection(bg_collection)
+    ax.autoscale_view()
+
+    categories = pie_data['categories']
+    cat_keys = sorted(categories.keys(), key=int)
+    num_categories = len(cat_keys)
+    cmap = plt.get_cmap(cmap_name)
+
+    coords = np.array([p.get_center() if map_type == 'square' else p.xy for p in patches]).reshape(m, n, 2)
+    pie_radius = (coords[0, 1, 0] - coords[0, 0, 0]) * 0.45 if n > 1 else 0.45
+
+    for pos, counts in pie_data['counts'].items():
+        i, j = map(int, pos.split('_'))
+        center_x, center_y = coords[i, j]
+
+        total = sum(counts.values())
+        if total == 0:
+            continue
+
+        angle_start = 90
+        for key in cat_keys:
+            if key in counts:
+                color_idx = cat_keys.index(key)
+
+                angle_width = 360 * (counts[key] / total)
+
+                wedge = Wedge((center_x, center_y), pie_radius,
+                              angle_start, angle_start + angle_width,
+                              facecolor=cmap(color_idx / (num_categories - 1 if num_categories > 1 else 1)),
+                              edgecolor='white',
+                              linewidth=0.5)
+                ax.add_patch(wedge)
+
+                angle_start += angle_width
+
+    plt.title(f"Pie Map: {os.path.basename(output_file).replace('pie_map_', '').replace('.png', '')}", fontsize=20)
+    plt.tight_layout()
+    plt.savefig(output_file, dpi=150)
+    plt.close(fig)
+
+    generate_categorical_legend(
+        categories=categories,
+        cmap_name=cmap_name,
+        title=os.path.basename(output_file).replace('pie_map_', '').replace('.png', ''),
+        output_file=output_file
+    )
+
 def generate_pie_maps(som: KohonenSOM, config: dict, working_dir: str, output_dir: str):
-    """Render pie maps for all categorical columns."""
-    # Placeholder for future implementation
-    print("INFO: Pie map generation (TODO)...")
-    pass
+    """
+    Loads pre-calculated pie data and generates a Pie Map for each categorical column.
+    """
+    categorical_cols = config.get('categorical_column', [])
+    if not categorical_cols:
+        return
+
+    print("INFO: Generating Pie Maps...")
+    for col in categorical_cols:
+        json_path = os.path.join(working_dir, "json", f"pie_data_{col}.json")
+        if os.path.exists(json_path):
+            with open(json_path, 'r', encoding='utf-8') as f:
+                pie_data = json.load(f)
+
+            output_file = os.path.join(output_dir, f"pie_map_{col}.png")
+            generate_pie_map(som, pie_data, output_file)
+        else:
+            print(f"WARNING: Pie data file not found for column '{col}' at '{json_path}'. Skipping Pie Map.")
 
 
 def generate_cluster_map(som: KohonenSOM, clusters: dict, output_file: str):
@@ -177,7 +289,7 @@ def generate_cluster_map(som: KohonenSOM, clusters: dict, output_file: str):
         print("WARNING: No active clusters to render in Cluster Map.")
         return
 
-    cmap = plt.get_cmap('viridis', num_clusters)
+    cmap = plt.get_cmap('tab20', num_clusters)
 
     _create_map(som, labels, "Cluster Map", output_file, cmap=cmap)
 
@@ -203,23 +315,25 @@ def generate_individual_maps(som: KohonenSOM, normalized_data: np.ndarray,
 
 
 def generate_all_maps(som: KohonenSOM, original_df: pd.DataFrame, normalized_data: np.ndarray, config: dict,
-                      working_dir: str):
+                      mask: np.ndarray, output_dir: str):
     """Main orchestrator for generating all maps."""
-    maps_dir = os.path.join(working_dir, "visualizations")
+    maps_dir = os.path.join(output_dir, "visualizations")
     os.makedirs(maps_dir, exist_ok=True)
 
     print("INFO: Generating visualizations...")
+
+    generate_individual_maps(som, normalized_data, mask, output_dir)
 
     generate_u_matrix(som, os.path.join(maps_dir, "u_matrix.png"))
     generate_hit_map(som, normalized_data, os.path.join(maps_dir, "hit_map.png"))
     generate_component_planes(som, original_df, config, maps_dir)
 
-    clusters_path = os.path.join(working_dir, "clusters.json")
+    clusters_path = os.path.join(output_dir, "clusters.json")
     if os.path.exists(clusters_path):
         with open(clusters_path, 'r', encoding='utf-8') as f:
             clusters = json.load(f)
         generate_cluster_map(som, clusters, os.path.join(maps_dir, "cluster_map.png"))
 
-    generate_pie_maps(som, config, working_dir, maps_dir)
+    generate_pie_maps(som, config, output_dir, maps_dir)
 
     print("INFO: Map generation completed.")

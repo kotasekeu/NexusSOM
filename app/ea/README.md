@@ -28,7 +28,11 @@ NSGA-II is a state-of-the-art algorithm chosen for its efficiency and proven abi
 
 ## ✨ Key Features
 
-*   **Multi-Objective Optimization:** Concurrently optimizes for **Quantization Error** and **Training Time**.
+*   **Multi-Objective Optimization:** Concurrently optimizes for four key metrics:
+    1.  **Quantization Error** (data fidelity)
+    2.  **Topographic Error** (topological correctness)
+    3.  **Training Time** (performance)
+    4.  **Inactive Neuron Ratio** (map efficiency)
 *   **Pareto Front Output:** Delivers a set of optimal, non-dominated solutions instead of a single, biased "winner".
 *   **Efficient Parallel Processing:** Utilizes multiple CPU cores to evaluate the population in parallel. The data loading and preprocessing are performed only once to minimize I/O overhead and memory consumption.
 *   **Diversity Preservation:** Implements *Crowding Distance* to ensure that the solutions on the Pareto front are well-distributed and cover a wide range of trade-offs.
@@ -42,9 +46,11 @@ NSGA-II is a state-of-the-art algorithm chosen for its efficiency and proven abi
 The evolutionary process follows these main steps in each generation:
 
 1.  **Initialization:** An initial population of random, valid configurations is generated based on the `SEARCH_SPACE` defined in the configuration file.
-2.  **Evaluation:** Each individual (configuration) in the population is used to train a SOM. The two objective values are recorded:
-    *   `final_mqe`: The final mean quantization error after training.
-    *   `training_duration`: The total wall-clock time for the training process.
+2.  **Evaluation:** Each individual (configuration) in the population is used to train a SOM. Four objective values are recorded to assess the quality and efficiency of the resulting map:
+    *   `best_mqe`: The best (lowest) mean quantization error achieved during training, measuring data fidelity.
+    *   `duration`: The total wall-clock time for the training process, measuring performance.
+    *   `topographic_error`: The percentage of data points for which the first and second best matching units are not adjacent, measuring topological correctness.
+    *   `inactive_neuron_ratio`: The proportion of neurons that never won for any data point, measuring map size efficiency.
 3.  **Selection (NSGA-II Core):** This is the heart of the algorithm, combining the current population with the best solutions found so far (the archive).
     *   **Non-Dominated Sorting:** The combined population is ranked into several fronts. The first front (rank 0) contains the best, non-dominated solutions (the current Pareto Front).
     *   **Crowding Distance Assignment:** To maintain diversity, a crowding score is calculated for each individual. Solutions in less populated regions of the objective space are preferred, preventing convergence to a single point.

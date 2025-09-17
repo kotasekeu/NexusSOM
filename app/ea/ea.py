@@ -15,11 +15,6 @@ from datetime import datetime
 from sklearn.datasets import make_blobs
 from multiprocessing import Pool, cpu_count
 
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
-
 from som.preprocess import validate_input_data, preprocess_data
 from som.som import KohonenSOM
 from som.graphs import generate_training_plots
@@ -672,7 +667,11 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
         raise e
 
 
-if __name__ == "__main__":
+def main():
+    global WORKING_DIR
+    global ARCHIVE
+    global INPUT_FILE
+
     parser = argparse.ArgumentParser(description='Evolutionary optimization of the SOM algorithm')
     parser.add_argument('-i', '--input', help='Path to the input CSV file')
     parser.add_argument('-c', '--config', help='Path to a custom configuration file (JSON)')
@@ -708,3 +707,6 @@ if __name__ == "__main__":
     ARCHIVE = []
 
     run_evolution(config, loaded_data, ignore_mask)
+
+if __name__ == "__main__":
+    main()

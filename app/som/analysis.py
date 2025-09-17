@@ -144,6 +144,7 @@ def _detect_extremes(df_assigned: pd.DataFrame, numerical_cols: list, primary_id
 def perform_analysis(som: KohonenSOM, original_df: pd.DataFrame, normalized_data: np.ndarray, config: dict,
                      working_dir: str):
     print("INFO: Starting organized data analysis...")
+    json_dir = os.path.join(working_dir, "json")
 
     primary_id_col = config.get('primary_id', 'primary_id')
     numerical_cols = config.get('numerical_column', [])
@@ -155,16 +156,16 @@ def perform_analysis(som: KohonenSOM, original_df: pd.DataFrame, normalized_data
 
     df_assigned, clusters = _get_bmu_assignments(som, normalized_data, original_df, primary_id_col)
 
-    clusters_path = os.path.join(working_dir, "clusters.json")
+    clusters_path = os.path.join(json_dir, "clusters.json")
     with open(clusters_path, 'w', encoding='utf-8') as f:
         json.dump(clusters, f, indent=2, ensure_ascii=False)
     print(f"INFO: Cluster mapping saved to '{clusters_path}'")
 
-    _save_quantization_errors(som, normalized_data, working_dir)
+    _save_quantization_errors(som, normalized_data, json_dir)
 
     extremes_data = _detect_extremes(df_assigned, numerical_cols, primary_id_col, std_threshold)
 
-    extremes_path = os.path.join(working_dir, "extremes.json")
+    extremes_path = os.path.join(json_dir, "extremes.json")
     with open(extremes_path, 'w', encoding='utf-8') as f:
         json.dump(extremes_data, f, indent=2, ensure_ascii=False)
     print(f"INFO: Extremes analysis saved to '{extremes_path}'")
@@ -173,7 +174,7 @@ def perform_analysis(som: KohonenSOM, original_df: pd.DataFrame, normalized_data
     if categorical_cols:
         pie_map_data = _prepare_pie_map_data(df_assigned, categorical_cols)
         for col, data in pie_map_data.items():
-            pie_data_path = os.path.join(working_dir, f"pie_data_{col}.json")
+            pie_data_path = os.path.join(json_dir, f"pie_data_{col}.json")
             with open(pie_data_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
         print(f"INFO: Pie map data saved.")

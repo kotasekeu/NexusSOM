@@ -5,11 +5,6 @@ from datetime import datetime
 import pandas as pd
 import numpy as np
 
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
-
 from som.analysis import perform_analysis
 from som.graphs import generate_training_plots
 from som.visualization import generate_all_maps
@@ -70,6 +65,7 @@ def main():
 
         # SOM initialization and training
         log_message(working_dir, "SYSTEM", "Initializing and training SOM...")
+
         som_params = {**config, 'dim': training_data.shape[1]}
 
         som = KohonenSOM(**som_params)
@@ -92,7 +88,7 @@ def main():
 
         # Generate all SOM visualizations
         log_message(working_dir, "SYSTEM", "Generating SOM visualizations...")
-        generate_all_maps(som, input_data_df, training_data, config, working_dir)
+        generate_all_maps(som, input_data_df, training_data, config, ignore_mask, working_dir)
         log_message(working_dir, "SYSTEM", "SOM visualizations generated.")
 
         log_message(working_dir, "SYSTEM", "SOM analysis finished successfully.")

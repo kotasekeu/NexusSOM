@@ -1,34 +1,45 @@
 CONFIG = {
     "EA_SETTINGS": {
-        "population_size": 10,
-        "generations": 5,
-        "sample_size": 1000,
-        "input_dim": 10,
+        "population_size": 20,
+        "generations": 30
     },
-
     "SEARCH_SPACE": {
-        "map_size": [(10, 10), (15, 15), (20, 20), (25, 25), (30, 30)],
-        "start_learning_rate": [0.99, 0.9, 0.8, 0.7, 0.6, 0.5],
-        "end_learning_rate": [0.5, 0.4, 0.3, 0.2, 0.1, 0.075, 0.05, 0.01],
-        "lr_decay_type": ["linear-drop", "exp-drop"],
-
-        "start_radius_init_ratio": [1, 0.5, 0.25],
-        "end_radius": [2, 1, 0.5],
-        "radius_decay_type": ["linear-drop", "exp-drop"],
-
-        "start_batch_percent": [0.1, 0.2, 0.3, 0.4, 0.5, 1.0, 2.0, 5.0],
-        "end_batch_percent": [1.0, 2.0, 5.0, 7.5, 10.0, 15.0],
-        "batch_growth_type": ["exp-growth", "linear-growth"],
-
-        "epoch_multiplier": [0.5, 1.0, 2.0, 5.0],
+        "map_size": [
+            (8, 8),
+            (10, 10),
+            (15, 15)
+        ],
+        "processing_type": ["stochastic", "deterministic", "hybrid"],
+        "start_learning_rate": [0.9, 0.8, 0.7, 0.6, 0.5],
+        "end_learning_rate": [0.2, 0.1, 0.05, 0.01],
+        "lr_decay_type": ["linear-drop", "exp-drop", "log-drop", "step-down"],
+        "start_radius_init_ratio": [1.0, 0.75, 0.5, 0.25, 0.1],
+        "radius_decay_type": ["linear-drop", "exp-drop", "log-drop", "step-down"],
+        "start_batch_percent": [0.025, 0.5, 1.0, 5.0, 10.0],
+        "end_batch_percent": [3.0, 5.0, 7.5, 10.0, 15.0],
+        "batch_growth_type": ["linear-growth", "exp-growth", "log-growth"],
+        "epoch_multiplier": [5.0, 10.0, 15.0],
         "normalize_weights_flag": [False, True],
-        "growth_g": [5.0, 15.0, 30.0, 50.0]
+        "growth_g": [1.0, 5.0, 15.0, 25.0, 35.0],
+        "num_batches": [1, 3, 5, 10, 20],
+        "map_type": ["hex", "square"]
     },
-
     "FIXED_PARAMS": {
+        "end_radius": 1.0,
         "random_seed": 42,
-        "map_type": "square",
-        "num_batches": 10,
-        "max_epochs_without_improvement": 25
+        "mqe_evaluations_per_run": 500,
+        "max_epochs_without_improvement": 50,
+        "early_stopping_window": 5
+    },
+    "PREPROCES_DATA": {
+        "delimiter": ",",
+        "categorical_threshold_numeric": 30,
+        "categorical_threshold_text": 30,
+        "noise_threshold_ratio": 0.2,
+        "primary_id": "primary_id"
+    },
+    "DATA_PARAMS": {
+        "sample_size": 1000,
+        "niput_dim": 10
     }
 }

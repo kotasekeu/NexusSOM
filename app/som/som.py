@@ -42,6 +42,7 @@ class KohonenSOM:
 
         self.m = map_width
         self.n = map_height
+        self.set_radius()
 
         self.dim = kwargs.get('dim', 3)
 
@@ -57,7 +58,6 @@ class KohonenSOM:
         }
         self.best_mqe = float('inf')
 
-        self.set_radius()
         self.weights = np.random.rand(self.m, self.n, self.dim)
 
         if self.random_seed is not None:
