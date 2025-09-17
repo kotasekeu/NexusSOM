@@ -218,25 +218,39 @@ def generate_pie_map(som: KohonenSOM, pie_data: dict, output_file: str, cmap_nam
         i, j = map(int, pos.split('_'))
         center_x, center_y = coords[i, j]
 
-        total = sum(counts.values())
-        if total == 0:
+        valid_counts = {k: v for k, v in counts.items() if v > 0}
+
+        if not valid_counts:
             continue
 
-        angle_start = 90
-        for key in cat_keys:
-            if key in counts:
-                color_idx = cat_keys.index(key)
+        total = sum(valid_counts.values())
 
-                angle_width = 360 * (counts[key] / total)
+        if len(valid_counts) == 1:
+            key = list(valid_counts.keys())[0]
+            color_idx = cat_keys.index(key)
+            color = cmap(color_idx / (num_categories - 1 if num_categories > 1 else 1))
 
-                wedge = Wedge((center_x, center_y), pie_radius,
-                              angle_start, angle_start + angle_width,
-                              facecolor=cmap(color_idx / (num_categories - 1 if num_categories > 1 else 1)),
-                              edgecolor='white',
-                              linewidth=0.5)
-                ax.add_patch(wedge)
+            circle = Circle((center_x, center_y), pie_radius,
+                            facecolor=color,
+                            edgecolor='white',
+                            linewidth=0.5)
+            ax.add_patch(circle)
 
-                angle_start += angle_width
+        else:
+            angle_start = 90
+            for key in cat_keys:
+                if key in valid_counts:
+                    angle_end = angle_start + 360 * (valid_counts[key] / total)
+                    color_idx = cat_keys.index(key)
+                    color = cmap(color_idx / (num_categories - 1 if num_categories > 1 else 1))
+
+                    wedge = Wedge((center_x, center_y), pie_radius,
+                                  angle_start, angle_end,
+                                  facecolor=color,
+                                  edgecolor='white',
+                                  linewidth=0.5)
+                    ax.add_patch(wedge)
+                    angle_start = angle_end
 
     plt.title(f"Pie Map: {os.path.basename(output_file).replace('pie_map_', '').replace('.png', '')}", fontsize=20)
     plt.tight_layout()

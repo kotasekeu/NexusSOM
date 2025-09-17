@@ -72,7 +72,7 @@ The project is extensively documented to guide users and developers. All documen
     ```bash
     python3 -m ea.ea -i path/to/data.csv -c path/to/ea_config.json
     ```
-    *See [`ea/RUN.md`](./docs/ea/RUN.md) for more details.*
+    *See [`/ea/RUN.md`](./docs/ea/RUN.md) for more details.*
 
 ---
 
