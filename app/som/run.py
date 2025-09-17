@@ -3,15 +3,20 @@ import os
 import sys
 from datetime import datetime
 import pandas as pd
-from analysis import perform_analysis
-from graphs import generate_training_plots
-from visualization import generate_all_maps
 import numpy as np
 
-from preprocess import validate_input_data, preprocess_data
-from utils import load_configuration, log_message, \
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+from som.analysis import perform_analysis
+from som.graphs import generate_training_plots
+from som.visualization import generate_all_maps
+from som.preprocess import validate_input_data, preprocess_data
+from som.utils import load_configuration, log_message, \
     get_working_directory
-from som import KohonenSOM
+from som.som import KohonenSOM
 
 def main():
     # Parse command-line arguments for input, config, and output paths

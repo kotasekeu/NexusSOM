@@ -14,6 +14,12 @@ import sys
 from datetime import datetime
 from sklearn.datasets import make_blobs
 from multiprocessing import Pool, cpu_count
+
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 from som.preprocess import validate_input_data, preprocess_data
 from som.som import KohonenSOM
 from som.graphs import generate_training_plots
@@ -197,7 +203,13 @@ def log_pareto_front(generation: int, search_space: dict):
             qe = results['best_mqe']
             te = results.get('topographic_error', -1)
             duration = results['training_duration']
-            f.write(f"UID: {uid} | QE: {qe:.6f} | TE: {te:.4f} | Time: {duration:.2f}s\n")
+
+            um_mean = results.get('u_matrix_mean', -1)
+            um_std = results.get('u_matrix_std', -1)
+
+            f.write(f"UID: {uid}\n")
+            f.write(f"  - Objectives: QE={qe:.6f}, TE={te:.4f}, Time={duration:.2f}s\n")
+            f.write(f"  - U-Matrix:   Mean={um_mean:.4f}, Std={um_std:.4f}\n")
 
             # Print only parameters from the search space
             search_params = {k: v for k, v in config.items() if k in search_space}
@@ -362,7 +374,8 @@ def run_evolution(ea_config: dict, data: np.ndarray, ignore_mask: np.ndarray) ->
                 [
                     res['best_mqe'],
                     res['duration'],
-                    res.get('topographic_error', 1.0)  # Default to 1.0 (bad) if not present
+                    res.get('topographic_error', 1.0),
+                    res.get('dead_neuron_ratio', 1.0)
                 ]
                 for cfg, res in combined_population
             ])
@@ -464,7 +477,7 @@ def log_result_to_csv(config: dict, results: dict) -> None:
 
     file_exists = os.path.isfile(csv_path)
     base_fields = ['uid', 'best_mqe', 'duration', 'topographic_error',
-                   'u_matrix_mean', 'u_matrix_std', 'total_weight_updates']
+                   'u_matrix_mean', 'u_matrix_std', 'total_weight_updates', 'epochs_ran', 'dead_neuron_count', 'dead_neuron_ratio']
     with open(csv_path, mode="a", newline="") as f:
         row = {'uid': uid}
         for key in base_fields[1:]:
@@ -613,20 +626,10 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
 
         som_params = {**ind, **fixed_params}
 
-        map_width, map_height = som_params['map_size']
-        som_params['m'] = map_width
-        som_params['n'] = map_height
-
-        if 'start_radius_init_ratio' in som_params:
-            som_params['start_radius'] = max(map_width, map_height) * som_params['start_radius_init_ratio']
-            som_params.pop('start_radius_init_ratio')
-
         som_params.pop('sample_size', None)
         som_params.pop('input_dim', None)
-        som_params.pop('map_size', None)
 
         som = KohonenSOM(dim=data.shape[1], **som_params)
-
 
         training_results = som.train(data, ignore_mask=ignore_mask, working_dir=individual_dir)
 
@@ -640,7 +643,11 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
 
         training_results['training_duration'] = training_results.get('duration', None)
 
-        log_message(uid, f"Evaluated – QE: {training_results['best_mqe']:.6f}, TE: {topographic_error:.4f}, Time: {training_results['duration']:.2f}s")
+        dead_count, dead_ratio = som.calculate_dead_neurons(data)
+        training_results['dead_neuron_count'] = dead_count
+        training_results['dead_neuron_ratio'] = dead_ratio
+
+        log_message(uid, f"Evaluated – QE: {training_results['best_mqe']:.6f}, TE: {topographic_error:.4f}, Dead ratio: {dead_ratio:.2%}, Time: {training_results['duration']:.2f}s")
         log_result_to_csv(ind, training_results)
 
         log_status_to_csv(uid, population_id, generation, "completed", 

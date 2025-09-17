@@ -6,7 +6,7 @@ import math
 from datetime import datetime
 from tqdm import tqdm
 import os
-from .utils import log_message
+from som.utils import log_message
 from collections import deque
 
 class KohonenSOM:
@@ -66,8 +66,8 @@ class KohonenSOM:
         # Precompute neuron coordinates for distance calculations
         self.neuron_coords = np.indices((self.m, self.n)).transpose(1, 2, 0)
 
-        self.early_stopping_window = kwargs.get('early_stopping_window', 5)
-        self.early_stopping_patience = kwargs.get('max_epochs_without_improvement', 25)
+        self.early_stopping_window = kwargs.get('early_stopping_window', 50000)  # FIXME For now is this feature disabled
+        self.early_stopping_patience = kwargs.get('max_epochs_without_improvement', 50000) # FIXME For now is this feature disabled
         self.mqe_evaluations_per_run = kwargs.get('mqe_evaluations_per_run', 20)
 
         if self.map_type == 'hex':
@@ -80,10 +80,7 @@ class KohonenSOM:
             self.cube_coords = np.stack([x, y, z], axis=-1)
 
     def _get_neighbors(self, i: int, j: int) -> list[tuple[int, int]]:
-        """Pomocná metoda pro získání sousedů neuronu."""
         neighbors = []
-        # Jednoduchá verze pro oba typy map (vždy 4-8 sousedů)
-        # Pro přesné hexa sousedy by to bylo složitější, ale toto stačí.
         for di in [-1, 0, 1]:
             for dj in [-1, 0, 1]:
                 if di == 0 and dj == 0:
@@ -92,6 +89,26 @@ class KohonenSOM:
                 if 0 <= ni < self.m and 0 <= nj < self.n:
                     neighbors.append((ni, nj))
         return neighbors
+
+    def calculate_dead_neurons(self, data: np.ndarray) -> tuple[int, float]:
+        """
+        Calculates the number and percentage of dead neurons (neurons that never won).
+        """
+        num_neurons = self.m * self.n
+        if data.shape[0] == 0:
+            return num_neurons, 1.0  # If no data, all neurons are dead
+
+        flat_weights = self.weights.reshape(num_neurons, self.dim)
+
+        dists = np.linalg.norm(data[:, np.newaxis, :] - flat_weights[np.newaxis, :, :], axis=2)
+        bmu_indices = np.argmin(dists, axis=1)
+
+        hit_counts = np.bincount(bmu_indices, minlength=num_neurons)
+
+        dead_neuron_count = np.count_nonzero(hit_counts == 0)
+        dead_neuron_ratio = dead_neuron_count / num_neurons
+
+        return dead_neuron_count, dead_neuron_ratio
 
     def calculate_topographic_error(self, data: np.ndarray, mask: np.ndarray = None) -> float:
         """
@@ -122,13 +139,9 @@ class KohonenSOM:
         return error_count / data.shape[0]
 
     def calculate_u_matrix_metrics(self) -> dict:
-        """
-        Vypočítá metriky z U-Matrix (průměr a rozptyl).
-        """
         m, n, weights = self.m, self.n, self.weights
         u_matrix = np.zeros((m, n))
 
-        # Vektorizovaný výpočet (stejný jako ve visualization.py)
         diffs_v = np.linalg.norm(weights[1:, :, :] - weights[:-1, :, :], axis=2)
         u_matrix[1:, :] += diffs_v
         u_matrix[:-1, :] += diffs_v
@@ -275,7 +288,6 @@ class KohonenSOM:
 
         self.mqe_history = []
         self.best_mqe = float('inf')
-        epochs_without_improvement = 0
         converged = False
         self.total_weight_updates = 0
 

@@ -6,7 +6,7 @@ import pandas as pd
 import json
 from matplotlib.patches import Rectangle, RegularPolygon, Wedge, Circle, Patch
 from matplotlib.colors import Normalize, ListedColormap
-from .som import KohonenSOM
+from som.som import KohonenSOM
 
 
 # Central drawing function for SOM maps
@@ -195,10 +195,11 @@ def generate_distance_map(som: KohonenSOM, normalized_data: np.ndarray,
 def generate_individual_maps(som: KohonenSOM, normalized_data: np.ndarray,
                              mask: np.ndarray, output_dir: str):
 
-    os.makedirs(output_dir, exist_ok=True)
+    maps_dir = os.path.join(output_dir, "visualizations")
+    os.makedirs(maps_dir, exist_ok=True)
 
-    generate_u_matrix(som, os.path.join(output_dir, "u_matrix.png"))
-    generate_distance_map(som, normalized_data, mask, os.path.join(output_dir, "distance_map.png"))
+    generate_u_matrix(som, os.path.join(maps_dir, "u_matrix.png"))
+    generate_distance_map(som, normalized_data, mask, os.path.join(maps_dir, "distance_map.png"))
 
 
 def generate_all_maps(som: KohonenSOM, original_df: pd.DataFrame, normalized_data: np.ndarray, config: dict,
