@@ -318,6 +318,29 @@ def generate_distance_map(som: KohonenSOM, normalized_data: np.ndarray,
                     cmap='magma', cbar_label="Quantization Error")
 
 
+def generate_dead_neurons_map(som: KohonenSOM, normalized_data: np.ndarray, output_file: str):
+    """
+    Generates a map showing dead (inactive) neurons.
+    Dead neurons are those that have not been assigned any data samples (hit count = 0).
+    Uses binary colormap: black for dead neurons, white for active neurons.
+    """
+    num_neurons = som.m * som.n
+    flat_weights = som.weights.reshape(num_neurons, som.dim)
+
+    # Vectorized calculation of BMUs (same as in generate_hit_map)
+    dists = np.linalg.norm(normalized_data[:, np.newaxis, :] - flat_weights[np.newaxis, :, :], axis=2)
+    bmu_indices = np.argmin(dists, axis=1)
+
+    # Count hits per neuron
+    hit_counts = np.bincount(bmu_indices, minlength=num_neurons).reshape(som.m, som.n)
+
+    # Create binary map: 0 = dead (black), 1 = active (white)
+    activity_map = (hit_counts > 0).astype(float)
+
+    _create_map(som, activity_map, "Dead Neurons Map", output_file,
+                cmap='binary', cbar_label="Neuron activity (0=dead, 1=active)")
+
+
 def generate_individual_maps(som: KohonenSOM, normalized_data: np.ndarray,
                              mask: np.ndarray, output_dir: str):
 
@@ -326,6 +349,7 @@ def generate_individual_maps(som: KohonenSOM, normalized_data: np.ndarray,
 
     generate_u_matrix(som, os.path.join(maps_dir, "u_matrix.png"))
     generate_distance_map(som, normalized_data, mask, os.path.join(maps_dir, "distance_map.png"))
+    generate_dead_neurons_map(som, normalized_data, os.path.join(maps_dir, "dead_neurons_map.png"))
 
 
 def generate_all_maps(som: KohonenSOM, original_df: pd.DataFrame, normalized_data: np.ndarray, config: dict,
