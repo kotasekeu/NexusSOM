@@ -10,6 +10,7 @@ import hashlib
 import time
 import pandas as pd
 import sys
+import multiprocessing
 
 from datetime import datetime
 from sklearn.datasets import make_blobs
@@ -345,8 +346,8 @@ def run_evolution(ea_config: dict, data: np.ndarray, ignore_mask: np.ndarray) ->
 
             # Population evaluation (parallel)
             with Pool(processes=min(12, cpu_count(), population_size)) as pool:
-                args = [(ind, i, gen, fixed_params, data, ignore_mask) for i, ind in enumerate(population)]
-                results_async = [pool.apply_async(evaluate_individual, arg) for arg in args]
+                args_list = [(ind, i, gen, fixed_params, data, ignore_mask, WORKING_DIR) for i, ind in enumerate(population)]
+                results_async = [pool.apply_async(evaluate_individual, args=arg) for arg in args_list]
                 evaluated_population = []
                 for r in results_async:
                     try:
@@ -452,22 +453,26 @@ def get_uid(config: dict) -> str:
     config_str = str(sorted(config.items()))
     return hashlib.md5(config_str.encode()).hexdigest()
 
-def log_message(uid: str, message: str) -> None:
+def log_message(uid: str, message: str, working_dir: str = None) -> None:
     """
     Log a message to the log file.
     """
-    global WORKING_DIR
-    log_path = os.path.join(WORKING_DIR, "log.txt")
+    if working_dir is None:
+        global WORKING_DIR
+        working_dir = WORKING_DIR
+    log_path = os.path.join(working_dir, "log.txt")
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with open(log_path, "a") as f:
         f.write(f"[{now}] [{uid}] {message}\n")
 
-def log_result_to_csv(config: dict, results: dict) -> None:
+def log_result_to_csv(config: dict, results: dict, working_dir: str = None) -> None:
     """
     Log evaluation results to a CSV file.
     """
-    global WORKING_DIR
-    csv_path = os.path.join(WORKING_DIR, "results.csv")
+    if working_dir is None:
+        global WORKING_DIR
+        working_dir = WORKING_DIR
+    csv_path = os.path.join(working_dir, "results.csv")
     uid = results['uid']
 
     file_exists = os.path.isfile(csv_path)
@@ -518,13 +523,15 @@ def get_or_generate_data(sample_size: int, input_dim: int) -> np.ndarray:
     log_message("SYSTEM", f"Generated new data: {file_name}")
     return data
 
-def log_status_to_csv(uid: str, population_id: int, generation: int, status: str, 
-                     start_time: str = None, end_time: str = None) -> None:
+def log_status_to_csv(uid: str, population_id: int, generation: int, status: str,
+                     start_time: str = None, end_time: str = None, working_dir: str = None) -> None:
     """
     Log the status of an individual's evaluation to a CSV file.
     """
-    global WORKING_DIR
-    csv_path = os.path.join(WORKING_DIR, "status.csv")
+    if working_dir is None:
+        global WORKING_DIR
+        working_dir = WORKING_DIR
+    csv_path = os.path.join(working_dir, "status.csv")
     write_header = not os.path.exists(csv_path) or os.path.getsize(csv_path) == 0
 
     with open(csv_path, mode="a", newline="") as f:
@@ -593,7 +600,7 @@ def extract_uid_from_path(file_path: str) -> str:
 
 def evaluate_individual(ind: dict, population_id: int, generation: int,
                         fixed_params: dict, data: np.ndarray,
-                        ignore_mask: np.ndarray) -> tuple:
+                        ignore_mask: np.ndarray, working_dir: str) -> tuple:
     """
     Evaluate a single individual (configuration) for SOM training.
 
@@ -602,21 +609,22 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
         population_id: Index in population.
         generation: Current generation number.
         fixed_params: Fixed parameters for SOM.
-        data_config: Data generation parameters.
+        data: Training data array.
+        ignore_mask: Mask for ignored features.
+        working_dir: Working directory path.
 
     Returns:
         Tuple of (training_results, configuration).
     """
     start_time = time.monotonic()
     uid = get_uid(ind)
-    
+
     try:
         print(f"[GEN {generation + 1}] Total RAM used: {psutil.virtual_memory().used // (1024 ** 2)} MB")
-        log_status_to_csv(uid, population_id, generation, "started", 
-                         datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        log_status_to_csv(uid, population_id, generation, "started",
+                         start_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"), working_dir=working_dir)
 
-        global WORKING_DIR
-        individual_dir = os.path.join(WORKING_DIR, "individuals", uid)
+        individual_dir = os.path.join(working_dir, "individuals", uid)
         os.makedirs(individual_dir, exist_ok=True)
 
         som_params = {**ind, **fixed_params}
@@ -642,12 +650,12 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
         training_results['dead_neuron_count'] = dead_count
         training_results['dead_neuron_ratio'] = dead_ratio
 
-        log_message(uid, f"Evaluated – QE: {training_results['best_mqe']:.6f}, TE: {topographic_error:.4f}, Dead ratio: {dead_ratio:.2%}, Time: {training_results['duration']:.2f}s")
-        log_result_to_csv(ind, training_results)
+        log_message(uid, f"Evaluated – QE: {training_results['best_mqe']:.6f}, TE: {topographic_error:.4f}, Dead ratio: {dead_ratio:.2%}, Time: {training_results['duration']:.2f}s", working_dir)
+        log_result_to_csv(ind, training_results, working_dir)
 
-        log_status_to_csv(uid, population_id, generation, "completed", 
-                         datetime.fromtimestamp(start_time).strftime("%Y-%m-%d %H:%M:%S"),
-                         datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        log_status_to_csv(uid, population_id, generation, "completed",
+                         start_time=datetime.fromtimestamp(start_time).strftime("%Y-%m-%d %H:%M:%S"),
+                         end_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"), working_dir=working_dir)
 
         generate_training_plots(training_results, individual_dir)
 
@@ -657,13 +665,13 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
 
     except Exception as e:
         import traceback
-        log_message(uid, f"ERROR during evaluation: {e}")
-        log_message(uid, f"Full traceback:\n{traceback.format_exc()}")
+        log_message(uid, f"ERROR during evaluation: {e}", working_dir)
+        log_message(uid, f"Full traceback:\n{traceback.format_exc()}", working_dir)
 
-        log_status_to_csv(uid, population_id, generation, "failed", 
-                         datetime.fromtimestamp(start_time).strftime("%Y-%m-%d %H:%M:%S"),
-                         datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-        log_message(uid, f"Error during evaluation: {str(e)}")
+        log_status_to_csv(uid, population_id, generation, "failed",
+                         start_time=datetime.fromtimestamp(start_time).strftime("%Y-%m-%d %H:%M:%S"),
+                         end_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"), working_dir=working_dir)
+        log_message(uid, f"Error during evaluation: {str(e)}", working_dir)
         raise e
 
 
@@ -710,3 +718,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+    multiprocessing.resource_tracker.ensure_running()
