@@ -338,7 +338,7 @@ def generate_all_maps(som: KohonenSOM, original_df: pd.DataFrame, normalized_dat
 
     generate_individual_maps(som, normalized_data, mask, output_dir)
 
-    # generate_u_matrix(som, os.path.join(maps_dir, "u_matr   ix.png"))
+    # generate_u_matrix(som, os.path.join(maps_dir, "u_matrix.png"))
     generate_hit_map(som, normalized_data, os.path.join(maps_dir, "hit_map.png"))
     generate_component_planes(som, original_df, config, maps_dir)
 

@@ -63,3 +63,4 @@ htmlcov/
 kohonen-log.txt
 /app/ea/ea-config.json
 /app/test/
+/.claude/
