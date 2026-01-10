@@ -1,0 +1,99 @@
+================================================================================
+                    SOM QUALITY ANALYZER - INSTALLATION
+================================================================================
+
+⚠️  YOUR SYSTEM: Python 3.14.0
+⚠️  REQUIRED: Python 3.9 - 3.12 (TensorFlow limitation)
+
+================================================================================
+                        QUICK INSTALL GUIDE
+================================================================================
+
+STEP 1: Install Python 3.12
+----------------------------
+Choose one method:
+
+Method A - Homebrew (Easiest):
+    brew install python@3.12
+
+Method B - pyenv (Best for managing multiple versions):
+    brew install pyenv
+    pyenv install 3.12.0
+    pyenv local 3.12.0
+
+Method C - Download from python.org:
+    https://www.python.org/downloads/
+
+
+STEP 2: Create Virtual Environment
+-----------------------------------
+    python3.12 -m venv venv
+    source venv/bin/activate
+
+
+STEP 3: Install Dependencies
+-----------------------------
+    pip install -r requirements.txt
+
+
+STEP 4: Verify Installation
+----------------------------
+    python --version          # Should show 3.12.x
+    python -c "import tensorflow as tf; print(tf.__version__)"
+
+
+================================================================================
+                        ALTERNATIVE: USE CONDA
+================================================================================
+
+If you prefer Conda:
+
+    conda create -n som_analyzer python=3.12
+    conda activate som_analyzer
+    pip install -r requirements.txt
+
+
+================================================================================
+                        QUICK START AFTER INSTALL
+================================================================================
+
+    # Activate environment
+    source venv/bin/activate
+
+    # Or use the convenience script (auto-activates)
+    ./run.sh validate    # Check your data
+    ./run.sh prepare     # Prepare dataset
+    ./run.sh train       # Train model
+
+
+================================================================================
+                        MANUAL USAGE (without run.sh)
+================================================================================
+
+    source venv/bin/activate
+    python src/validate_data.py
+    python src/prepare_data.py
+    python src/train.py --model lite --epochs 50
+
+
+================================================================================
+                        TROUBLESHOOTING
+================================================================================
+
+Problem: "No module named tensorflow"
+Solution: Make sure venv is activated: source venv/bin/activate
+
+Problem: "Could not find tensorflow version"
+Solution: Your Python is too new. Install Python 3.12.
+
+Problem: Out of memory during training
+Solution: Reduce batch size: python src/train.py --batch-size 8
+
+
+================================================================================
+
+For detailed setup instructions, see: SETUP.md
+For usage guide, see: QUICKSTART.md
+For full documentation, see: README.md
+
+================================================================================

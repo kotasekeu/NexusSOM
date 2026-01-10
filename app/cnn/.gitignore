@@ -1,0 +1,116 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.conda/
+.venv/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# PyCharm
+.idea/
+
+# VS Code
+.vscode/
+
+# Spyder
+.spyderproject
+.spyproject
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Linux
+*~
+
+# Logs and databases
+*.log
+*.sql
+*.sqlite
+
+# Training logs
+logs/
+tensorboard_logs/
+
+# Trained models (keep structure, ignore large model files)
+models/*.keras
+models/*.h5
+models/*.pb
+models/*.ckpt*
+models/*.weights*
+
+# Keep directory structure
+!models/.gitkeep
+
+# Data files (usually too large for git)
+data/raw_maps/*.png
+data/results.csv
+data/processed/*.csv
+
+# Keep directory structure
+!data/raw_maps/.gitkeep
+!data/processed/.gitkeep
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+.cache/
+
+
+# Test coverage
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Output files
+predictions.csv
+*.csv
+!data/processed/.gitkeep
+
+# Editor artifacts
+*.swp
+*.swo
+*~
