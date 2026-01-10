@@ -11,6 +11,10 @@ import time
 import pandas as pd
 import sys
 import multiprocessing
+import shutil
+
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from datetime import datetime
 from sklearn.datasets import make_blobs
@@ -598,6 +602,34 @@ def extract_uid_from_path(file_path: str) -> str:
             return part
     return None
 
+
+def copy_maps_to_dataset(uid: str, individual_dir: str, working_dir: str) -> None:
+    """
+    Copy generated maps (u_matrix, distance_map, dead_neurons_map) to centralized dataset directory.
+    This creates a dataset for CNN training.
+
+    Args:
+        uid: Unique identifier for the individual
+        individual_dir: Directory containing the individual's visualizations
+        working_dir: Working directory for the EA run
+    """
+    maps_dataset_dir = os.path.join(working_dir, "maps_dataset")
+    os.makedirs(maps_dataset_dir, exist_ok=True)
+
+    # List of maps to copy
+    map_files = ["u_matrix.png", "distance_map.png", "dead_neurons_map.png"]
+
+    source_dir = os.path.join(individual_dir, "visualizations")
+
+    for map_file in map_files:
+        source_path = os.path.join(source_dir, map_file)
+        if os.path.exists(source_path):
+            # Create filename with UID prefix for uniqueness
+            dest_filename = f"{uid}_{map_file}"
+            dest_path = os.path.join(maps_dataset_dir, dest_filename)
+            shutil.copy2(source_path, dest_path)
+
+
 def evaluate_individual(ind: dict, population_id: int, generation: int,
                         fixed_params: dict, data: np.ndarray,
                         ignore_mask: np.ndarray, working_dir: str) -> tuple:
@@ -661,6 +693,9 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
 
         generate_individual_maps(som, data, ignore_mask, individual_dir)
 
+        # Copy maps to centralized dataset for CNN training
+        copy_maps_to_dataset(uid, individual_dir, working_dir)
+
         return (training_results, copy.deepcopy(ind))
 
     except Exception as e:
@@ -673,6 +708,68 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
                          end_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"), working_dir=working_dir)
         log_message(uid, f"Error during evaluation: {str(e)}", working_dir)
         raise e
+
+
+def combine_maps_to_rgb(working_dir: str) -> None:
+    """
+    Combine three individual maps (U-Matrix, Distance Map, Dead Neurons Map) into a single RGB image.
+    This function runs after EA completes and processes all maps in maps_dataset directory.
+
+    RGB Channel mapping:
+        - R (Red): U-Matrix (topological structure)
+        - G (Green): Distance Map (quantization error)
+        - B (Blue): Dead Neurons Map (neuron activity)
+
+    Args:
+        working_dir: Working directory containing maps_dataset folder
+    """
+    from PIL import Image
+
+    maps_dataset_dir = os.path.join(working_dir, "maps_dataset")
+    rgb_output_dir = os.path.join(maps_dataset_dir, "rgb")
+    os.makedirs(rgb_output_dir, exist_ok=True)
+
+    # Find all unique UIDs by looking for u_matrix files
+    u_matrix_files = [f for f in os.listdir(maps_dataset_dir) if f.endswith('_u_matrix.png')]
+
+    print(f"INFO: Combining {len(u_matrix_files)} map sets into RGB images...")
+
+    for u_matrix_file in u_matrix_files:
+        # Extract UID from filename
+        uid = u_matrix_file.replace('_u_matrix.png', '')
+
+        # Construct paths to all three maps
+        u_matrix_path = os.path.join(maps_dataset_dir, f"{uid}_u_matrix.png")
+        distance_map_path = os.path.join(maps_dataset_dir, f"{uid}_distance_map.png")
+        dead_neurons_path = os.path.join(maps_dataset_dir, f"{uid}_dead_neurons_map.png")
+
+        # Check if all three maps exist
+        if not all(os.path.exists(p) for p in [u_matrix_path, distance_map_path, dead_neurons_path]):
+            print(f"WARNING: Missing maps for UID {uid}, skipping...")
+            continue
+
+        try:
+            # Load images as grayscale
+            u_matrix_img = Image.open(u_matrix_path).convert('L')
+            distance_map_img = Image.open(distance_map_path).convert('L')
+            dead_neurons_img = Image.open(dead_neurons_path).convert('L')
+
+            # Verify all images have the same size
+            if not (u_matrix_img.size == distance_map_img.size == dead_neurons_img.size):
+                print(f"WARNING: Map size mismatch for UID {uid}, skipping...")
+                continue
+
+            # Combine into RGB image
+            rgb_image = Image.merge('RGB', (u_matrix_img, distance_map_img, dead_neurons_img))
+
+            # Save RGB image
+            rgb_output_path = os.path.join(rgb_output_dir, f"{uid}_rgb.png")
+            rgb_image.save(rgb_output_path)
+
+        except Exception as e:
+            print(f"ERROR: Failed to create RGB image for UID {uid}: {str(e)}")
+
+    print(f"INFO: RGB image generation completed. Saved to {rgb_output_dir}")
 
 
 def main():
@@ -715,6 +812,10 @@ def main():
     ARCHIVE = []
 
     run_evolution(config, loaded_data, ignore_mask)
+
+    # Combine individual maps into RGB images for CNN training
+    print("\nINFO: Generating RGB images from individual maps...")
+    combine_maps_to_rgb(WORKING_DIR)
 
 if __name__ == "__main__":
     main()

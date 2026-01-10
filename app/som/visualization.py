@@ -11,9 +11,12 @@ from som.som import KohonenSOM
 
 # Central drawing function for SOM maps
 def _create_map(som: KohonenSOM, values: np.ndarray, title: str, output_file: str,
-                cmap: str, cbar_label: str = None, show_text: list = None):
+                cmap: str, cbar_label: str = None, show_text: list = None, show_title: bool = True):
     """
     Universal function for rendering any SOM map (U-Matrix, Hitmap, etc.).
+
+    Args:
+        show_title: If True, display title above the map. Set to False for CNN training data.
     """
     m, n, map_type = som.m, som.n, som.map_type
 
@@ -57,7 +60,8 @@ def _create_map(som: KohonenSOM, values: np.ndarray, title: str, output_file: st
                         color='red', ha='center', va='center', weight='bold')
 
     # Save main map
-    plt.title(title, fontsize=20)
+    if show_title:
+        plt.title(title, fontsize=20)
     plt.tight_layout()
     plt.savefig(output_file, dpi=150)
     plt.close(fig)
@@ -92,7 +96,7 @@ def generate_categorical_legend(categories: dict, cmap_name: str, title: str, ou
     fig.savefig(legend_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
 
-def generate_u_matrix(som: KohonenSOM, output_file: str):
+def generate_u_matrix(som: KohonenSOM, output_file: str, show_title: bool = True):
     """Calculates and visualizes the U-Matrix, supporting both square and hex grids."""
     m, n, weights = som.m, som.n, som.weights
     u_matrix = np.zeros((m, n))
@@ -122,7 +126,8 @@ def generate_u_matrix(som: KohonenSOM, output_file: str):
             if neighbor_distances:
                 u_matrix[i, j] = np.mean(neighbor_distances)
 
-    _create_map(som, u_matrix, "U-Matrix", output_file, cmap='viridis', cbar_label="Average distance to neighbors")
+    _create_map(som, u_matrix, "U-Matrix", output_file, cmap='viridis',
+                cbar_label="Average distance to neighbors", show_title=show_title)
 
 
 def generate_hit_map(som: KohonenSOM, normalized_data: np.ndarray, output_file: str):
@@ -309,16 +314,16 @@ def generate_cluster_map(som: KohonenSOM, clusters: dict, output_file: str):
 
 
 def generate_distance_map(som: KohonenSOM, normalized_data: np.ndarray,
-                          mask: np.ndarray, output_file: str):
+                          mask: np.ndarray, output_file: str, show_title: bool = True):
 
     neuron_error_map, _ = som.compute_quantization_error(normalized_data, mask=mask)
 
     if neuron_error_map is not None:
         _create_map(som, neuron_error_map, "Distance Map (Neuron QE)", output_file,
-                    cmap='magma', cbar_label="Quantization Error")
+                    cmap='magma', cbar_label="Quantization Error", show_title=show_title)
 
 
-def generate_dead_neurons_map(som: KohonenSOM, normalized_data: np.ndarray, output_file: str):
+def generate_dead_neurons_map(som: KohonenSOM, normalized_data: np.ndarray, output_file: str, show_title: bool = True):
     """
     Generates a map showing dead (inactive) neurons.
     Dead neurons are those that have not been assigned any data samples (hit count = 0).
@@ -338,18 +343,22 @@ def generate_dead_neurons_map(som: KohonenSOM, normalized_data: np.ndarray, outp
     activity_map = (hit_counts > 0).astype(float)
 
     _create_map(som, activity_map, "Dead Neurons Map", output_file,
-                cmap='binary', cbar_label="Neuron activity (0=dead, 1=active)")
+                cmap='binary', cbar_label="Neuron activity (0=dead, 1=active)", show_title=show_title)
 
 
 def generate_individual_maps(som: KohonenSOM, normalized_data: np.ndarray,
                              mask: np.ndarray, output_dir: str):
-
+    """
+    Generate individual maps (U-Matrix, Distance Map, Dead Neurons Map) for EA runs.
+    Maps are generated WITHOUT titles to be suitable for CNN training.
+    """
     maps_dir = os.path.join(output_dir, "visualizations")
     os.makedirs(maps_dir, exist_ok=True)
 
-    generate_u_matrix(som, os.path.join(maps_dir, "u_matrix.png"))
-    generate_distance_map(som, normalized_data, mask, os.path.join(maps_dir, "distance_map.png"))
-    generate_dead_neurons_map(som, normalized_data, os.path.join(maps_dir, "dead_neurons_map.png"))
+    # Generate maps without titles for CNN compatibility
+    generate_u_matrix(som, os.path.join(maps_dir, "u_matrix.png"), show_title=False)
+    generate_distance_map(som, normalized_data, mask, os.path.join(maps_dir, "distance_map.png"), show_title=False)
+    generate_dead_neurons_map(som, normalized_data, os.path.join(maps_dir, "dead_neurons_map.png"), show_title=False)
 
 
 def generate_all_maps(som: KohonenSOM, original_df: pd.DataFrame, normalized_data: np.ndarray, config: dict,
