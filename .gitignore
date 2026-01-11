@@ -59,7 +59,6 @@ htmlcov/
 *.secret
 *.env.local
 *.env.*
-/var/*
 kohonen-log.txt
 /app/ea/ea-config.json
 /app/test/

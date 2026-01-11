@@ -18,79 +18,73 @@
 
 ## 📋 Implementační kroky
 
-### **FÁZE 1: Příprava datového pipeline** 🔧
+### **FÁZE 1: Příprava datového pipeline** ✅ HOTOVO
 
-#### ✅ Krok 1.1: Generování mapy neaktivních neuronů
-- [ ] Implementovat metodu v `app/som/visualization.py`
-  - Metoda: `generate_dead_neurons_map(som, data, output_path)`
-  - Vstup: SOM objekt, trénovací data
-  - Výstup: PNG s vizualizací neaktivních neuronů (bílá=aktivní, černá=neaktivní)
-- [ ] Integrovat do `generate_individual_maps()` v `visualization.py`
-- [ ] Test: Vygenerovat mapu pro testovací SOM
+#### ✅ Krok 1.1: Generování mapy neaktivních neuronů - HOTOVO
+- [x] Implementovat metodu v `app/som/visualization.py`
+  - Metoda: `generate_dead_neurons_map(som, data, output_path)` ✅
+  - Vstup: SOM objekt, trénovací data ✅
+  - Výstup: PNG s vizualizací mrtvých neuronů (černá=mrtvé, bílá=aktivní) ✅
+- [x] Integrovat do `generate_individual_maps()` v `visualization.py` ✅
+- [x] Test: Vygenerováno úspěšně na testovacím SOM ✅
+- [x] BONUS: Přidán parametr `show_title=False` pro mapy bez titulků (CNN kompatibilita) ✅
 
-#### ✅ Krok 1.2: Centralizované ukládání map
-- [ ] Upravit `app/ea/ea.py` - funkce `evaluate_individual()`
-  - Vytvořit sdílený adresář: `WORKING_DIR/maps/`
-  - Pro každý UID vytvořit: `{uid}_umatrix.png`, `{uid}_distance.png`, `{uid}_dead.png`
-- [ ] Upravit `app/som/visualization.py` - funkce `generate_individual_maps()`
-  - Přidat parametr `central_map_dir`
-  - Kopírovat mapy do centrálního adresáře
-  - Standardizovat pojmenování souborů
-- [ ] Test: Spustit EA s 3 jedinci, zkontrolovat `maps/` složku
+#### ✅ Krok 1.2: Centralizované ukládání map - HOTOVO
+- [x] Upravit `app/ea/ea.py` - funkce `copy_maps_to_dataset()` ✅
+  - Vytvořen sdílený adresář: `WORKING_DIR/maps_dataset/` ✅
+  - Pro každý UID zkopírováno: `{uid}_u_matrix.png`, `{uid}_distance_map.png`, `{uid}_dead_neurons_map.png` ✅
+- [x] Integrace do `evaluate_individual()` - automatické kopírování po generování map ✅
+- [x] Test: EA vygenerovalo 35 jedinců, všechny mapy v `maps_dataset/` ✅
+- [x] BONUS: Opravena sys.path manipulace pro EA ✅
 
-#### ✅ Krok 1.3: Generování vícekanálových obrázků
-- [ ] Vytvořit nový modul: `app/som/multichannel.py`
-  - Funkce: `create_multichannel_image(uid, maps_dir, output_dir)`
-  - Vstup: 3 PNG soubory (U-Matrix, Distance, Dead Neurons)
-  - Výstup: Jeden PNG se 3 kanály (RGB)
-    - R kanál: U-Matrix (normalizováno)
-    - G kanál: Distance Map (normalizováno)
-    - B kanál: Dead Neurons Map (normalizováno)
-  - Všechny mapy resize na 224x224
-- [ ] Integrovat do EA po dokončení generace
-- [ ] Test: Vytvořit vícekanálový obrázek z 3 existujících map
+#### ✅ Krok 1.3: Generování vícekanálových obrázků - HOTOVO
+- [x] Vytvořena funkce `combine_maps_to_rgb()` v `app/ea/ea.py` ✅
+  - Vstup: 3 PNG soubory (U-Matrix, Distance, Dead Neurons) ✅
+  - Výstup: RGB PNG se 3 kanály ✅
+    - R kanál: U-Matrix ✅
+    - G kanál: Distance Map ✅
+    - B kanál: Dead Neurons Map ✅
+  - Zachovány původní rozměry (bez resize - resize bude v CNN prepare_data.py) ✅
+- [x] Integrováno do EA po dokončení evoluce ✅
+- [x] RGB obrázky uloženy v `maps_dataset/rgb/` ✅
+- [x] Test: 35 RGB obrázků úspěšně vygenerováno ✅
 
-#### ✅ Krok 1.4: Rozšíření results.csv
-- [ ] Upravit `app/ea/ea.py` - funkce `log_result_to_csv()`
-  - Přidat všechny SOM hyperparametry do CSV:
-    - `map_size_x`, `map_size_y`
-    - `start_learning_rate`, `end_learning_rate`, `lr_decay_type`
-    - `start_radius_init_ratio`, `end_radius`, `radius_decay_type`
-    - `start_batch_percent`, `end_batch_percent`, `batch_growth_type`
-    - `epoch_multiplier`, `normalize_weights_flag`, `growth_g`
-    - `processing_type`, `num_batches`
-  - Zachovat stávající metriky: `best_mqe`, `topographic_error`, `dead_neuron_ratio`
-- [ ] Přidat sloupec `multichannel_image_path`: cesta k vícekanálovému obrázku
-- [ ] Test: Zkontrolovat CSV po běhu EA
+#### ⏭️ Krok 1.4: Rozšíření results.csv - PŘESKOČENO
+- [x] Results.csv již obsahuje všechny potřebné SOM hyperparametry ✅
+  - UID, metriky (best_mqe, topographic_error, dead_neuron_ratio) ✅
+  - Všechny hyperparametry (map_size, learning_rate, radius, batch, epoch_multiplier, atd.) ✅
+- [x] CNN adaptováno pro čtení existujícího formátu ✅
 
 ---
 
-### **FÁZE 2: Adaptace CNN modelu** 🧠
+### **FÁZE 2: Adaptace CNN modelu** 🔄 PROBÍHÁ
 
-#### ✅ Krok 2.1: Úprava CNN pro 3-kanálové vstupy
-- [ ] Upravit `app/cnn/src/model.py`
-  - Input shape už je (224, 224, 3) ✓ (to je v pořádku)
-  - Ověřit, že model správně zpracovává RGB kanály
+#### ✅ Krok 2.1: Úprava prepare_data.py - HOTOVO
+- [x] Přepsán `app/cnn/src/prepare_data.py` pro práci s EA run directories ✅
+  - Funkce `collect_ea_runs()`: skenování adresářů s EA běhy ✅
+  - Funkce `prepare_dataset_from_runs()`: kombinování dat z více běhů ✅
+  - Změna: `inactive_neuron_ratio` → `dead_neuron_ratio` ✅
+  - Argparse pro flexibilní příkazovou řádku: `--runs-dir`, `--output` ✅
+- [x] Dataset obsahuje: filepath (RGB PNG), quality_score, uid, run_dir ✅
+- [x] Quality score vzorec:
+  ```python
+  # Váhy: 50% MQE, 30% TE, 20% Dead Neuron Ratio
+  quality_score = 0.5 * (1 - norm_mqe) +
+                  0.3 * (1 - norm_te) +
+                  0.2 * (1 - norm_dead)
+  ```
+- [x] Test: Úspěšně vygenerováno 36 vzorků z 1 EA běhu ✅
+- [x] Quality scores v rozsahu 0.12 - 0.90 (dobrá distribuce) ✅
+
+#### 🔄 Krok 2.2: Model už podporuje RGB - K OVĚŘENÍ
+- [ ] `app/cnn/src/model.py` už má input shape (224, 224, 3) ✓
+- [ ] Ověřit kompatibilitu s RGB obrázky
 - [ ] Přidat dokumentaci k modelu: význam kanálů (R=U-Matrix, G=Distance, B=Dead)
 
-#### ✅ Krok 2.2: Adaptace prepare_data.py pro nový results.csv
-- [ ] Upravit `app/cnn/src/prepare_data.py`
-  - Načítat nový formát `results.csv` s hyperparametry
-  - Sloupec `multichannel_image_path` místo samostatných UID
-  - Upravit výpočet `quality_score`:
-    ```python
-    # Váhy: 40% MQE, 30% TE, 30% Dead Neuron Ratio
-    quality_score = 0.4 * (1 - norm_mqe) +
-                    0.3 * (1 - norm_te) +
-                    0.3 * (1 - norm_dead_ratio)
-    ```
-  - Generovat `dataset.csv` s: `filepath` (multichannel image), `quality_score`
-- [ ] Test: Připravit dataset z výstupů EA
-
-#### ✅ Krok 2.3: Ověření CNN pipeline
-- [ ] Zkontrolovat `app/cnn/src/train.py` - bez úprav (pouze ověřit kompatibilitu)
+#### 🔄 Krok 2.3: Ověření CNN pipeline - K PROVEDENÍ
+- [ ] Zkontrolovat `app/cnn/src/train.py` - ověřit že načítá RGB správně
 - [ ] Zkontrolovat `app/cnn/src/predict.py` - přidat možnost analyzovat celý adresář map
-- [ ] Test: Načíst vícekanálový obrázek v CNNu
+- [ ] Test: Spustit trénování na malém datasetu (36 vzorků)
 
 ---
 
@@ -242,33 +236,39 @@
 ```
 app/
 ├── ea/
-│   ├── ea.py                      # ✏️ Upraveno: multichannel maps, CNN integration
-│   └── run_campaign.py            # 🆕 Nový: hromadné spouštění EA
+│   ├── ea.py                      # ✅ Upraveno: RGB kombinování, copy_maps_to_dataset(), combine_maps_to_rgb()
+│   └── run_campaign.py            # 🔜 Plánováno: hromadné spouštění EA
 ├── som/
-│   ├── visualization.py           # ✏️ Upraveno: dead neurons map, centrální ukládání
-│   └── multichannel.py            # 🆕 Nový: generování vícekanálových obrázků
+│   ├── visualization.py           # ✅ Upraveno: generate_dead_neurons_map(), show_title parameter
+│   └── multichannel.py            # ⏭️ Nepotřebné (RGB kombinování už v ea.py)
 ├── cnn/
 │   ├── src/
 │   │   ├── model.py               # ✅ Beze změn (už podporuje 3 kanály)
-│   │   └── prepare_data.py        # ✏️ Upraveno: nový results.csv formát
+│   │   ├── prepare_data.py        # ✅ Upraveno: nový formát s EA runs, dead_neuron_ratio
+│   │   ├── train.py               # 🔄 K ověření: RGB loading
+│   │   └── predict.py             # 🔜 K úpravě: batch prediction
 │   └── data/
-│       ├── raw_maps/              # ← Vícekanálové obrázky z EA
-│       └── results.csv            # ← Rozšířený formát
-├── integration/                   # 🆕 Nová složka
+│       └── processed/
+│           └── dataset.csv        # ✅ Vygenerován s RGB filepaths a quality scores
+├── integration/                   # 🔜 Plánováno (Fáze 5)
 │   ├── __init__.py
-│   ├── cnn_evaluator.py           # 🆕 CNN wrapper pro EA
-│   └── adaptive_ea.py             # 🆕 Adaptivní EA logika
+│   ├── cnn_evaluator.py           # 🔜 CNN wrapper pro EA
+│   └── adaptive_ea.py             # 🔜 Adaptivní EA logika
 └── test/
-    └── ea-test-config.json        # 🆕 Konfigurace pro testy
+    ├── results/                   # ✅ EA výsledky
+    │   └── TIMESTAMP/
+    │       ├── maps_dataset/      # ✅ Centrální adresář map
+    │       │   ├── {uid}_u_matrix.png
+    │       │   ├── {uid}_distance_map.png
+    │       │   ├── {uid}_dead_neurons_map.png
+    │       │   └── rgb/           # ✅ RGB kombinované mapy
+    │       │       └── {uid}_rgb.png
+    │       ├── individuals/       # ✅ Detaily jednotlivců
+    │       └── results.csv        # ✅ S hyperparametry a metrikami
+    └── ea-iris-config.json        # ✅ Testovací konfigurace
 
-results/
-├── TIMESTAMP/
-│   ├── maps/                      # 🆕 Centrální adresář vícekanálových map
-│   │   ├── {uid}_multichannel.png
-│   │   └── ...
-│   ├── individuals/               # ✅ Stávající (detaily jednotlivců)
-│   └── results.csv                # ✏️ Rozšířený formát
-└── campaign_TIMESTAMP/            # 🆕 Výsledky velké kampaně
+results/                           # 🔜 Pro velké kampaně
+└── campaign_TIMESTAMP/
     ├── dataset_01/
     ├── dataset_02/
     └── ...
