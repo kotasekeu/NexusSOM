@@ -339,12 +339,12 @@ def generate_distance_map(som: KohonenSOM, normalized_data: np.ndarray,
     neuron_error_map, _ = som.compute_quantization_error(normalized_data, mask=mask)
 
     if neuron_error_map is not None:
-        # Use viridis colormap with fixed [0, 1.0] normalization
+        # Use magma colormap with fixed [0, 1.0] normalization
         # Good SOMs should have distance map values in [0, 1] range
         # Values > 1.0 indicate poor organization and trigger EA penalty
         _create_map(som, neuron_error_map, "Distance Map (Neuron QE)", output_file,
-                    cmap='viridis', cbar_label="Quantization Error", show_title=show_title,
-                    fixed_norm=True, vmax=1.0)
+                    cmap='magma', cbar_label="Quantization Error", show_title=show_title,
+                    fixed_norm=True, vmax=1.0)        
 
 
 def generate_dead_neurons_map(som: KohonenSOM, normalized_data: np.ndarray, output_file: str, show_title: bool = True):

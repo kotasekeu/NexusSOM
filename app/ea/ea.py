@@ -515,10 +515,20 @@ def run_evolution(ea_config: dict, data: np.ndarray, ignore_mask: np.ndarray) ->
     except Exception as e:
         print(f"\nFatal error during execution of the evolutionary algorithm: {str(e)}")
 
-    # Print deduplication statistics
-    total_requested = EVALUATION_STATS['total_requested']
-    new_evaluations = EVALUATION_STATS['new_evaluations']
-    cache_hits = EVALUATION_STATS['cache_hits']
+    # Calculate deduplication statistics from results.csv
+    # (Can't use EVALUATION_STATS due to multiprocessing - globals not shared between processes)
+    csv_path = os.path.join(WORKING_DIR, "results.csv")
+    try:
+        import pandas as pd
+        df = pd.read_csv(csv_path)
+        new_evaluations = len(df)  # Unique UIDs in results.csv
+        total_requested = population_size * generations  # Total individual evaluations requested
+        cache_hits = total_requested - new_evaluations  # Duplicates skipped
+    except Exception as e:
+        # Fallback to empty stats if file doesn't exist
+        total_requested = 0
+        new_evaluations = 0
+        cache_hits = 0
 
     print("Evolution completed.")
     print(f"Deduplication stats: {new_evaluations} unique configurations evaluated, {cache_hits} duplicates skipped (from {total_requested} total requests)")
@@ -557,7 +567,8 @@ def log_result_to_csv(config: dict, results: dict, working_dir: str = None) -> N
 
     file_exists = os.path.isfile(csv_path)
     base_fields = ['uid', 'best_mqe', 'duration', 'topographic_error',
-                   'u_matrix_mean', 'u_matrix_std', 'total_weight_updates', 'epochs_ran', 'dead_neuron_count', 'dead_neuron_ratio']
+                   'u_matrix_mean', 'u_matrix_std', 'u_matrix_max', 'distance_map_max',
+                   'total_weight_updates', 'epochs_ran', 'dead_neuron_count', 'dead_neuron_ratio']
     with open(csv_path, mode="a", newline="") as f:
         row = {'uid': uid}
         for key in base_fields[1:]:

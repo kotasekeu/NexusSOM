@@ -63,3 +63,6 @@ kohonen-log.txt
 /app/ea/ea-config.json
 /app/test/
 /.claude/
+/app/venv_tf/
+/app/logs/
+/app/models/

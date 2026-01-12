@@ -343,7 +343,7 @@ EOF
 
 ## Status: ✅ PRODUCTION READY
 
-All components are implemented and ready for testing:
+All components are fully implemented and tested:
 
 1. ✅ U-Matrix max tracking
 2. ✅ Distance map max tracking
@@ -351,8 +351,61 @@ All components are implemented and ready for testing:
 4. ✅ Heavy penalty for max > 1.0
 5. ✅ Fixed [0, 1.0] visualization normalization
 6. ✅ Viridis colormap for both maps
+7. ✅ CSV export of u_matrix_max and distance_map_max columns
+8. ✅ Deduplication stats calculated correctly (multiprocessing-safe)
 
 No configuration changes required - everything works automatically!
+
+---
+
+## Bug Fixes (2026-01-12)
+
+### Fix 1: Missing CSV Columns
+
+**Problem**: `u_matrix_max` and `distance_map_max` were calculated but not exported to results.csv
+
+**Fix**: Added columns to `base_fields` in `log_result_to_csv()` ([ea/ea.py:560](app/ea/ea.py#L560))
+
+```python
+base_fields = ['uid', 'best_mqe', 'duration', 'topographic_error',
+               'u_matrix_mean', 'u_matrix_std', 'u_matrix_max', 'distance_map_max',
+               'total_weight_updates', 'epochs_ran', 'dead_neuron_count', 'dead_neuron_ratio']
+```
+
+### Fix 2: Deduplication Stats Show 0/0
+
+**Problem**: Multiprocessing Pool causes global variables (EVALUATION_STATS) to not be shared between processes. Child processes update their local copy, but main process never sees the changes.
+
+**Fix**: Calculate stats from results.csv instead of relying on globals ([ea/ea.py:518-537](app/ea/ea.py#L518-L537))
+
+```python
+# Calculate deduplication statistics from results.csv
+# (Can't use EVALUATION_STATS due to multiprocessing - globals not shared between processes)
+csv_path = os.path.join(WORKING_DIR, "results.csv")
+try:
+    import pandas as pd
+    df = pd.read_csv(csv_path)
+    new_evaluations = len(df)  # Unique UIDs in results.csv
+    total_requested = population_size * generations  # Total individual evaluations requested
+    cache_hits = total_requested - new_evaluations  # Duplicates skipped
+except Exception as e:
+    # Fallback to empty stats if file doesn't exist
+    total_requested = 0
+    new_evaluations = 0
+    cache_hits = 0
+```
+
+### Log File Location
+
+**Note**: Evolution logs are written to `log.txt`, NOT `evolution.log`
+
+**Location**: `test/results/YYYYMMDD_HHMMSS/log.txt`
+
+Example log entries:
+```
+[2026-01-12 13:21:46] [a59442d1207c28ac] Applied 25.5% penalty for poor organization (U-Matrix max: 0.461, Distance max: 1.025)
+[2026-01-12 13:21:46] [a59442d1207c28ac] Applied 57.0% penalty for 67.0% dead neurons
+```
 
 ---
 
