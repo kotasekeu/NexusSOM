@@ -156,7 +156,8 @@ class KohonenSOM:
 
         return {
             'u_matrix_mean': np.mean(u_matrix),
-            'u_matrix_std': np.std(u_matrix)
+            'u_matrix_std': np.std(u_matrix),
+            'u_matrix_max': np.max(u_matrix)
         }
 
     def normalize_weights(self) -> None:

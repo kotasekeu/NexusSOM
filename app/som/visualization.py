@@ -11,12 +11,15 @@ from som.som import KohonenSOM
 
 # Central drawing function for SOM maps
 def _create_map(som: KohonenSOM, values: np.ndarray, title: str, output_file: str,
-                cmap: str, cbar_label: str = None, show_text: list = None, show_title: bool = True):
+                cmap: str, cbar_label: str = None, show_text: list = None, show_title: bool = True,
+                fixed_norm: bool = False, vmax: float = None):
     """
     Universal function for rendering any SOM map (U-Matrix, Hitmap, etc.).
 
     Args:
         show_title: If True, display title above the map. Set to False for CNN training data.
+        fixed_norm: If True, normalize to [0, vmax] for consistent visualization across all maps.
+        vmax: Maximum value for fixed normalization. If None, uses values.max().
     """
     m, n, map_type = som.m, som.n, som.map_type
 
@@ -46,6 +49,12 @@ def _create_map(som: KohonenSOM, values: np.ndarray, title: str, output_file: st
     collection = plt.matplotlib.collections.PatchCollection(patches)
     collection.set_array(values.flatten())
     collection.set_cmap(cmap)
+
+    # Apply fixed normalization if requested (black=0, white=vmax)
+    if fixed_norm:
+        max_val = vmax if vmax is not None else values.max()
+        collection.set_clim(vmin=0, vmax=max_val)
+
     collection.set_edgecolor('white')
     ax.add_collection(collection)
 
@@ -69,7 +78,14 @@ def _create_map(som: KohonenSOM, values: np.ndarray, title: str, output_file: st
     # Save separate legend (colorbar)
     if cbar_label:
         fig_legend, ax_legend = plt.subplots(figsize=(1.5, 6))
-        norm = Normalize(vmin=values.min(), vmax=values.max())
+
+        # Use fixed normalization if requested, otherwise use min/max
+        if fixed_norm:
+            max_val = vmax if vmax is not None else values.max()
+            norm = Normalize(vmin=0, vmax=max_val)
+        else:
+            norm = Normalize(vmin=values.min(), vmax=values.max())
+
         cbar = plt.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=cmap), cax=ax_legend,
                             orientation='vertical', label=cbar_label)
         legend_path = os.path.join(os.path.dirname(output_file), "legends", os.path.basename(output_file))
@@ -126,8 +142,12 @@ def generate_u_matrix(som: KohonenSOM, output_file: str, show_title: bool = True
             if neighbor_distances:
                 u_matrix[i, j] = np.mean(neighbor_distances)
 
+    # Use viridis colormap with fixed [0, 1.0] normalization
+    # Good SOMs should have U-Matrix values in [0, 1] range
+    # Values > 1.0 indicate poor organization and trigger EA penalty
     _create_map(som, u_matrix, "U-Matrix", output_file, cmap='viridis',
-                cbar_label="Average distance to neighbors", show_title=show_title)
+                cbar_label="Average distance to neighbors", show_title=show_title,
+                fixed_norm=True, vmax=1.0)
 
 
 def generate_hit_map(som: KohonenSOM, normalized_data: np.ndarray, output_file: str):
@@ -319,8 +339,12 @@ def generate_distance_map(som: KohonenSOM, normalized_data: np.ndarray,
     neuron_error_map, _ = som.compute_quantization_error(normalized_data, mask=mask)
 
     if neuron_error_map is not None:
+        # Use viridis colormap with fixed [0, 1.0] normalization
+        # Good SOMs should have distance map values in [0, 1] range
+        # Values > 1.0 indicate poor organization and trigger EA penalty
         _create_map(som, neuron_error_map, "Distance Map (Neuron QE)", output_file,
-                    cmap='magma', cbar_label="Quantization Error", show_title=show_title)
+                    cmap='viridis', cbar_label="Quantization Error", show_title=show_title,
+                    fixed_norm=True, vmax=1.0)
 
 
 def generate_dead_neurons_map(som: KohonenSOM, normalized_data: np.ndarray, output_file: str, show_title: bool = True):

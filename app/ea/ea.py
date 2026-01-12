@@ -778,7 +778,41 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
         training_results['dead_neuron_count'] = dead_count
         training_results['dead_neuron_ratio'] = dead_ratio
 
-        log_message(uid, f"Evaluated – QE: {training_results['best_mqe']:.6f}, TE: {topographic_error:.4f}, Dead ratio: {dead_ratio:.2%}, Time: {training_results['duration']:.2f}s", working_dir)
+        # Calculate distance map max for quality check
+        distance_map, _ = som.compute_quantization_error(data, mask=ignore_mask)
+        distance_map_max = np.max(distance_map) if distance_map is not None else 0.0
+        training_results['distance_map_max'] = distance_map_max
+
+        # Apply penalty for poor organization (U-Matrix or Distance Map max > 1.0)
+        # Good SOMs should have values in [0, 1] range
+        u_matrix_max = training_results.get('u_matrix_max', 0.0)
+        ORGANIZATION_THRESHOLD = 1.0
+        penalty_factor = 1.0
+
+        if u_matrix_max > ORGANIZATION_THRESHOLD or distance_map_max > ORGANIZATION_THRESHOLD:
+            # Heavy penalty for poor organization: multiply by (1 + excess)
+            excess_u = max(0, u_matrix_max - ORGANIZATION_THRESHOLD)
+            excess_d = max(0, distance_map_max - ORGANIZATION_THRESHOLD)
+            max_excess = max(excess_u, excess_d)
+            penalty_factor = 1.0 + (max_excess * 10.0)  # 10x multiplier for severe penalty
+            training_results['best_mqe'] *= penalty_factor
+            training_results['topographic_error'] = topographic_error * penalty_factor
+            log_message(uid, f"Applied {(penalty_factor - 1.0) * 100:.1f}% penalty for poor organization (U-Matrix max: {u_matrix_max:.3f}, Distance max: {distance_map_max:.3f})", working_dir)
+        else:
+            training_results['topographic_error'] = topographic_error
+
+        # Apply penalty for excessive dead neurons (>10%)
+        # Penalty increases linearly with dead neuron ratio above threshold
+        # Example: 20% dead → 10% penalty, 30% dead → 20% penalty, etc.
+        DEAD_NEURON_THRESHOLD = 0.10
+        if dead_ratio > DEAD_NEURON_THRESHOLD:
+            dead_penalty = 1.0 + (dead_ratio - DEAD_NEURON_THRESHOLD)
+            training_results['best_mqe'] *= dead_penalty
+            training_results['topographic_error'] *= dead_penalty
+            penalty_factor *= dead_penalty
+            log_message(uid, f"Applied {(dead_penalty - 1.0) * 100:.1f}% penalty for {dead_ratio:.1%} dead neurons", working_dir)
+
+        log_message(uid, f"Evaluated – QE: {training_results['best_mqe']:.6f}, TE: {training_results.get('topographic_error', topographic_error):.4f}, Dead ratio: {dead_ratio:.2%}, Time: {training_results['duration']:.2f}s", working_dir)
         log_result_to_csv(ind, training_results, working_dir)
 
         log_status_to_csv(uid, population_id, generation, "completed",
