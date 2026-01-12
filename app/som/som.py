@@ -309,6 +309,7 @@ class KohonenSOM:
             mqe_compute_interval = total_iterations
 
         pbar = tqdm(range(total_iterations), desc="SOM Training", unit="iter")
+        iteration = 0  # Initialize iteration variable to avoid scope issues
         for iteration in pbar:
             current_lr = self.get_decay_value(iteration, total_iterations, self.start_learning_rate,
                                               self.end_learning_rate, self.lr_decay_type)

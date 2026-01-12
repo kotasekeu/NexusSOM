@@ -12,6 +12,22 @@ import pandas as pd
 import sys
 import multiprocessing
 import shutil
+import warnings
+
+# Suppress resource tracker warnings on Python 3.14+
+# These warnings appear because Python 3.14 has stricter resource tracking
+# The semaphores are actually cleaned up properly at exit
+warnings.filterwarnings('ignore', category=UserWarning, module='multiprocessing.resource_tracker')
+
+# Monkey-patch warnings.warn to filter resource_tracker messages
+_original_warn = warnings.warn
+def _filtered_warn(message, category=UserWarning, stacklevel=1):
+    """Filter out resource_tracker warnings while preserving others"""
+    msg_str = str(message)
+    if 'resource_tracker' not in msg_str and 'loky' not in msg_str:
+        _original_warn(message, category, stacklevel + 1)
+
+warnings.warn = _filtered_warn
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -24,30 +40,67 @@ from som.preprocess import validate_input_data, preprocess_data
 from som.som import KohonenSOM
 from som.graphs import generate_training_plots
 from som.visualization import generate_individual_maps
+from ea.genetic_operators import (
+    random_config_continuous,
+    crossover_mixed,
+    mutate_mixed
+)
 
 # Global variables
 INPUT_FILE = None
 NORMALIZED_DATA = None
 WORKING_DIR = None
+EVALUATED_CACHE = {}  # Cache for evaluated individuals: {uid: (training_results, config)}
+EVALUATION_STATS = {'total_requested': 0, 'cache_hits': 0, 'new_evaluations': 0}  # Track deduplication stats
 
 
 def validate_and_repair(config: dict) -> dict:
     repaired_config = config.copy()
 
+    # Ensure start_learning_rate >= end_learning_rate (LR should decrease during training)
     if 'start_learning_rate' in repaired_config and 'end_learning_rate' in repaired_config:
         if repaired_config['start_learning_rate'] < repaired_config['end_learning_rate']:
             repaired_config['start_learning_rate'], repaired_config['end_learning_rate'] = \
                 repaired_config['end_learning_rate'], repaired_config['start_learning_rate']
 
+    # Ensure end_batch_percent >= start_batch_percent (batch size should grow during training)
     if 'start_batch_percent' in repaired_config and 'end_batch_percent' in repaired_config:
         if repaired_config['start_batch_percent'] > repaired_config['end_batch_percent']:
             repaired_config['start_batch_percent'], repaired_config['end_batch_percent'] = \
                 repaired_config['end_batch_percent'], repaired_config['start_batch_percent']
 
+    # Ensure start_radius >= end_radius (radius should decrease during training)
     if 'start_radius' in repaired_config and 'end_radius' in repaired_config:
         if repaired_config['start_radius'] < repaired_config['end_radius']:
             repaired_config['start_radius'], repaired_config['end_radius'] = \
                 repaired_config['end_radius'], repaired_config['start_radius']
+
+    # Ensure epoch_multiplier has a reasonable minimum value
+    if 'epoch_multiplier' in repaired_config:
+        repaired_config['epoch_multiplier'] = max(1.0, repaired_config['epoch_multiplier'])
+
+    # Set growth_g = 0 ONLY if ALL decay/growth types are linear (where it's not used at all)
+    # This prevents different individuals that are functionally identical
+    all_linear = True
+
+    # Check if any non-linear decay/growth type is used
+    if 'lr_decay_type' in repaired_config and repaired_config['lr_decay_type'] != 'linear-drop':
+        all_linear = False
+    if 'radius_decay_type' in repaired_config and repaired_config['radius_decay_type'] != 'linear-drop':
+        all_linear = False
+    if 'batch_growth_type' in repaired_config and repaired_config['batch_growth_type'] != 'linear-growth':
+        all_linear = False
+
+    if all_linear:
+        repaired_config['growth_g'] = 0
+    else:
+        # Ensure growth_g is at least 1.0 when it's actually used by non-linear curves
+        if 'growth_g' in repaired_config:
+            repaired_config['growth_g'] = max(1.0, repaired_config['growth_g'])
+
+    # Ensure num_batches is at least 1
+    if 'num_batches' in repaired_config:
+        repaired_config['num_batches'] = max(1, int(repaired_config['num_batches']))
 
     return repaired_config
 
@@ -335,6 +388,12 @@ def run_evolution(ea_config: dict, data: np.ndarray, ignore_mask: np.ndarray) ->
     """
     global ARCHIVE
     global WORKING_DIR
+    global EVALUATED_CACHE
+    global EVALUATION_STATS
+
+    # Clear cache and stats at the start of each evolution run
+    EVALUATED_CACHE.clear()
+    EVALUATION_STATS = {'total_requested': 0, 'cache_hits': 0, 'new_evaluations': 0}
 
     population_size = ea_config["EA_SETTINGS"]["population_size"]
     generations = ea_config["EA_SETTINGS"]["generations"]
@@ -342,14 +401,22 @@ def run_evolution(ea_config: dict, data: np.ndarray, ignore_mask: np.ndarray) ->
     fixed_params = ea_config["FIXED_PARAMS"]
     search_space = ea_config["SEARCH_SPACE"]
 
-    population = [random_config(search_space) for _ in range(population_size)]
+    # Get genetic operator parameters
+    genetic_params = ea_config.get("GENETIC_OPERATORS", {})
+    sbx_eta = genetic_params.get("sbx_eta", 20.0)
+    mutation_eta = genetic_params.get("mutation_eta", 20.0)
+    mutation_prob = genetic_params.get("mutation_prob", 0.1)
+
+    # Initialize population using continuous operators
+    # Generate initial population and validate/repair constraints
+    population = [validate_and_repair(random_config_continuous(search_space)) for _ in range(population_size)]
 
     try:
         for gen in range(generations):
             print(f"Generation {gen + 1}/{generations}")
 
             # Population evaluation (parallel)
-            with Pool(processes=min(12, cpu_count(), population_size)) as pool:
+            with Pool(processes=min(10, cpu_count(), population_size)) as pool:
                 args_list = [(ind, i, gen, fixed_params, data, ignore_mask, WORKING_DIR) for i, ind in enumerate(population)]
                 results_async = [pool.apply_async(evaluate_individual, args=arg) for arg in args_list]
                 evaluated_population = []
@@ -427,15 +494,15 @@ def run_evolution(ea_config: dict, data: np.ndarray, ignore_mask: np.ndarray) ->
                 p1_genes = {k: v for k, v in p1_full.items() if k in search_space}
                 p2_genes = {k: v for k, v in p2_full.items() if k in search_space}
 
-                child1 = crossover(p1_genes, p2_genes, search_space)
-                child2 = crossover(p2_genes, p1_genes, search_space)
+                # Use continuous crossover and mutation operators
+                child1, child2 = crossover_mixed(p1_genes, p2_genes, search_space, eta=sbx_eta)
 
-                mutated_child1 = mutate(child1, search_space)
+                mutated_child1 = mutate_mixed(child1, search_space, eta=mutation_eta, mutation_prob=mutation_prob)
                 repaired_child1 = validate_and_repair(mutated_child1)
                 next_gen_offspring.append(repaired_child1)
 
                 if len(next_gen_offspring) < population_size:
-                    mutated_child2 = mutate(child2, search_space)
+                    mutated_child2 = mutate_mixed(child2, search_space, eta=mutation_eta, mutation_prob=mutation_prob)
                     repaired_child2 = validate_and_repair(mutated_child2)
                     next_gen_offspring.append(repaired_child2)
 
@@ -448,7 +515,16 @@ def run_evolution(ea_config: dict, data: np.ndarray, ignore_mask: np.ndarray) ->
     except Exception as e:
         print(f"\nFatal error during execution of the evolutionary algorithm: {str(e)}")
 
+    # Print deduplication statistics
+    total_requested = EVALUATION_STATS['total_requested']
+    new_evaluations = EVALUATION_STATS['new_evaluations']
+    cache_hits = EVALUATION_STATS['cache_hits']
+
     print("Evolution completed.")
+    print(f"Deduplication stats: {new_evaluations} unique configurations evaluated, {cache_hits} duplicates skipped (from {total_requested} total requests)")
+    if total_requested > 0:
+        cache_hit_rate = (cache_hits / total_requested) * 100
+        print(f"Cache hit rate: {cache_hit_rate:.1f}%")
 
 def get_uid(config: dict) -> str:
     """
@@ -648,8 +724,24 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
     Returns:
         Tuple of (training_results, configuration).
     """
+    global EVALUATED_CACHE
+    global EVALUATION_STATS
+
+    EVALUATION_STATS['total_requested'] += 1
+
     start_time = time.monotonic()
     uid = get_uid(ind)
+
+    # Check if this configuration has already been evaluated
+    if uid in EVALUATED_CACHE:
+        EVALUATION_STATS['cache_hits'] += 1
+        cached_results, cached_config = EVALUATED_CACHE[uid]
+        print(f"[GEN {generation + 1}] Skipping duplicate UID {uid[:8]}... (already evaluated)")
+        log_status_to_csv(uid, population_id, generation, "cached",
+                         start_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"), working_dir=working_dir)
+        return cached_results, cached_config
+
+    EVALUATION_STATS['new_evaluations'] += 1
 
     try:
         print(f"[GEN {generation + 1}] Total RAM used: {psutil.virtual_memory().used // (1024 ** 2)} MB")
@@ -661,8 +753,12 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
 
         som_params = {**ind, **fixed_params}
 
+        # Remove non-SOM parameters
         som_params.pop('sample_size', None)
         som_params.pop('input_dim', None)
+        som_params.pop('rank', None)  # Fitness metadata from NSGA-II
+        som_params.pop('crowding_distance', None)  # Fitness metadata from NSGA-II
+        som_params.pop('comment', None)  # Comment fields from config
 
         som = KohonenSOM(dim=data.shape[1], **som_params)
 
@@ -696,7 +792,11 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
         # Copy maps to centralized dataset for CNN training
         copy_maps_to_dataset(uid, individual_dir, working_dir)
 
-        return (training_results, copy.deepcopy(ind))
+        # Cache the results to avoid re-evaluation of duplicate configurations
+        result = (training_results, copy.deepcopy(ind))
+        EVALUATED_CACHE[uid] = result
+
+        return result
 
     except Exception as e:
         import traceback
@@ -818,6 +918,16 @@ def main():
     combine_maps_to_rgb(WORKING_DIR)
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        # Clean up any leaked resources
+        import gc
+        gc.collect()
 
-    multiprocessing.resource_tracker.ensure_running()
+        # Force cleanup of multiprocessing resources
+        try:
+            from multiprocessing.util import _exit_function
+            _exit_function()
+        except Exception:
+            pass
