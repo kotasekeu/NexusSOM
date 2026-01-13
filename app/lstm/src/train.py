@@ -1,0 +1,341 @@
+"""
+Training Script for LSTM Training Progress Predictor - "The Oracle"
+
+This script trains an LSTM to predict final SOM quality from early training progress.
+
+Usage:
+    python src/train.py --dataset data/dataset.csv
+    python src/train.py --dataset data/dataset.csv --epochs 200 --model bidirectional
+"""
+
+import os
+import argparse
+import pandas as pd
+import numpy as np
+from datetime import datetime
+from pathlib import Path
+import json
+
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau, TensorBoard, CSVLogger
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+
+# Import model definitions
+from model import create_lstm_model, create_bidirectional_lstm, create_lightweight_lstm, print_model_summary
+
+
+def load_dataset(dataset_path, test_size=0.15, val_size=0.15, random_state=42):
+    """
+    Load and split LSTM dataset.
+
+    Args:
+        dataset_path: Path to the dataset CSV file
+        test_size: Proportion of data for testing
+        val_size: Proportion of training data for validation
+        random_state: Random seed
+
+    Returns:
+        Tuple of (X_train, X_val, X_test, y_train, y_val, y_test, metadata)
+    """
+    print(f"Loading dataset from: {dataset_path}")
+    df = pd.read_csv(dataset_path)
+    print(f"Total sequences: {len(df)}")
+
+    # Load metadata
+    metadata_path = dataset_path.replace('.csv', '_metadata.json')
+    if os.path.exists(metadata_path):
+        with open(metadata_path, 'r') as f:
+            metadata = json.load(f)
+        print(f"✓ Loaded metadata: {metadata['num_checkpoints']} checkpoints per sequence")
+    else:
+        print("⚠ No metadata found")
+        metadata = {}
+
+    # Parse training histories from JSON
+    sequences = []
+    targets = []
+
+    print("\nParsing training sequences...")
+    for idx, row in df.iterrows():
+        # Parse training history
+        history = json.loads(row['training_history'])
+
+        # Extract sequence features (mqe, topo_error, dead_ratio at each checkpoint)
+        sequence = np.array([
+            history['mqe'],
+            history['topographic_error'],
+            history['dead_neuron_ratio']
+        ]).T  # Shape: (num_checkpoints, 3)
+
+        sequences.append(sequence)
+
+        # Extract targets (final values)
+        target = np.array([
+            row['final_mqe'],
+            row['final_topographic_error'],
+            row['final_dead_neuron_ratio']
+        ])
+        targets.append(target)
+
+    # Convert to numpy arrays
+    X = np.array(sequences)  # Shape: (num_samples, num_checkpoints, 3)
+    y = np.array(targets)    # Shape: (num_samples, 3)
+
+    print(f"Sequence shape: {X.shape}")
+    print(f"Target shape: {y.shape}")
+
+    # Split into train+val and test
+    X_train_val, X_test, y_train_val, y_test = train_test_split(
+        X, y, test_size=test_size, random_state=random_state
+    )
+
+    # Split train+val into train and val
+    X_train, X_val, y_train, y_val = train_test_split(
+        X_train_val, y_train_val, test_size=val_size, random_state=random_state
+    )
+
+    print(f"\nTraining sequences: {len(X_train)}")
+    print(f"Validation sequences: {len(X_val)}")
+    print(f"Test sequences: {len(X_test)}")
+
+    return X_train, X_val, X_test, y_train, y_val, y_test, metadata
+
+
+def create_callbacks(model_name, log_dir):
+    """Create training callbacks"""
+    os.makedirs('models', exist_ok=True)
+    os.makedirs(log_dir, exist_ok=True)
+
+    callbacks = [
+        ModelCheckpoint(
+            filepath=f'models/{model_name}_best.keras',
+            monitor='val_loss',
+            save_best_only=True,
+            mode='min',
+            verbose=1
+        ),
+        EarlyStopping(
+            monitor='val_loss',
+            patience=20,
+            restore_best_weights=True,
+            mode='min',
+            verbose=1
+        ),
+        ReduceLROnPlateau(
+            monitor='val_loss',
+            factor=0.5,
+            patience=10,
+            min_lr=1e-7,
+            mode='min',
+            verbose=1
+        ),
+        TensorBoard(
+            log_dir=log_dir,
+            histogram_freq=1,
+            write_graph=True,
+            update_freq='epoch'
+        ),
+        CSVLogger(
+            filename=os.path.join(log_dir, 'training_log.csv'),
+            separator=',',
+            append=False
+        )
+    ]
+
+    return callbacks
+
+
+def train_model(dataset_path, model_type='standard', epochs=100, batch_size=32, learning_rate=0.001):
+    """
+    Main training function.
+
+    Args:
+        dataset_path: Path to the dataset CSV file
+        model_type: Type of model ('standard', 'bidirectional', or 'lite')
+        epochs: Number of training epochs
+        batch_size: Batch size
+        learning_rate: Learning rate
+    """
+    print("=" * 80)
+    print("LSTM TRAINING PROGRESS PREDICTOR - TRAINING")
+    print("=" * 80)
+    print(f"Model Type: {model_type}")
+    print(f"Epochs: {epochs}")
+    print(f"Batch Size: {batch_size}")
+    print(f"Learning Rate: {learning_rate}")
+    print("=" * 80)
+
+    # Set random seeds
+    np.random.seed(42)
+    tf.random.set_seed(42)
+
+    # Load dataset
+    X_train, X_val, X_test, y_train, y_val, y_test, metadata = load_dataset(dataset_path)
+
+    # Get dimensions
+    sequence_length = X_train.shape[1]
+    num_features = X_train.shape[2]
+    output_dim = y_train.shape[1]
+
+    # Create model
+    print("\nCreating model...")
+    if model_type == 'bidirectional':
+        model = create_bidirectional_lstm(
+            sequence_length=sequence_length,
+            num_features=num_features,
+            output_dim=output_dim,
+            learning_rate=learning_rate
+        )
+    elif model_type == 'lite':
+        model = create_lightweight_lstm(
+            sequence_length=sequence_length,
+            num_features=num_features,
+            output_dim=output_dim,
+            learning_rate=learning_rate
+        )
+    else:
+        model = create_lstm_model(
+            sequence_length=sequence_length,
+            num_features=num_features,
+            output_dim=output_dim,
+            learning_rate=learning_rate
+        )
+
+    print_model_summary(model)
+
+    # Create callbacks
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    model_name = f"lstm_oracle_{model_type}_{timestamp}"
+    log_dir = f"logs/{model_name}"
+    callbacks = create_callbacks(model_name, log_dir)
+
+    # Train model
+    print("\nStarting training...")
+    history = model.fit(
+        X_train, y_train,
+        validation_data=(X_val, y_val),
+        epochs=epochs,
+        batch_size=batch_size,
+        callbacks=callbacks,
+        verbose=1
+    )
+
+    # Evaluate on test set
+    print("\n" + "=" * 80)
+    print("EVALUATING ON TEST SET")
+    print("=" * 80)
+    test_results = model.evaluate(X_test, y_test, verbose=1)
+
+    print("\nTest Results:")
+    for metric_name, metric_value in zip(model.metrics_names, test_results):
+        print(f"  {metric_name}: {metric_value:.6f}")
+
+    # Sample predictions
+    print("\n" + "=" * 80)
+    print("SAMPLE PREDICTIONS")
+    print("=" * 80 + "\n")
+
+    y_pred = model.predict(X_test[:10], verbose=0)
+    target_cols = ['mqe', 'topographic_error', 'dead_neuron_ratio']
+
+    print(f"{'Actual':<40} | {'Predicted':<40}")
+    print("-" * 80)
+    for i in range(min(10, len(y_test))):
+        actual = f"[{', '.join([f'{v:.6f}' for v in y_test[i]])}]"
+        predicted = f"[{', '.join([f'{v:.6f}' for v in y_pred[i]])}]"
+        print(f"{actual:<40} | {predicted:<40}")
+
+    # Save final model
+    final_model_path = f'models/{model_name}_final.keras'
+    model.save(final_model_path)
+    print(f"\nFinal model saved to: {final_model_path}")
+
+    # Save model metadata
+    model_metadata = {
+        'model_name': model_name,
+        'model_type': model_type,
+        'timestamp': timestamp,
+        'sequence_length': int(sequence_length),
+        'num_features': int(num_features),
+        'output_dim': int(output_dim),
+        'target_columns': target_cols,
+        'num_train_samples': len(X_train),
+        'num_val_samples': len(X_val),
+        'num_test_samples': len(X_test),
+        'test_loss': float(test_results[0]),
+        'test_mae': float(test_results[1]),
+        'test_mse': float(test_results[2]),
+        'dataset_metadata': metadata
+    }
+
+    metadata_path = f'models/{model_name}_metadata.json'
+    with open(metadata_path, 'w') as f:
+        json.dump(model_metadata, f, indent=2)
+    print(f"Metadata saved to: {metadata_path}")
+
+    print("\n" + "=" * 80)
+    print("TRAINING COMPLETED SUCCESSFULLY!")
+    print("=" * 80)
+    print(f"\nBest model: models/{model_name}_best.keras")
+    print(f"Training logs: {log_dir}")
+    print(f"\nTo view training progress:")
+    print(f"  tensorboard --logdir={log_dir}")
+
+    return model, history, model_metadata
+
+
+def parse_arguments():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(description='Train LSTM Training Progress Predictor')
+
+    parser.add_argument(
+        '--dataset',
+        type=str,
+        default='data/dataset.csv',
+        help='Path to dataset CSV file'
+    )
+    parser.add_argument(
+        '--model',
+        type=str,
+        default='standard',
+        choices=['standard', 'bidirectional', 'lite'],
+        help='Model architecture to use'
+    )
+    parser.add_argument(
+        '--epochs',
+        type=int,
+        default=100,
+        help='Number of training epochs'
+    )
+    parser.add_argument(
+        '--batch-size',
+        type=int,
+        default=32,
+        help='Batch size for training'
+    )
+    parser.add_argument(
+        '--learning-rate',
+        type=float,
+        default=0.001,
+        help='Learning rate for optimizer'
+    )
+
+    return parser.parse_args()
+
+
+if __name__ == "__main__":
+    args = parse_arguments()
+
+    try:
+        model, history, metadata = train_model(
+            dataset_path=args.dataset,
+            model_type=args.model,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            learning_rate=args.learning_rate
+        )
+    except Exception as e:
+        print(f"\nTraining failed with error: {e}")
+        raise

@@ -1,0 +1,16 @@
+{
+  "num_sequences": 1000,
+  "num_checkpoints": 10,
+  "features": [
+    "mqe",
+    "topographic_error",
+    "dead_neuron_ratio"
+  ],
+  "targets": [
+    "final_mqe",
+    "final_topographic_error",
+    "final_dead_neuron_ratio"
+  ],
+  "data_type": "simulated",
+  "note": "Simulated training histories for proof-of-concept. Replace with actual SOM training logs in production."
+}

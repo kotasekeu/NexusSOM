@@ -64,5 +64,9 @@ kohonen-log.txt
 /app/test/
 /.claude/
 /app/venv_tf/
-/app/logs/
-/app/models/
+/app/cnn/logs/*
+/app/cnn/models/*
+/app/lstm/logs/*
+/app/lstm/models/*
+/app/mlp/logs/*
+/app/mlp/models/*

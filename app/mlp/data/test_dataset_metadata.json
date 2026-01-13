@@ -1,0 +1,68 @@
+{
+  "num_samples": 1000,
+  "num_features": 21,
+  "num_targets": 3,
+  "feature_columns": [
+    "start_learning_rate",
+    "end_learning_rate",
+    "start_batch_percent",
+    "end_batch_percent",
+    "epoch_multiplier",
+    "normalize_weights_flag",
+    "growth_g",
+    "num_batches",
+    "map_rows",
+    "map_cols",
+    "lr_decay_type_exp-drop",
+    "lr_decay_type_linear-drop",
+    "lr_decay_type_log-drop",
+    "lr_decay_type_step-down",
+    "radius_decay_type_exp-drop",
+    "radius_decay_type_linear-drop",
+    "radius_decay_type_log-drop",
+    "radius_decay_type_step-down",
+    "batch_growth_type_exp-growth",
+    "batch_growth_type_linear-growth",
+    "batch_growth_type_log-growth"
+  ],
+  "target_columns": [
+    "best_mqe",
+    "topographic_error",
+    "dead_neuron_ratio"
+  ],
+  "categorical_encoders": {
+    "lr_decay_type": [
+      "lr_decay_type_exp-drop",
+      "lr_decay_type_linear-drop",
+      "lr_decay_type_log-drop",
+      "lr_decay_type_step-down"
+    ],
+    "radius_decay_type": [
+      "radius_decay_type_exp-drop",
+      "radius_decay_type_linear-drop",
+      "radius_decay_type_log-drop",
+      "radius_decay_type_step-down"
+    ],
+    "batch_growth_type": [
+      "batch_growth_type_exp-growth",
+      "batch_growth_type_linear-growth",
+      "batch_growth_type_log-growth"
+    ]
+  },
+  "original_hyperparameter_cols": [
+    "start_learning_rate",
+    "end_learning_rate",
+    "lr_decay_type",
+    "radius_decay_type",
+    "start_batch_percent",
+    "end_batch_percent",
+    "batch_growth_type",
+    "epoch_multiplier",
+    "normalize_weights_flag",
+    "growth_g",
+    "num_batches",
+    "map_rows",
+    "map_cols"
+  ],
+  "removed_rows": 0
+}
