@@ -5,46 +5,13 @@ The recommended and primary method for installing and running NexusSom is via Do
 ## Prerequisites
 
 - Git (required for both installation methods)
-- For Docker installation:
-  - [Docker](https://www.docker.com/) (version 20.10 or newer recommended)
-  - [Docker Compose](https://docs.docker.com/compose/) (if not included in your Docker installation)
-  - Optionally, [PyCharm](https://www.jetbrains.com/pycharm/) for integrated development and Docker support
-
 - For native Ubuntu installation (without Docker):
   - Ubuntu 22.04 or newer recommended
   - [Python 3.12](https://www.python.org/downloads/)
   - [pip](https://pip.pypa.io/en/stable/)
   - [venv](https://docs.python.org/3/library/venv.html) module for virtual environments
 
-## Installation via Command Line
-
-1. **Clone the Repository**
-
-   ```bash
-   git clone https://github.com/your-org/NexusSom.git
-   cd NexusSom
-   ```
-
-2. **Build and Start the Application**
-
-   Execute the following command in the project root directory:
-
-   ```bash
-   docker compose up --build
-   ```
-
-   This will build the Docker image and start the application in a containerized environment.
-
-## Installation via PyCharm
-
-1. Open the project folder in PyCharm.
-2. Ensure Docker is configured in your IDE's settings.
-3. Locate the `docker-compose.yml` file in the project root.
-4. Right-click on `docker-compose.yml` and select **Compose Up** or use the Docker tool window to start the service.
-
-The application will be built and started automatically in a Docker container.
-
-## Installation without Docker (Ubuntu)
+## Installation Ubuntu
 
 If you prefer to install and run NexusSom without Docker, follow these steps on Ubuntu:
 

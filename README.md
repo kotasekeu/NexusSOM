@@ -1,4 +1,10 @@
+# need to be redone #
+
+
+
 # NexusSOM: Autonomous Data Analysis Platform 🚀🧠
+
+
 
 **NexusSOM** is an advanced, modular platform for **exploratory data analysis** and **unsupervised machine learning**. At its core, it leverages a powerful **Hybrid Self-Organizing Map (SOM)** to perform topological data analysis, coupled with a sophisticated **Evolutionary Algorithm (EA)** that automates the discovery of optimal hyperparameters.
 

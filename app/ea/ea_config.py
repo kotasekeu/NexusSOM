@@ -41,5 +41,18 @@ CONFIG = {
     "DATA_PARAMS": {
         "sample_size": 1000,
         "niput_dim": 10
+    },
+    "NEURAL_NETWORKS": {
+        "use_mlp": False,  # Enable MLP "The Prophet" for fast fitness estimation
+        "use_lstm": False,  # Enable LSTM "The Oracle" for early stopping
+        "use_cnn": False,  # Enable CNN "The Eye" for visual quality assessment
+        "mlp_model_path": None,  # Auto-detect if None
+        "mlp_scaler_path": None,  # Auto-detect if None
+        "lstm_model_path": None,  # Auto-detect if None
+        "cnn_model_path": None,  # Auto-detect if None
+        "lstm_quality_threshold": 1.0,  # Quality threshold for early stopping
+        "mlp_filter_bad_configs": False,  # Filter configs with bad predicted quality
+        "mlp_bad_quality_threshold": 0.5,  # MQE threshold for filtering
+        "verbose": True  # Print NN status messages
     }
 }

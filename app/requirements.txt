@@ -1,3 +1,4 @@
+# Core Dependencies (Required for SOM and EA)
 passlib
 pydantic
 pytest
@@ -9,3 +10,8 @@ scikit-learn
 scipy
 psutil
 tqdm
+
+# Optional: Neural Network Dependencies
+# Install separately with: pip install -r requirements_nn.txt
+# Or manually: pip install tensorflow>=2.18.0 keras>=3.6.0 Pillow joblib
+# Note: EA and SOM work WITHOUT these - NN features are optional

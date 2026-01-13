@@ -18,8 +18,14 @@ from pathlib import Path
 
 import tensorflow as tf
 from tensorflow import keras
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
-from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau, TensorBoard, CSVLogger
+try:
+    # Try Keras 2.x style import
+    from tensorflow.keras.preprocessing.image import ImageDataGenerator
+    from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau, TensorBoard, CSVLogger
+except (ImportError, ModuleNotFoundError):
+    # Keras 3.x style import
+    from keras.preprocessing.image import ImageDataGenerator
+    from keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau, TensorBoard, CSVLogger
 
 from PIL import Image
 from sklearn.model_selection import train_test_split
@@ -173,18 +179,18 @@ def create_callbacks(model_name, log_dir):
     os.makedirs(log_dir, exist_ok=True)
 
     callbacks = [
-        # Save best model based on validation loss
+        # Save best model based on validation loss (H5 format for Colab compatibility)
         ModelCheckpoint(
-            filepath=f'models/{model_name}_best.keras',
+            filepath=f'models/{model_name}_best.h5',
             monitor='val_loss',
             save_best_only=True,
             save_weights_only=False,
             mode='min',
             verbose=1
         ),
-        # Save checkpoints every epoch
+        # Save checkpoints every epoch (H5 format)
         ModelCheckpoint(
-            filepath=f'models/{model_name}_epoch_{{epoch:02d}}.keras',
+            filepath=f'models/{model_name}_epoch_{{epoch:02d}}.h5',
             save_freq='epoch',
             save_weights_only=False,
             verbose=0
@@ -316,7 +322,7 @@ def train_model(dataset_path, model_type='standard', epochs=50, batch_size=32,
         print(f"  {metric_name}: {metric_value:.6f}")
 
     # Save final model
-    final_model_path = f'models/{model_name}_final.keras'
+    final_model_path = f'models/{model_name}_final.h5'
     model.save(final_model_path)
     print(f"\nFinal model saved to: {final_model_path}")
 
