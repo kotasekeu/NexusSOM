@@ -49,21 +49,18 @@ spouštět z cnn kvuli složkam log a model
 Trenovani modelu
 python ./src/train.py --dataset ../../data/datasets/BreastCancer/results/EA/dataset.csv
 
-Total params: 1,276,449 (4.87 MB)
-Trainable params: 1,273,761 (4.86 MB)
-Non-trainable params: 2,688 (10.50 KB)
-================================================================================
-Total parameters: 1,276,449
-Trainable parameters: 1,273,761
+spuštění web aplikace tensorboardu
+tensorboard --logdir=logs/som_quality_standard_20260114_105343
 
-
-
+dostupná na 
+http://localhost:6006/
 
 
 
 
 Jupyter Test 
 Inside venv run
+spustit z /
 jupyter notebook --no-browser
 
 copy local url 
