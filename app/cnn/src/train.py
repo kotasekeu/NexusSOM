@@ -179,18 +179,18 @@ def create_callbacks(model_name, log_dir):
     os.makedirs(log_dir, exist_ok=True)
 
     callbacks = [
-        # Save best model based on validation loss (H5 format for Colab compatibility)
+        # Save best model based on validation loss (native Keras format)
         ModelCheckpoint(
-            filepath=f'models/{model_name}_best.h5',
+            filepath=f'models/{model_name}_best.keras',
             monitor='val_loss',
             save_best_only=True,
             save_weights_only=False,
             mode='min',
             verbose=1
         ),
-        # Save checkpoints every epoch (H5 format)
+        # Save checkpoints every epoch (native Keras format)
         ModelCheckpoint(
-            filepath=f'models/{model_name}_epoch_{{epoch:02d}}.h5',
+            filepath=f'models/{model_name}_epoch_{{epoch:02d}}.keras',
             save_freq='epoch',
             save_weights_only=False,
             verbose=0
@@ -322,7 +322,7 @@ def train_model(dataset_path, model_type='standard', epochs=50, batch_size=32,
         print(f"  {metric_name}: {metric_value:.6f}")
 
     # Save final model
-    final_model_path = f'models/{model_name}_final.h5'
+    final_model_path = f'models/{model_name}_final.keras'
     model.save(final_model_path)
     print(f"\nFinal model saved to: {final_model_path}")
 

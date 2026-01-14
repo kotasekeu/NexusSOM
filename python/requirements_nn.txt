@@ -20,7 +20,6 @@
 tensorflow==2.18.0   # Latest stable TensorFlow (no Python 3.14 support yet)
 keras>=3.6.0         # Keras 3.x (bundled with TensorFlow 2.18+)
 tensorflow-metal
-tensorboard
 
 # ============================================================================
 # CORE ML & SCIENTIFIC COMPUTING

@@ -29,6 +29,34 @@ python ./app/run_ea.py -i ./data/datasets/BreastCancer/breast-cancer.csv -c ./da
 
 Folder results is created in same folder as is input file (.csv) 
 
+### CNN ###
+labelování map
+python ./app/cnn/src/label_maps.py --results_dir ./data/datasets/BreastCancer/results/EA --auto_bad_threshold 0.1
+Labeling Session Summary
+Total labeled: 982/982
+  - Good: 337
+  - Bad: 645
+    • Manual: 34
+    • Auto (dead_neuron_ratio > 10%): 611
+
+vytvoření dataset souboru, spouštět z app/cnn protože cesty
+python ./src/prepare_dataset.py --results_dir ../../data/datasets/BreastCancer/results/EA
+Dataset saved to: ./data/datasets/BreastCancer/results/EA/dataset.csv
+
+
+spouštět z cnn kvuli složkam log a model
+
+Trenovani modelu
+python ./src/train.py --dataset ../../data/datasets/BreastCancer/results/EA/dataset.csv
+
+Total params: 1,276,449 (4.87 MB)
+Trainable params: 1,273,761 (4.86 MB)
+Non-trainable params: 2,688 (10.50 KB)
+================================================================================
+Total parameters: 1,276,449
+Trainable parameters: 1,273,761
+
+
 
 
 
