@@ -1,0 +1,26 @@
+{
+    "map_size": [20, 20],
+    "start_learning_rate": 0.8,
+    "end_learning_rate": 0.1,
+    "lr_decay_type": "linear-drop",
+
+    "start_radius_init_ratio": 0.2,
+    "end_radius": 1,
+    "radius_decay_type": "linear-drop",
+
+    "start_batch_percent": 0.5,
+    "end_batch_percent": 5.0,
+    "batch_growth_type": "linear-growth",
+
+    "epoch_multiplier": 1.0,
+    "normalize_weights_flag": false,
+
+    "growth_g": 15.0,
+    "random_seed": 42,
+    "map_type": "square",
+    "num_batches": 1,
+    "max_epochs_without_improvement": 500,
+
+    "delimiter": ",",
+    "categorical_threshold_numeric": 30
+}

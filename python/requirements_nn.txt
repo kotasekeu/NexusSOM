@@ -1,0 +1,47 @@
+# Neural Network Dependencies (Optional)
+# These are only needed if you want to use the neural network features:
+# - MLP "The Prophet" for fast fitness estimation
+# - LSTM "The Oracle" for early stopping predictions
+# - CNN "The Eye" for visual quality assessment
+#
+# EA and SOM work perfectly WITHOUT these packages.
+#
+# Installation:
+#   pip install -r requirements_nn.txt
+#
+# Or install in separate virtual environment:
+#   python3.11 -m venv venv_tf  # Use Python 3.11 or 3.12 (NOT 3.14 - no TF support yet)
+#   source venv_tf/bin/activate  # or venv_tf\Scripts\activate on Windows
+#   pip install -r requirements_nn.txt
+
+# ============================================================================
+# DEEP LEARNING FRAMEWORKS (requires Python 3.11 or 3.12)
+# ============================================================================
+tensorflow==2.18.0   # Latest stable TensorFlow (no Python 3.14 support yet)
+keras>=3.6.0         # Keras 3.x (bundled with TensorFlow 2.18+)
+tensorflow-metal
+tensorboard
+
+# ============================================================================
+# CORE ML & SCIENTIFIC COMPUTING
+# ============================================================================
+numpy>=1.24.0,<2.0.0     # Core numerical computing (TensorFlow compatibility)
+pandas>=2.0.0            # Data manipulation and CSV handling
+scikit-learn>=1.3.0      # ML utilities: train/test split, StandardScaler, metrics
+
+# ============================================================================
+# IMAGE PROCESSING (for CNN "The Eye")
+# ============================================================================
+Pillow>=10.0.0           # Image loading, resizing, preprocessing
+opencv-python>=4.8.0     # Advanced image operations (optional)
+
+# ============================================================================
+# MODEL PERSISTENCE (for MLP & LSTM)
+# ============================================================================
+joblib>=1.3.0            # Saving/loading StandardScaler objects
+
+# ============================================================================
+# VISUALIZATION & MONITORING (optional but recommended)
+# ============================================================================
+matplotlib>=3.7.0        # Plotting training curves and visualizations
+tensorboard>=2.18.0      # TensorBoard monitoring during training

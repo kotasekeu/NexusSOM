@@ -1,4 +1,4 @@
-# Installation Guide
+# předělat ---- Installation Guide
 
 The recommended and primary method for installing and running NexusSom is via Docker. This ensures a consistent and isolated environment for all dependencies and application components. However, for advanced users or specific deployment scenarios, manual installation on Ubuntu is also supported.
 

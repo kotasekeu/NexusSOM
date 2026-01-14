@@ -1,0 +1,94 @@
+{
+  "EA_SETTINGS": {
+    "population_size": 20,
+    "generations": 10,
+    "comment": "Small config for quick testing (200 evaluations, ~2-5 minutes)"
+  },
+  "SEARCH_SPACE": {
+    "map_size": {
+      "type": "discrete_int_pair",
+      "min": 5,
+      "max": 15,
+      "comment": "Smaller map range for faster training"
+    },
+    "processing_type": {
+      "type": "categorical",
+      "values": ["hybrid"]
+    },
+    "start_learning_rate": {
+      "type": "float",
+      "min": 0.5,
+      "max": 0.9
+    },
+    "end_learning_rate": {
+      "type": "float",
+      "min": 0.01,
+      "max": 0.3
+    },
+    "lr_decay_type": {
+      "type": "categorical",
+      "values": ["linear-drop", "exp-drop"]
+    },
+    "start_radius_init_ratio": {
+      "type": "float",
+      "min": 0.3,
+      "max": 0.8
+    },
+    "radius_decay_type": {
+      "type": "categorical",
+      "values": ["linear-drop", "exp-drop"]
+    },
+    "start_batch_percent": {
+      "type": "float",
+      "min": 0.5,
+      "max": 5.0
+    },
+    "end_batch_percent": {
+      "type": "float",
+      "min": 5.0,
+      "max": 15.0
+    },
+    "batch_growth_type": {
+      "type": "categorical",
+      "values": ["linear-growth", "exp-growth"]
+    },
+    "epoch_multiplier": {
+      "type": "float",
+      "min": 5.0,
+      "max": 15.0
+    },
+    "normalize_weights_flag": {
+      "type": "categorical",
+      "values": [false, true]
+    },
+    "growth_g": {
+      "type": "float",
+      "min": 5.0,
+      "max": 35.0
+    },
+    "num_batches": {
+      "type": "int",
+      "min": 1,
+      "max": 10
+    }
+  },
+  "GENETIC_OPERATORS": {
+    "sbx_eta": 20.0,
+    "mutation_eta": 20.0,
+    "mutation_prob": 0.1,
+    "crossover_prob": 0.9
+  },
+  "FIXED_PARAMS": {
+    "end_radius": 1.0,
+    "random_seed": 42,
+    "mqe_evaluations_per_run": 500,
+    "map_type": "hex"
+  },
+  "PREPROCES_DATA": {
+    "delimiter": ",",
+    "categorical_threshold_numeric": 30,
+    "noise_threshold_ratio": 0.2,
+    "categorical_threshold_text": 30,
+    "primary_id": "primary_id"
+  }
+}

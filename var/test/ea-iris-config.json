@@ -1,0 +1,102 @@
+{
+  "EA_SETTINGS": {
+    "population_size": 50,
+    "generations": 20
+  },
+  "SEARCH_SPACE": {
+    "map_size": {
+      "type": "discrete_int_pair",
+      "min": 5,
+      "max": 20,
+      "comment": "Square-ish map dimensions [m, n]"
+    },
+    "processing_type": {
+      "type": "categorical",
+      "values": ["hybrid"]
+    },
+    "start_learning_rate": {
+      "type": "float",
+      "min": 0.0,
+      "max": 1.0,
+      "comment": "Initial learning rate, typically 0.5-0.9"
+    },
+    "end_learning_rate": {
+      "type": "float",
+      "min": 0.0,
+      "max": 1.0,
+      "comment": "Final learning rate, typically 0.01-0.3"
+    },
+    "lr_decay_type": {
+      "type": "categorical",
+      "values": ["linear-drop", "exp-drop", "log-drop", "step-down"]
+    },
+    "start_radius_init_ratio": {
+      "type": "float",
+      "min": 0.0,
+      "max": 1.0,
+      "comment": "Initial radius as ratio of map size"
+    },
+    "radius_decay_type": {
+      "type": "categorical",
+      "values": ["linear-drop", "exp-drop", "log-drop", "step-down"]
+    },
+    "start_batch_percent": {
+      "type": "float",
+      "min": 0.0,
+      "max": 5.0,
+      "comment": "Initial batch size as % of dataset (hybrid mode)"
+    },
+    "end_batch_percent": {
+      "type": "float",
+      "min": 1.0,
+      "max": 15.0,
+      "comment": "Final batch size as % of dataset (must be > start_batch_percent)"
+    },
+    "batch_growth_type": {
+      "type": "categorical",
+      "values": ["linear-growth", "exp-growth", "log-growth"]
+    },
+    "epoch_multiplier": {
+      "type": "int",
+      "min": 0,
+      "max": 25,
+      "comment": "Training duration multiplier"
+    },
+    "normalize_weights_flag": {
+      "type": "categorical",
+      "values": [false, true]
+    },
+    "growth_g": {
+      "type": "int",
+      "min": 10,
+      "max": 40,
+      "comment": "Growth parameter for exp/log curves"
+    },
+    "num_batches": {
+      "type": "int",
+      "min": 1,
+      "max": 20,
+      "comment": "Number of data sections for hybrid mode"
+    }
+  },
+  "GENETIC_OPERATORS": {
+    "sbx_eta": 20.0,
+    "mutation_eta": 20.0,
+    "mutation_prob": 0.1,
+    "crossover_prob": 0.9,
+    "comment": "SBX and polynomial mutation parameters"
+  },
+  "FIXED_PARAMS": {
+    "end_radius": 1.0,
+    "random_seed": 42,
+    "mqe_evaluations_per_run": 500,
+    "map_type": "hex"
+  },
+  "PREPROCES_DATA": {
+    "delimiter": ",",
+    "categorical_threshold_numeric": 30,
+    "noise_threshold_ratio": 0.2,
+    "categorical_threshold_text": 30,
+    "primary_id": "primary_id"
+  }
+}

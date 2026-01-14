@@ -1,0 +1,34 @@
+{
+    "processing_type": "hybrid",
+
+    "map_size": [5, 5],
+    "start_learning_rate": 0.88,
+    "end_learning_rate": 0.45,
+    "lr_decay_type": "log-drop",
+
+    "start_radius_init_ratio": 0.21,
+    "end_radius": 1.0,
+    "radius_decay_type": "exp-drop",
+
+    "start_batch_percent": 0.23,
+    "end_batch_percent": 2.87,
+    "batch_growth_type": "exp-growth",
+
+    "epoch_multiplier": 2.0,
+    "normalize_weights_flag": false,
+
+    "growth_g": 35.0,
+    "random_seed": 42,
+    "map_type": "hex",
+    "num_batches": 2,
+    "max_epochs_without_improvement": 500,
+
+    "delimiter": ",",
+
+    "categorical_threshold_numeric": 20,
+    "noise_threshold_ratio": 0.2,
+    "categorical_threshold_text": 20,
+
+    "primary_id": "id",
+    "mqe_evaluations_per_run": 500
+}

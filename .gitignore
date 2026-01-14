@@ -1,5 +1,3 @@
-/app/ea/results/*
-
 # Python
 __pycache__/
 *.py[cod]
@@ -70,3 +68,7 @@ kohonen-log.txt
 /app/lstm/models/*
 /app/mlp/logs/*
 /app/mlp/models/*
+/data/datasets/BreastCancer/results/EA/*
+/data/datasets/BreastCancer/results/SOM/*
+/253_29346_142-pycharm-support-libs.zip
+/requirements.lock.

@@ -1,0 +1,15 @@
+# Core Dependencies (Required for SOM and EA)
+passlib
+pydantic
+pytest
+httpx
+pandas
+matplotlib
+scikit-learn
+scipy
+psutil
+tqdm
+
+# Optional: Neural Network Dependencies
+# Install separately with: pip install -r requirements_nn.txt
+# Note: EA and SOM work WITHOUT these - NN features are optional
