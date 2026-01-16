@@ -65,3 +65,57 @@ jupyter notebook --no-browser
 
 copy local url 
 http://localhost:8888/tree?token=9beee9a70bf42402a07d6895c5b8cec6f5ef8beb1ed5e1b2
+
+
+
+## LSTM ##
+ověřit, doplnit. 
+cd /Users/tomas/OSU/Python/NexusSom/app/lstm
+python3 collect_training_data.py --results_dir ../data/datasets/*/results/EA
+python3 src/train.py --dataset data/dataset.csv --epochs 50
+
+
+MLP
+MLP "The Prophet" - predikce kvality z hyperparametrů:
+
+
+cd /Users/tomas/OSU/Python/NexusSom/app/mlp
+
+# 1. Připrav dataset z EA results.csv
+python3 prepare_dataset.py --input ../test/results/TVOJE_EA_SLOZKA/results.csv
+
+# 2. Trénuj
+python3 src/train.py --dataset data/dataset.csv --epochs 50 --model lite
+LSTM "The Oracle" - predikce finální kvality z průběhu tréninku:
+
+
+cd /Users/tomas/OSU/Python/NexusSom/app/lstm
+
+# 1. Sbírka dat (zatím POC - simulovaná data)
+python3 collect_training_data.py
+
+# 2. Trénuj
+python3 src/train.py --dataset data/dataset.csv --epochs 50 --model lite
+
+
+
+
+
+
+## generovani datasetu ##
+
+cd /Users/tomas/OSU/Python/NexusSom/app/tools
+
+# Základní použití
+python3 generate_dataset.py \
+    --schema ../data/datasets/BreastCancer/results/SOM/json/preprocessing_info.json \
+    --output ../data/datasets/BreastCancer_virtual/data.csv \
+    --rows 1000
+
+# S verbose výstupem a seedem
+python3 generate_dataset.py \
+    --schema ../data/datasets/BreastCancer/results/SOM/json/preprocessing_info.json \
+    --output ../data/datasets/BreastCancer_virtual/data.csv \
+    --rows 500 \
+    --seed 42 \
+    --verbose

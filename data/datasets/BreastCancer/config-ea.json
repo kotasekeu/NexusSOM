@@ -90,7 +90,10 @@
     "end_radius": 1.0,
     "random_seed": 42,
     "mqe_evaluations_per_run": 500,
-    "map_type": "hex"
+    "map_type": "hex",
+    "save_checkpoints": true,
+    "checkpoint_count": 10
+
   },
   "PREPROCES_DATA": {
     "delimiter": ",",

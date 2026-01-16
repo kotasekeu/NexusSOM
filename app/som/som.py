@@ -70,6 +70,10 @@ class KohonenSOM:
         self.early_stopping_patience = kwargs.get('max_epochs_without_improvement', 50000) # FIXME For now is this feature disabled
         self.mqe_evaluations_per_run = kwargs.get('mqe_evaluations_per_run', 20)
 
+        # Checkpointing for LSTM training data collection
+        self.save_checkpoints = kwargs.get('save_checkpoints', False)
+        self.checkpoint_count = kwargs.get('checkpoint_count', 10)  # Number of checkpoints to save
+
         if self.map_type == 'hex':
             # Calculate cube coordinates for hexagonal grid
             q_coords = self.neuron_coords[:, :, 1] - np.floor(self.neuron_coords[:, :, 0] / 2)
@@ -309,6 +313,13 @@ class KohonenSOM:
         else:
             mqe_compute_interval = total_iterations
 
+        # Checkpointing setup for LSTM training data
+        checkpoints = []
+        if self.save_checkpoints and self.checkpoint_count > 0:
+            checkpoint_interval = max(1, total_iterations // self.checkpoint_count)
+        else:
+            checkpoint_interval = total_iterations + 1  # Never save checkpoints
+
         pbar = tqdm(range(total_iterations), desc="SOM Training", unit="iter")
         iteration = 0  # Initialize iteration variable to avoid scope issues
         for iteration in pbar:
@@ -361,10 +372,25 @@ class KohonenSOM:
             if self.normalize_weights_flag:
                 self.normalize_weights()
 
-                # Compute MQE and check stopping criteria
+            # Compute MQE and check stopping criteria
             if iteration % mqe_compute_interval == 0 or iteration == total_iterations - 1:
                 _, current_mqe = self.compute_quantization_error(data, mask=ignore_mask)
                 self.history['mqe'].append((iteration, current_mqe))
+
+                # Save checkpoint for LSTM training data
+                if self.save_checkpoints and iteration % checkpoint_interval == 0:
+                    topo_error = self.calculate_topographic_error(data, mask=ignore_mask)
+                    dead_ratio = self.calculate_dead_neurons_ratio(data, ignore_mask)
+                    progress = iteration / total_iterations
+                    checkpoints.append({
+                        'iteration': iteration,
+                        'progress': progress,
+                        'mqe': current_mqe,
+                        'topographic_error': topo_error,
+                        'dead_neuron_ratio': dead_ratio,
+                        'learning_rate': current_lr,
+                        'radius': current_radius
+                    })
 
                 if current_mqe < self.best_mqe:
                     self.best_mqe = current_mqe
@@ -413,11 +439,20 @@ class KohonenSOM:
         np.savetxt(csv_path, csv_data, delimiter=',', header=','.join(header), comments='')
         log_message(working_dir, "SYSTEM", f"Readable final weights saved to '{csv_path}'")
 
+        # Save checkpoints for LSTM training if enabled
+        if self.save_checkpoints and checkpoints:
+            import json
+            checkpoints_path = os.path.join(csv_dir, "training_checkpoints.json")
+            with open(checkpoints_path, 'w') as f:
+                json.dump(checkpoints, f, indent=2)
+            log_message(working_dir, "SYSTEM", f"Training checkpoints saved to '{checkpoints_path}'")
+
         return {
             'best_mqe': self.best_mqe,
             'duration': duration,
             'total_weight_updates': self.total_weight_updates,
             "epochs_ran": iteration + 1,
             "converged": converged,
-            "history": self.history
+            "history": self.history,
+            "checkpoints": checkpoints if self.save_checkpoints else []
         }

@@ -6,6 +6,11 @@
 **Implementation File**: [app/ea/ea.py](../app/ea/ea.py)
 
 ---
+Non-dominated Sorting Genetic Algorithm II
+Nedominované třídění (Non-dominated Sorting)
+Vytěsnění (Crowding Distance)
+Elitismus
+Binární turnajový výběr
 
 ## Executive Summary
 

@@ -29,7 +29,9 @@ CONFIG = {
         "random_seed": 42,
         "mqe_evaluations_per_run": 500,
         "max_epochs_without_improvement": 50,
-        "early_stopping_window": 5
+        "early_stopping_window": 5,
+        "save_checkpoints": True,  # Save training checkpoints for LSTM training data
+        "checkpoint_count": 10  # Number of checkpoints to save during training
     },
     "PREPROCES_DATA": {
         "delimiter": ",",
