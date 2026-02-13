@@ -154,17 +154,20 @@
 ### FR-3.1: Phase 1 - Visual Quality Assessor 🔄
 
 #### FR-3.1.1: Input Processing
-- [ ] **FR-3.1.1.1**: Accept RGB images (224×224×3)
-- [ ] **FR-3.1.1.2**: R channel = U-Matrix (topological structure)
-- [ ] **FR-3.1.1.3**: G channel = Distance Map (quantization error)
-- [ ] **FR-3.1.1.4**: B channel = Dead Neurons Map (neuron activity)
-- [ ] **FR-3.1.1.5**: Normalize pixel values to [0, 1] range
+- [x] **FR-3.1.1.1**: Accept RGB images (variable size: 5×5 to 30×30 pixels)
+- [x] **FR-3.1.1.2**: R channel = U-Matrix (topological structure)
+- [x] **FR-3.1.1.3**: G channel = Distance Map (quantization error)
+- [x] **FR-3.1.1.4**: B channel = Dead Neurons Map (neuron activity)
+- [x] **FR-3.1.1.5**: Normalize pixel values to [0, 1] range
+- [x] **FR-3.1.1.6**: 1 neuron = 1 pixel (no interpolation/resizing)
 
 #### FR-3.1.2: Model Architecture
-- [ ] **FR-3.1.2.1**: Standard CNN: 4 conv blocks (~5M parameters)
-- [ ] **FR-3.1.2.2**: Lightweight CNN: 3 conv blocks (~500K parameters)
-- [ ] **FR-3.1.2.3**: Output: Single regression neuron
-- [ ] **FR-3.1.2.4**: Activation: Sigmoid (output range [0, 1])
+- [x] **FR-3.1.2.1**: Standard CNN: 4 conv blocks with GAP for variable input
+- [x] **FR-3.1.2.2**: Lightweight CNN: 3 conv blocks with GAP for variable input
+- [x] **FR-3.1.2.3**: Output: Single regression neuron
+- [x] **FR-3.1.2.4**: Activation: Sigmoid (output range [0, 1])
+- [x] **FR-3.1.2.5**: Global Average Pooling to handle variable input sizes
+- [x] **FR-3.1.2.6**: No MaxPooling to preserve spatial info for small maps
 
 #### FR-3.1.3: Quality Score Prediction
 - [ ] **FR-3.1.3.1**: Predict quality score in [0, 1] range
@@ -172,17 +175,21 @@
 - [ ] **FR-3.1.3.3**: Loss function: MSE or MAE for regression
 
 #### FR-3.1.4: Training Data Handling
-- [x] **FR-3.1.4.1**: Load RGB images from `maps_dataset/rgb/`
-- [x] **FR-3.1.4.2**: Load metrics from `results.csv`
-- [x] **FR-3.1.4.3**: Calculate ground truth quality scores
-- [x] **FR-3.1.4.4**: Quality formula: 0.5×(1-norm_mqe) + 0.3×(1-norm_te) + 0.2×(1-norm_dead)
+- [x] **FR-3.1.4.1**: Load RGB images from `data/cnn/images/`
+- [x] **FR-3.1.4.2**: Load metrics from EA `results.csv` files
+- [x] **FR-3.1.4.3**: Auto-label extreme cases based on thresholds
+- [x] **FR-3.1.4.4**: Organize images by size (5x5/, 10x10/, etc.)
 - [x] **FR-3.1.4.5**: Handle multiple EA run directories
 - [x] **FR-3.1.4.6**: Combine datasets from multiple runs
+- [x] **FR-3.1.4.7**: Pseudo-labeling pipeline for uncertain cases
+- [x] **FR-3.1.4.8**: GroupedSizeDataLoader for batching same-size images
 
 #### FR-3.1.5: Training Strategy
-- [ ] **FR-3.1.5.1**: Phase 1: Train on small dataset (30-50 maps)
-- [ ] **FR-3.1.5.2**: Phase 2: Train on large dataset (10,000 maps, 20 datasets)
-- [ ] **FR-3.1.5.3**: Phase 3: Implement continuous improvement with feedback
+- [x] **FR-3.1.5.1**: Auto-label extreme cases (clearly good/bad maps)
+- [x] **FR-3.1.5.2**: Train on auto-labeled data (initial training)
+- [ ] **FR-3.1.5.3**: Pseudo-label uncertain cases with trained model
+- [ ] **FR-3.1.5.4**: Retrain with expanded dataset (iterative improvement)
+- [ ] **FR-3.1.5.5**: Scale to large dataset (10,000+ maps, multiple datasets)
 
 #### FR-3.1.6: Integration with EA
 - [ ] **FR-3.1.6.1**: Load trained model from checkpoint
@@ -434,9 +441,10 @@
 
 ### TS-3: CNN Data Pipeline Verification
 - [x] **TS-3.1**: Prepare dataset from EA runs directory
-- [x] **TS-3.2**: Verify quality scores calculated correctly
+- [x] **TS-3.2**: Verify auto-labeling based on metrics
 - [x] **TS-3.3**: Verify dataset.csv contains filepaths and scores
-- [ ] **TS-3.4**: Load RGB images and verify shape (224, 224, 3)
+- [x] **TS-3.4**: Verify images organized by size (5x5/, 10x10/, etc.)
+- [x] **TS-3.5**: Test with BreastCancer dataset (1000 samples, 884 labeled)
 
 ### TS-4: CNN Training Verification
 - [ ] **TS-4.1**: Train CNN on small dataset (30-50 samples)
@@ -475,10 +483,16 @@
 - [x] Centralized dataset structure created
 
 ### AC-3: CNN Phase 1 Complete 🔄
-- [x] prepare_data.py supports EA run directories
-- [ ] All FR-3.1.x requirements implemented
-- [ ] TS-3 and TS-4 test scenarios pass
-- [ ] Model trained on initial dataset
+- [x] prepare_dataset.py supports EA run directories
+- [x] Auto-labeling based on metrics thresholds
+- [x] Pseudo-labeling pipeline implemented
+- [x] GAP architecture for variable input sizes (5x5 to 30x30)
+- [x] GroupedSizeDataLoader for batching same-size images
+- [x] TS-3 test scenarios pass (tested with BreastCancer dataset)
+- [ ] TS-4 test scenarios pass (initial training run)
+- [ ] Model trained on auto-labeled dataset
+- [ ] Inference script (predict.py) implemented
+- [ ] CNNQualityEvaluator for EA integration
 
 ### AC-4: EA-CNN Integration Complete 🔜
 - [ ] All FR-2.2.x requirements implemented
@@ -493,7 +507,7 @@
 
 ---
 
-**Document Version**: 1.0
-**Last Updated**: January 2026
+**Document Version**: 1.1
+**Last Updated**: February 2, 2026
 **Project**: NexusSOM Platform
 **Purpose**: Requirements checklist for implementation verification

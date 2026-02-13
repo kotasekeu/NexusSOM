@@ -1,0 +1,43 @@
+{
+  "W026": [
+    "Value 'alcohol' (15.20) is more than 2.5 std deviations from the global mean (11.97).",
+    "Value 'alcohol' (15.20) is the global maximum.",
+    "Value 'tannin' (9.50) is more than 2.5 std deviations from the global mean (3.79).",
+    "Value 'tannin' (9.50) is the global maximum.",
+    "Value 'color_intensity' (11.80) is more than 2.5 std deviations from the global mean (5.28).",
+    "Value 'color_intensity' (11.80) is the global maximum.",
+    "Value 'body' (9.80) is more than 2.5 std deviations from the global mean (5.73).",
+    "Value 'body' (9.80) is the global maximum."
+  ],
+  "W027": [
+    "Value 'alcohol' (9.50) is more than 2.5 std deviations from the global mean (11.97).",
+    "Value 'alcohol' (9.50) is the global minimum.",
+    "Value 'acidity' (7.80) is more than 2.5 std deviations from the global mean (5.52).",
+    "Value 'acidity' (7.80) is the global maximum.",
+    "Value 'sugar' (9.20) is more than 2.5 std deviations from the global mean (4.12).",
+    "Value 'sugar' (9.20) is the global maximum.",
+    "Value 'tannin' (0.30) is the global minimum.",
+    "Value 'color_intensity' (1.20) is the global minimum.",
+    "Value 'aroma_score' (4.10) is the global minimum.",
+    "Value 'body' (2.20) is the global minimum."
+  ],
+  "W006": [
+    "Value 'alcohol' (14.10) is more than 2.5 std deviations from the global mean (11.97).",
+    "Value 'tannin' (8.90) is more than 2.5 std deviations from the global mean (3.79).",
+    "Value 'color_intensity' (10.20) is more than 2.5 std deviations from the global mean (5.28)."
+  ],
+  "W017": [
+    "Value 'sugar' (8.10) is more than 2.5 std deviations from the global mean (4.12).",
+    "Value 'tannin' (0.60) is more than 2.5 std deviations from the global mean (3.79).",
+    "Value 'color_intensity' (1.80) is more than 2.5 std deviations from the global mean (5.28).",
+    "Value 'body' (2.80) is more than 2.5 std deviations from the global mean (5.73)."
+  ],
+  "W009": [
+    "Value 'tannin' (4.80) differs by more than 2.5 std deviations from its neuron's mean (3.86).",
+    "Value 'color_intensity' (5.50) differs by more than 2.5 std deviations from its neuron's mean (5.56)."
+  ],
+  "W013": [
+    "Value 'sugar' (7.50) differs by more than 2.5 std deviations from its neuron's mean (7.20).",
+    "Value 'aroma_score' (5.20) differs by more than 2.5 std deviations from its neuron's mean (5.50)."
+  ]
+}

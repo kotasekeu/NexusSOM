@@ -1,0 +1,37 @@
+DATASET: Wine Quality Assessment
+DOMAIN: Viticulture / Oenology
+DESCRIPTION: Physicochemical measurements and sensory evaluation of wine samples from a regional winery
+SAMPLE: Each row represents one wine sample from a single production batch
+
+COLUMNS:
+- id: Unique wine sample identifier. Not a measurement.
+- type: Wine type classification. Categorical.
+- alcohol: Alcohol content by volume. Unit: % vol. Range: 9.5-15.2.
+  Meaning: Higher alcohol often correlates with fuller body and riper grapes. Wines above 14% are considered high-alcohol.
+- acidity: Total titratable acidity. Unit: g/L tartaric acid. Range: 3.5-7.8.
+  Meaning: Provides freshness and structure. White wines typically have higher acidity than reds. Too high = sour, too low = flat.
+- sugar: Residual sugar after fermentation. Unit: g/L. Range: 1.3-9.2.
+  Meaning: Lower values indicate dry wines (reds), higher values indicate sweeter wines (some whites). Above 6 g/L is noticeably sweet.
+- tannin: Tannin concentration. Unit: arbitrary scale 0-10. Range: 0.3-9.5.
+  Meaning: Comes from grape skins, seeds, and oak aging. Red wines have high tannin (5-10), whites have very low (0-2). Provides structure and aging potential.
+- color_intensity: Optical density measurement of wine color. Unitless. Range: 1.2-11.8.
+  Meaning: Reds have high intensity (5-12), whites low (1-4), rosé in between. Correlates with type and concentration.
+- aroma_score: Expert panel aroma evaluation. Scale: 1-10. Range: 4.1-8.5.
+  Meaning: Higher = more complex and pleasant aroma. Scores above 7 are considered excellent.
+- body: Expert panel body/mouthfeel evaluation. Scale: 1-10. Range: 2.2-9.8.
+  Meaning: Higher = fuller body. Red wines typically score higher due to tannin and alcohol. Above 7 is full-bodied.
+- quality: Overall quality classification. Categorical.
+  Meaning: Expert panel consensus rating.
+
+CATEGORIES:
+- type: red = Red wine, white = White wine, rose = Rosé wine
+- quality: low = Below average quality, medium = Average quality, high = Above average / premium quality
+
+DOMAIN KNOWLEDGE:
+- Red wines are characterized by high tannin, high color intensity, and fuller body
+- White wines have low tannin, low color intensity, high acidity, and higher residual sugar
+- Rosé wines fall between red and white in most measurements
+- Quality correlates positively with alcohol, aroma score, and body
+- High-quality reds have balanced tannin (7-9), not extreme values
+- Very high acidity in whites can indicate poor ripeness and lower quality
+- Tannin and sugar have an inverse relationship across wine types

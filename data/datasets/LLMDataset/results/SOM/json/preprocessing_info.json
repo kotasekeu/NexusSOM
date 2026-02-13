@@ -1,0 +1,92 @@
+{
+  "id": {
+    "status": "used",
+    "reason": "",
+    "type": "object",
+    "nunique": 30,
+    "nunique_ratio": 1.0,
+    "base_type": "text",
+    "is_categorical": false
+  },
+  "type": {
+    "status": "used",
+    "reason": "",
+    "type": "object",
+    "nunique": 3,
+    "nunique_ratio": 0.1,
+    "base_type": "text",
+    "is_categorical": true
+  },
+  "alcohol": {
+    "status": "used",
+    "reason": "",
+    "type": "float64",
+    "nunique": 27,
+    "nunique_ratio": 0.9,
+    "base_type": "numeric",
+    "is_categorical": false
+  },
+  "acidity": {
+    "status": "used",
+    "reason": "",
+    "type": "float64",
+    "nunique": 24,
+    "nunique_ratio": 0.8,
+    "base_type": "numeric",
+    "is_categorical": false
+  },
+  "sugar": {
+    "status": "used",
+    "reason": "",
+    "type": "float64",
+    "nunique": 25,
+    "nunique_ratio": 0.833,
+    "base_type": "numeric",
+    "is_categorical": false
+  },
+  "tannin": {
+    "status": "used",
+    "reason": "",
+    "type": "float64",
+    "nunique": 28,
+    "nunique_ratio": 0.933,
+    "base_type": "numeric",
+    "is_categorical": false
+  },
+  "color_intensity": {
+    "status": "used",
+    "reason": "",
+    "type": "float64",
+    "nunique": 28,
+    "nunique_ratio": 0.933,
+    "base_type": "numeric",
+    "is_categorical": false
+  },
+  "aroma_score": {
+    "status": "used",
+    "reason": "",
+    "type": "float64",
+    "nunique": 26,
+    "nunique_ratio": 0.867,
+    "base_type": "numeric",
+    "is_categorical": false
+  },
+  "body": {
+    "status": "used",
+    "reason": "",
+    "type": "float64",
+    "nunique": 27,
+    "nunique_ratio": 0.9,
+    "base_type": "numeric",
+    "is_categorical": false
+  },
+  "quality": {
+    "status": "used",
+    "reason": "",
+    "type": "object",
+    "nunique": 3,
+    "nunique_ratio": 0.1,
+    "base_type": "text",
+    "is_categorical": true
+  }
+}
