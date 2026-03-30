@@ -1,4 +1,6 @@
-# Thesis Structure — AI-Driven Data Analysis with Self-Organizing Maps
+# Thesis Structure — AI-Driven Data Analysis with Self-Organizing Maps - FIRST DRAFT
+
+
 
 ## Abstract
 

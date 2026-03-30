@@ -329,7 +329,6 @@ Database: Store Results
 | **LLM (Voice)** | 3 | 🔜 Future | P3 |
 | **UI** | 3 | 🔜 Future | P3 |
 | **Database** | 3 | 🔜 Future | P3 |
-| **Growing SOM** | 3 | 🔜 Research | P3 |
 
 ---
 

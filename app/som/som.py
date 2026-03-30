@@ -380,7 +380,7 @@ class KohonenSOM:
                 # Save checkpoint for LSTM training data
                 if self.save_checkpoints and iteration % checkpoint_interval == 0:
                     topo_error = self.calculate_topographic_error(data, mask=ignore_mask)
-                    dead_ratio = self.calculate_dead_neurons_ratio(data, ignore_mask)
+                    _, dead_ratio = self.calculate_dead_neurons(data)
                     progress = iteration / total_iterations
                     checkpoints.append({
                         'iteration': iteration,

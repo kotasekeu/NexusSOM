@@ -74,3 +74,4 @@ kohonen-log.txt
 /requirements.lock.
 /app/cnn/253_29346_142-pycharm-support-libs/
 /data/cnn/
+/data/datasets/BreastCancer/results/*
