@@ -535,6 +535,10 @@ def run_evolution(ea_config: dict, data: np.ndarray, ignore_mask: np.ndarray) ->
 
             # Update archive - contains only individuals from the best front (rank 0)
             ARCHIVE = [combined_population[i] for i in fronts[0]]
+            max_archive = fixed_params.get('max_archive_size', 0)
+            if max_archive > 0 and len(ARCHIVE) > max_archive:
+                ARCHIVE.sort(key=lambda x: -x[0].get('crowding_distance', 0))
+                ARCHIVE = ARCHIVE[:max_archive]
             print(f" Best Pareto front has {len(ARCHIVE)} solutions.")
             log_pareto_front(gen, search_space)  # Log the current best front
 

@@ -90,6 +90,7 @@
   "FIXED_PARAMS": {
     "end_radius": 1.0,
     "random_seed": 42,
+    "max_archive_size": 10,
     "mqe_evaluations_per_run": 500,
     "map_type": "hex",
     "save_checkpoints": true,
