@@ -489,25 +489,35 @@ def run_evolution(ea_config: dict, data: np.ndarray, ignore_mask: np.ndarray) ->
             combined_population = evaluated_population + ARCHIVE
 
             # Fitness calculation using Non-dominated Sorting and Crowding Distance
-            # All objectives are minimized; CNN score is inverted (1 - score) so higher quality = lower objective
+            # Use improvement ratios (final/initial) instead of absolute values so that
+            # results are comparable across different map sizes and datasets.
+            # ratio < 1 = improvement, ratio > 1 = worse than random init (penalized maps).
+            # Fall back to absolute values when ratios are unavailable (e.g. no checkpoints).
+            def _mqe_obj(res):
+                return res.get('mqe_improvement_ratio') if res.get('mqe_improvement_ratio') is not None else res['best_mqe']
+            def _topo_obj(res):
+                return res.get('topo_improvement_ratio') if res.get('topo_improvement_ratio') is not None else res.get('topographic_error', 1.0)
+            def _dead_obj(res):
+                return res.get('dead_improvement_ratio') if res.get('dead_improvement_ratio') is not None else res.get('dead_neuron_ratio', 1.0)
+
             if use_cnn_objective:
                 objectives = np.array([
                     [
-                        res['best_mqe'],
+                        _mqe_obj(res),
                         res['duration'],
-                        res.get('topographic_error', 1.0),
-                        res.get('dead_neuron_ratio', 1.0),
-                        1.0 - (res.get('cnn_quality_score') or 0.0),  # minimize (1 - CNN score)
+                        _topo_obj(res),
+                        _dead_obj(res),
+                        1.0 - (res.get('cnn_quality_score') or 0.0),
                     ]
                     for cfg, res in combined_population
                 ])
             else:
                 objectives = np.array([
                     [
-                        res['best_mqe'],
+                        _mqe_obj(res),
                         res['duration'],
-                        res.get('topographic_error', 1.0),
-                        res.get('dead_neuron_ratio', 1.0)
+                        _topo_obj(res),
+                        _dead_obj(res),
                     ]
                     for cfg, res in combined_population
                 ])
@@ -635,9 +645,11 @@ def log_result_to_csv(config: dict, results: dict, working_dir: str = None) -> N
     uid = results['uid']
 
     file_exists = os.path.isfile(csv_path)
-    base_fields = ['uid', 'best_mqe', 'duration', 'topographic_error',
+    base_fields = ['uid', 'best_mqe', 'initial_mqe', 'mqe_improvement_ratio',
+                   'duration', 'topographic_error', 'topo_improvement_ratio',
+                   'dead_neuron_ratio', 'dead_improvement_ratio',
                    'u_matrix_mean', 'u_matrix_std', 'u_matrix_max', 'distance_map_max',
-                   'total_weight_updates', 'epochs_ran', 'dead_neuron_count', 'dead_neuron_ratio',
+                   'total_weight_updates', 'epochs_ran', 'dead_neuron_count',
                    'cnn_quality_score']
     with open(csv_path, mode="a", newline="") as f:
         row = {'uid': uid}
@@ -934,7 +946,25 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
             penalty_factor *= dead_penalty
             log_message(uid, f"Applied {(dead_penalty - 1.0) * 100:.1f}% penalty for {dead_ratio:.1%} dead neurons", working_dir)
 
-        log_message(uid, f"Evaluated – QE: {training_results['best_mqe']:.6f}, TE: {training_results.get('topographic_error', topographic_error):.4f}, Dead ratio: {dead_ratio:.2%}, Time: {training_results['duration']:.2f}s", working_dir)
+        # Compute improvement ratios vs random initialization (checkpoint[0] = pre-training baseline)
+        # These normalize MQE/TE/dead across different map sizes and datasets for NN training targets
+        # and are used as EA fitness objectives instead of absolute values.
+        ckpts = training_results.get('checkpoints', [])
+        if ckpts:
+            init_mqe  = max(ckpts[0]['mqe'], 1e-10)
+            init_topo = max(ckpts[0].get('topographic_error', 1.0), 1e-10)
+            init_dead = max(ckpts[0].get('dead_neuron_ratio', 1.0), 1e-10)
+            training_results['initial_mqe'] = round(ckpts[0]['mqe'], 8)
+            training_results['mqe_improvement_ratio']  = round(training_results['best_mqe'] / init_mqe, 6)
+            training_results['topo_improvement_ratio'] = round(training_results.get('topographic_error', 1.0) / init_topo, 6)
+            training_results['dead_improvement_ratio'] = round(dead_ratio / init_dead, 6)
+        else:
+            training_results['initial_mqe'] = None
+            training_results['mqe_improvement_ratio']  = None
+            training_results['topo_improvement_ratio'] = None
+            training_results['dead_improvement_ratio'] = None
+
+        log_message(uid, f"Evaluated – QE: {training_results['best_mqe']:.6f} (ratio={training_results['mqe_improvement_ratio']}), TE: {training_results.get('topographic_error', topographic_error):.4f}, Dead ratio: {dead_ratio:.2%}, Time: {training_results['duration']:.2f}s", working_dir)
 
         generate_training_plots(training_results, individual_dir)
 
@@ -1078,7 +1108,7 @@ def main():
     print("INFO: Preparing data for evolution...")
     if INPUT_FILE:
         input_data_df = validate_input_data(INPUT_FILE, WORKING_DIR, preprocess_config)
-        training_data_path, _, ignore_mask = preprocess_data(input_data_df, preprocess_config, WORKING_DIR)
+        training_data_path, _, ignore_mask, _ = preprocess_data(input_data_df, preprocess_config, WORKING_DIR)
         loaded_data = np.load(training_data_path)
         config['PREPROCES_DATA'] = preprocess_config
 

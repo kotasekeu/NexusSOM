@@ -26,8 +26,7 @@ HYPERPARAMETER_COLS = [
     'start_learning_rate',
     'end_learning_rate',
     'lr_decay_type',
-    'start_radius',
-    'end_radius',
+    'start_radius_init_ratio',
     'radius_decay_type',
     'start_batch_percent',
     'end_batch_percent',
@@ -36,14 +35,16 @@ HYPERPARAMETER_COLS = [
     'normalize_weights_flag',
     'growth_g',
     'num_batches',
-    'max_epochs_without_improvement'
 ]
 
 # Target columns (quality metrics to predict)
+# Improvement ratios (final/initial) are dataset- and map-size-independent.
+# Fallback to absolute values when ratios are unavailable (old results without checkpoints).
 TARGET_COLS = [
-    'best_mqe',
-    'topographic_error',
-    'dead_neuron_ratio'
+    'mqe_improvement_ratio',
+    'topo_improvement_ratio',
+    'dead_improvement_ratio',
+    'duration',
 ]
 
 
@@ -111,6 +112,16 @@ def prepare_dataset(results_dir, output_path=None):
     df = pd.read_csv(results_file)
     print(f"Loaded {len(df)} configurations")
 
+    # Load dataset statistics produced by preprocessing
+    dataset_stats = {}
+    meta_file = os.path.join(results_dir, "dataset_meta.json")
+    if os.path.exists(meta_file):
+        with open(meta_file) as f:
+            dataset_stats = json.load(f)
+        print(f"Loaded dataset metadata: {list(dataset_stats.keys())}")
+    else:
+        print("⚠ dataset_meta.json not found — dataset statistics will not be included")
+
     # Check for required columns
     missing_hyperparam_cols = [col for col in HYPERPARAMETER_COLS if col not in df.columns]
     missing_target_cols = [col for col in TARGET_COLS if col not in df.columns]
@@ -151,6 +162,10 @@ def prepare_dataset(results_dir, output_path=None):
     # Convert boolean to int
     if 'normalize_weights_flag' in features_encoded.columns:
         features_encoded['normalize_weights_flag'] = features_encoded['normalize_weights_flag'].astype(int)
+
+    # Inject dataset statistics as constant columns (same value for every row in this run)
+    for key, value in dataset_stats.items():
+        features_encoded[key] = value
 
     # Remove any rows with NaN
     valid_mask = ~(features_encoded.isna().any(axis=1) | targets_df.isna().any(axis=1))

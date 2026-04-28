@@ -60,9 +60,41 @@ def validate_input_data(input_path: str, working_dir: str, config_settings: dict
     log_message(working_dir, "SYSTEM", f"Input data validation completed for '{input_path}'.")
     return df
 
-def preprocess_data(df: pd.DataFrame, config: dict, working_dir: str) -> tuple[str, pd.DataFrame, np.ndarray]:
+def _compute_dataset_stats(
+    analysis_df: pd.DataFrame,
+    numerical_column: list,
+    categorical_column: list,
+    cols_to_ignore: list,
+    cols_for_training: list,
+    training_df: pd.DataFrame,
+    primary_id_col: str,
+    scaled_values: np.ndarray,
+) -> dict:
+    n_missing = int(training_df.isnull().sum().sum())
+    total_cells = training_df.shape[0] * training_df.shape[1]
+    has_primary_id = int(primary_id_col in analysis_df.columns)
+    n_active_dims = scaled_values.shape[1] - has_primary_id
+
+    return {
+        "ds_n_samples": int(analysis_df.shape[0]),
+        "ds_n_original_cols": int(analysis_df.shape[1]),
+        "ds_n_training_cols": int(len(cols_for_training)),
+        "ds_n_dimensions": int(scaled_values.shape[1]),
+        "ds_n_active_dimensions": int(n_active_dims),
+        "ds_n_numeric": int(len(numerical_column)),
+        "ds_n_categorical": int(len(categorical_column)),
+        "ds_n_ignored": int(len(cols_to_ignore)),
+        "ds_n_missing_values": n_missing,
+        "ds_missing_ratio": round(n_missing / total_cells, 6) if total_cells > 0 else 0.0,
+        "ds_has_primary_id": has_primary_id,
+    }
+
+
+def preprocess_data(df: pd.DataFrame, config: dict, working_dir: str) -> tuple[str, pd.DataFrame, np.ndarray, dict]:
     """
     Main function for data preprocessing.
+    Returns (npy_path, original_df, ignore_mask, dataset_stats).
+    dataset_stats is also saved as dataset_meta.json in working_dir.
     """
     log_message(working_dir, "SYSTEM", "--- Starting Data Preprocessing ---")
 
@@ -181,7 +213,22 @@ def preprocess_data(df: pd.DataFrame, config: dict, working_dir: str) -> tuple[s
         'preprocessing_info': preprocessing_info
     })
 
+    # Compute and save dataset statistics for ML model training
+    dataset_stats = _compute_dataset_stats(
+        analysis_df=analysis_df,
+        numerical_column=numerical_column,
+        categorical_column=categorical_column,
+        cols_to_ignore=cols_to_ignore,
+        cols_for_training=cols_for_training,
+        training_df=training_df,
+        primary_id_col=primary_id_col,
+        scaled_values=scaled_values,
+    )
+    meta_path = os.path.join(working_dir, "dataset_meta.json")
+    with open(meta_path, 'w', encoding='utf-8') as f:
+        json.dump(dataset_stats, f, indent=2)
+    log_message(working_dir, "SYSTEM", f"Dataset statistics saved to '{meta_path}'")
+
     log_message(working_dir, "SYSTEM", "--- Data Preprocessing Finished ---")
 
-    # Return path to .npy, original dataframe, and final ignore mask
-    return npy_path, df, ignore_mask_np
+    return npy_path, df, ignore_mask_np, dataset_stats

@@ -88,11 +88,20 @@ def load_real_checkpoints(individuals_dir, uid, target_length):
     # Trim if longer
     checkpoints = checkpoints[:target_length]
 
+    # Normalize each metric by its initial value (checkpoint[0]) so sequences are
+    # comparable across different map sizes and datasets.
+    # ratio=1.0 at start, <1.0 means improvement, >1.0 means degradation.
+    init_mqe  = max(checkpoints[0]['mqe'], 1e-10)
+    init_topo = max(checkpoints[0].get('topographic_error', 1.0), 1e-10)
+    init_dead = max(checkpoints[0].get('dead_neuron_ratio', 1.0), 1e-10)
+
     return {
         'epochs': [c['iteration'] for c in checkpoints],
-        'mqe': [c['mqe'] for c in checkpoints],
-        'topographic_error': [c['topographic_error'] for c in checkpoints],
-        'dead_neuron_ratio': [c['dead_neuron_ratio'] for c in checkpoints],
+        'mqe': [c['mqe'] / init_mqe for c in checkpoints],
+        'topographic_error': [c['topographic_error'] / init_topo for c in checkpoints],
+        'dead_neuron_ratio': [c['dead_neuron_ratio'] / init_dead for c in checkpoints],
+        'learning_rate': [c.get('learning_rate', 0.0) for c in checkpoints],
+        'radius': [c.get('radius', 0.0) for c in checkpoints],
         'num_checkpoints': len(checkpoints)
     }
 
@@ -126,6 +135,16 @@ def collect_training_sequences(results_dir, num_checkpoints=10):
     individuals_dir = os.path.join(results_dir, "individuals")
     has_individuals = os.path.isdir(individuals_dir)
 
+    # Load dataset statistics produced by preprocessing
+    dataset_stats = {}
+    meta_file = os.path.join(results_dir, "dataset_meta.json")
+    if os.path.exists(meta_file):
+        with open(meta_file) as f:
+            dataset_stats = json.load(f)
+        print(f"Loaded dataset metadata: {list(dataset_stats.keys())}")
+    else:
+        print("⚠ dataset_meta.json not found — dataset statistics will not be included")
+
     sequences = []
     real_count = 0
     simulated_count = 0
@@ -154,6 +173,7 @@ def collect_training_sequences(results_dir, num_checkpoints=10):
 
         sequence = {
             'uid': row['uid'],
+            **dataset_stats,
             'final_mqe': row['best_mqe'],
             'final_topographic_error': row['topographic_error'],
             'final_dead_neuron_ratio': row['dead_neuron_ratio'],
@@ -213,7 +233,7 @@ def prepare_lstm_dataset(results_dir, output_path=None, num_checkpoints=10):
     metadata = {
         'num_sequences': len(sequences_df),
         'num_checkpoints': num_checkpoints,
-        'features': ['mqe', 'topographic_error', 'dead_neuron_ratio'],
+        'features': ['mqe', 'topographic_error', 'dead_neuron_ratio', 'learning_rate', 'radius'],
         'targets': ['final_mqe', 'final_topographic_error', 'final_dead_neuron_ratio'],
         'data_type': 'simulated',  # Change to 'real' when using actual logs
         'note': 'Simulated training histories for proof-of-concept. Replace with actual SOM training logs in production.'
@@ -265,8 +285,8 @@ For production, modify SOM training code to log intermediate metrics at checkpoi
     parser.add_argument(
         '--checkpoints',
         type=int,
-        default=10,
-        help='Number of training checkpoints to collect (default: 10)'
+        default=500,
+        help='Number of training checkpoints per sequence (default: 500; sequences are padded/trimmed to this length)'
     )
 
     args = parser.parse_args()

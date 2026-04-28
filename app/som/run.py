@@ -56,7 +56,7 @@ def main():
                     f"Input data '{args.input}' validated successfully. Shape: {input_data_df.shape}")
 
         # Preprocess and normalize data
-        training_data_path, _, ignore_mask = preprocess_data(input_data_df, config, working_dir)
+        training_data_path, _, ignore_mask, _ = preprocess_data(input_data_df, config, working_dir)
         log_message(working_dir, "SYSTEM", "Data preprocessing completed.")
 
         training_data = np.load(training_data_path)
