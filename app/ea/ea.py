@@ -274,11 +274,13 @@ def log_pareto_front(generation: int, search_space: dict):
     with open(log_path, "a", encoding="utf-8") as f:
         f.write(f"--- Generation {generation + 1} | Number of solutions: {len(ARCHIVE)} ---\n")
 
-        # Sort for clarity by the first goal (quantization error)
-        sorted_archive = sorted(ARCHIVE, key=lambda x: x[1]['best_mqe'])
+        # Sort by mqe_improvement_ratio (actual EA objective), fall back to raw best_mqe
+        sorted_archive = sorted(ARCHIVE, key=lambda x: x[1].get('mqe_improvement_ratio') or x[1]['best_mqe'])
 
         for config, results in sorted_archive:
             uid = results['uid']
+            ratio = results.get('mqe_improvement_ratio')
+            init_mqe = results.get('initial_mqe')
             qe = results['best_mqe']
             te = results.get('topographic_error', -1)
             duration = results['training_duration']
@@ -287,7 +289,10 @@ def log_pareto_front(generation: int, search_space: dict):
             um_std = results.get('u_matrix_std', -1)
 
             f.write(f"UID: {uid}\n")
-            f.write(f"  - Objectives: QE={qe:.6f}, TE={te:.4f}, Time={duration:.2f}s\n")
+            if ratio is not None:
+                f.write(f"  - Objectives: MQE_ratio={ratio:.4f} (init={init_mqe:.4f} → best={qe:.4f}), TE={te:.4f}, Time={duration:.2f}s\n")
+            else:
+                f.write(f"  - Objectives: QE={qe:.6f}, TE={te:.4f}, Time={duration:.2f}s\n")
             f.write(f"  - U-Matrix:   Mean={um_mean:.4f}, Std={um_std:.4f}\n")
 
             # Print only parameters from the search space
@@ -542,8 +547,11 @@ def run_evolution(ea_config: dict, data: np.ndarray, ignore_mask: np.ndarray) ->
             # Keep only the dictionaries with configuration, not results
             population = [cfg for cfg, res in combined_population[:population_size]]
 
-            # Update archive - contains only individuals from the best front (rank 0)
-            ARCHIVE = [combined_population[i] for i in fronts[0]]
+            # Update archive - contains only individuals from the best front (rank 0).
+            # NOTE: must be built from the sorted list using rank==0 filter, NOT from
+            # fronts[0] indices — those index the pre-sort combined_population and are
+            # stale after combined_population.sort() above.
+            ARCHIVE = [(cfg, res) for cfg, res in combined_population if cfg.get('rank') == 0]
             max_archive = fixed_params.get('max_archive_size', 0)
             if max_archive > 0 and len(ARCHIVE) > max_archive:
                 ARCHIVE.sort(key=lambda x: -x[0].get('crowding_distance', 0))

@@ -71,3 +71,17 @@ This issue cannot be fully solved within the SOM module alone. It requires aware
 - Consider presenting cluster analyses separately for fully-observed samples versus samples with missing data, to make the distinction visible to the end user.
 
 This is a system-level concern. Solving it requires changes that span from the SOM output format through to the final user-facing report.
+
+---
+
+## Novější problémy a rozhodnutí (zkrácený formát)
+
+5. **Výpočet topographic error v Python smyčce** — Python for-loop přes všechny vzorky způsoboval ~100× zpomalení logování; nahrazeno NumPy vektorizací s broadcasting.
+
+6. **Hybrid batch mode jako jediný tréninkový mód** — tři módy (stochastic / deterministic / hybrid) byly redundantní; hybrid pokrývá krajní případy nastavením batch velikosti; `processing_type` odstraněno ze search space i kódu.
+
+7. **Řídké checkpointy při dlouhém tréninku** — 25 checkpointů na 15 000 iterací nestačí pro LSTM trénink; přidán flag `checkpoint_every_mqe` pro záznam při každém výpočtu MQE (~500 bodů na běh).
+
+8. **Checkpoint[0] jako baseline pro normalizaci MQE** — první checkpoint reprezentuje stav blízký náhodné inicializaci; `initial_mqe` z checkpoint[0] slouží jako dataset- a map-size-nezávislá baseline pro `mqe_improvement_ratio`.
+
+9. **Dead ratio a topographic error nepotřebují normalizaci** — obě metriky jsou přirozeně v [0, 1] jako podíly; pokus o normalizaci ratiem initial hodnoty měnil charakter dat bez přínosu.
