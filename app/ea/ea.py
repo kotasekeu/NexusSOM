@@ -45,6 +45,7 @@ from ea.genetic_operators import (
     crossover_mixed,
     mutate_mixed
 )
+from ea.nn_integration import NeuralNetworkIntegration
 
 # Global variables
 INPUT_FILE = None
@@ -52,6 +53,31 @@ NORMALIZED_DATA = None
 WORKING_DIR = None
 EVALUATED_CACHE = {}  # Cache for evaluated individuals: {uid: (training_results, config)}
 EVALUATION_STATS = {'total_requested': 0, 'cache_hits': 0, 'new_evaluations': 0}  # Track deduplication stats
+_NN_INTEGRATION_CACHE = {}  # Per-process NN model cache: {cache_key: NeuralNetworkIntegration}
+
+
+def _get_nn_integration(nn_config: dict) -> NeuralNetworkIntegration:
+    """
+    Return a cached NeuralNetworkIntegration for this process.
+    Models are loaded once per subprocess and reused across evaluations.
+    """
+    global _NN_INTEGRATION_CACHE
+    cache_key = (
+        nn_config.get('use_mlp'), nn_config.get('use_lstm'), nn_config.get('use_cnn'),
+        nn_config.get('mlp_model_path'), nn_config.get('lstm_model_path'), nn_config.get('cnn_model_path')
+    )
+    if cache_key not in _NN_INTEGRATION_CACHE:
+        _NN_INTEGRATION_CACHE[cache_key] = NeuralNetworkIntegration(
+            use_mlp=nn_config.get('use_mlp', False),
+            use_lstm=nn_config.get('use_lstm', False),
+            use_cnn=nn_config.get('use_cnn', False),
+            mlp_model_path=nn_config.get('mlp_model_path'),
+            mlp_scaler_path=nn_config.get('mlp_scaler_path'),
+            lstm_model_path=nn_config.get('lstm_model_path'),
+            cnn_model_path=nn_config.get('cnn_model_path'),
+            verbose=nn_config.get('verbose', False),
+        )
+    return _NN_INTEGRATION_CACHE[cache_key]
 
 
 def validate_and_repair(config: dict) -> dict:
@@ -401,11 +427,38 @@ def run_evolution(ea_config: dict, data: np.ndarray, ignore_mask: np.ndarray) ->
     fixed_params = ea_config["FIXED_PARAMS"]
     search_space = ea_config["SEARCH_SPACE"]
 
+    # Inject NN config into fixed_params so evaluate_individual subprocesses can load models
+    use_nn = ea_config.get("use_nn", False)
+    nn_cfg = ea_config.get("NEURAL_NETWORKS", {})
+    use_cnn_objective = False
+    if use_nn and (nn_cfg.get("use_mlp") or nn_cfg.get("use_lstm") or nn_cfg.get("use_cnn")):
+        fixed_params = dict(fixed_params)  # don't mutate the original
+        fixed_params['nn_config'] = {
+            'use_mlp': nn_cfg.get('use_mlp', False),
+            'use_lstm': nn_cfg.get('use_lstm', False),
+            'use_cnn': nn_cfg.get('use_cnn', False),
+            'mlp_model_path': nn_cfg.get('mlp_model_path'),
+            'mlp_scaler_path': nn_cfg.get('mlp_scaler_path'),
+            'lstm_model_path': nn_cfg.get('lstm_model_path'),
+            'cnn_model_path': nn_cfg.get('cnn_model_path'),
+            'lstm_quality_threshold': nn_cfg.get('lstm_quality_threshold', 1.0),
+            'mlp_filter_bad_configs': nn_cfg.get('mlp_filter_bad_configs', False),
+            'mlp_bad_quality_threshold': nn_cfg.get('mlp_bad_quality_threshold', 0.5),
+            'verbose': nn_cfg.get('verbose', False),
+        }
+        use_cnn_objective = nn_cfg.get('use_cnn', False)
+        print(f"INFO: NN integration enabled — MLP={nn_cfg.get('use_mlp')}, "
+              f"LSTM={nn_cfg.get('use_lstm')}, CNN={nn_cfg.get('use_cnn')}")
+    else:
+        print("INFO: NN integration disabled — running EA without neural networks")
+
     # Get genetic operator parameters
     genetic_params = ea_config.get("GENETIC_OPERATORS", {})
     sbx_eta = genetic_params.get("sbx_eta", 20.0)
     mutation_eta = genetic_params.get("mutation_eta", 20.0)
     mutation_prob = genetic_params.get("mutation_prob", 0.1)
+    # Tournament size: configurable, default scales with population (k=2 is Deb's original)
+    tournament_k = genetic_params.get("tournament_k", max(2, population_size // 10))
 
     # Initialize population using continuous operators
     # Generate initial population and validate/repair constraints
@@ -436,16 +489,28 @@ def run_evolution(ea_config: dict, data: np.ndarray, ignore_mask: np.ndarray) ->
             combined_population = evaluated_population + ARCHIVE
 
             # Fitness calculation using Non-dominated Sorting and Crowding Distance
-            # Get the objectives array (qe, duration) that we want to minimize
-            objectives = np.array([
-                [
-                    res['best_mqe'],
-                    res['duration'],
-                    res.get('topographic_error', 1.0),
-                    res.get('dead_neuron_ratio', 1.0)
-                ]
-                for cfg, res in combined_population
-            ])
+            # All objectives are minimized; CNN score is inverted (1 - score) so higher quality = lower objective
+            if use_cnn_objective:
+                objectives = np.array([
+                    [
+                        res['best_mqe'],
+                        res['duration'],
+                        res.get('topographic_error', 1.0),
+                        res.get('dead_neuron_ratio', 1.0),
+                        1.0 - (res.get('cnn_quality_score') or 0.0),  # minimize (1 - CNN score)
+                    ]
+                    for cfg, res in combined_population
+                ])
+            else:
+                objectives = np.array([
+                    [
+                        res['best_mqe'],
+                        res['duration'],
+                        res.get('topographic_error', 1.0),
+                        res.get('dead_neuron_ratio', 1.0)
+                    ]
+                    for cfg, res in combined_population
+                ])
 
             # Sorting into Pareto fronts (ranks)
             fronts = non_dominated_sort(objectives)
@@ -477,7 +542,7 @@ def run_evolution(ea_config: dict, data: np.ndarray, ignore_mask: np.ndarray) ->
             mating_pool = []
             # Fill the "mating pool" using tournament selection
             for _ in range(population_size):
-                winner = tournament_selection(population, k=3)
+                winner = tournament_selection(population, k=tournament_k)
                 mating_pool.append(winner)
 
             next_gen_offspring = []
@@ -568,7 +633,8 @@ def log_result_to_csv(config: dict, results: dict, working_dir: str = None) -> N
     file_exists = os.path.isfile(csv_path)
     base_fields = ['uid', 'best_mqe', 'duration', 'topographic_error',
                    'u_matrix_mean', 'u_matrix_std', 'u_matrix_max', 'distance_map_max',
-                   'total_weight_updates', 'epochs_ran', 'dead_neuron_count', 'dead_neuron_ratio']
+                   'total_weight_updates', 'epochs_ran', 'dead_neuron_count', 'dead_neuron_ratio',
+                   'cnn_quality_score']
     with open(csv_path, mode="a", newline="") as f:
         row = {'uid': uid}
         for key in base_fields[1:]:
@@ -762,6 +828,10 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
         individual_dir = os.path.join(working_dir, "individuals", uid)
         os.makedirs(individual_dir, exist_ok=True)
 
+        # --- Neural Network integration ---
+        nn_config = fixed_params.get('nn_config')
+        nn = _get_nn_integration(nn_config) if nn_config else None
+
         som_params = {**ind, **fixed_params}
 
         # Remove non-SOM parameters
@@ -770,10 +840,47 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
         som_params.pop('rank', None)  # Fitness metadata from NSGA-II
         som_params.pop('crowding_distance', None)  # Fitness metadata from NSGA-II
         som_params.pop('comment', None)  # Comment fields from config
+        som_params.pop('nn_config', None)  # NN config is not a SOM param
+
+        # MLP pre-screen: predict quality before full SOM training
+        if nn is not None and nn.can_predict_fitness() and nn_config.get('mlp_filter_bad_configs', False):
+            predicted = nn.predict_fitness(ind)
+            if predicted is not None:
+                pred_mqe = max(0.0, predicted[0])
+                threshold = nn_config.get('mlp_bad_quality_threshold', 0.5)
+                if pred_mqe > threshold:
+                    log_message(uid, f"MLP pre-screen: predicted MQE={pred_mqe:.3f} > threshold={threshold:.3f}, skipping SOM training", working_dir)
+                    penalty_results = {
+                        'uid': uid, 'best_mqe': pred_mqe * 2.0, 'duration': 0.0,
+                        'topographic_error': 1.0, 'dead_neuron_ratio': 1.0,
+                        'dead_neuron_count': 0, 'training_duration': 0.0,
+                        'u_matrix_mean': 0.0, 'u_matrix_std': 0.0, 'u_matrix_max': 0.0,
+                        'distance_map_max': 0.0, 'total_weight_updates': 0, 'epochs_ran': 0,
+                        'cnn_quality_score': None
+                    }
+                    log_status_to_csv(uid, population_id, generation, "mlp_skipped",
+                                      start_time=datetime.fromtimestamp(start_time).strftime("%Y-%m-%d %H:%M:%S"),
+                                      end_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"), working_dir=working_dir)
+                    result = (penalty_results, copy.deepcopy(ind))
+                    EVALUATED_CACHE[uid] = result
+                    return result
+
+        # Build LSTM early-stop callback for SOM training
+        lstm_early_stop_fn = None
+        if nn is not None and nn.can_check_early_stopping():
+            lstm_threshold = nn_config.get('lstm_quality_threshold', 1.0)
+            def lstm_early_stop_fn(checkpoints):
+                history = {
+                    'mqe': [c['mqe'] for c in checkpoints],
+                    'topographic_error': [c['topographic_error'] for c in checkpoints],
+                    'dead_neuron_ratio': [c['dead_neuron_ratio'] for c in checkpoints],
+                }
+                return nn.should_stop_early(history, lstm_threshold)
 
         som = KohonenSOM(dim=data.shape[1], **som_params)
 
-        training_results = som.train(data, ignore_mask=ignore_mask, working_dir=individual_dir)
+        training_results = som.train(data, ignore_mask=ignore_mask, working_dir=individual_dir,
+                                     lstm_early_stop_fn=lstm_early_stop_fn)
 
         training_results['uid'] = uid
 
@@ -824,15 +931,42 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
             log_message(uid, f"Applied {(dead_penalty - 1.0) * 100:.1f}% penalty for {dead_ratio:.1%} dead neurons", working_dir)
 
         log_message(uid, f"Evaluated – QE: {training_results['best_mqe']:.6f}, TE: {training_results.get('topographic_error', topographic_error):.4f}, Dead ratio: {dead_ratio:.2%}, Time: {training_results['duration']:.2f}s", working_dir)
+
+        generate_training_plots(training_results, individual_dir)
+
+        generate_individual_maps(som, data, ignore_mask, individual_dir)
+
+        # CNN visual quality assessment (combine individual maps → RGB → CNN score)
+        training_results['cnn_quality_score'] = None
+        if nn is not None and nn.can_assess_visual_quality():
+            try:
+                from PIL import Image as _PIL_Image
+                vis_dir = os.path.join(individual_dir, "visualizations")
+                u_path = os.path.join(vis_dir, "u_matrix.png")
+                d_path = os.path.join(vis_dir, "distance_map.png")
+                dn_path = os.path.join(vis_dir, "dead_neurons_map.png")
+                if all(os.path.exists(p) for p in [u_path, d_path, dn_path]):
+                    rgb_img = _PIL_Image.merge('RGB', (
+                        _PIL_Image.open(u_path).convert('L'),
+                        _PIL_Image.open(d_path).convert('L'),
+                        _PIL_Image.open(dn_path).convert('L'),
+                    ))
+                    rgb_tmp = os.path.join(vis_dir, f"{uid}_rgb_tmp.png")
+                    rgb_img.save(rgb_tmp)
+                    cnn_result = nn.assess_visual_quality(rgb_tmp)
+                    if cnn_result is not None:
+                        cnn_score, cnn_label = cnn_result
+                        training_results['cnn_quality_score'] = cnn_score
+                        log_message(uid, f"CNN quality: {cnn_score:.3f} ({cnn_label})", working_dir)
+            except Exception as e:
+                log_message(uid, f"CNN assessment failed: {e}", working_dir)
+
+        # Log results to CSV after CNN assessment so cnn_quality_score is included
         log_result_to_csv(ind, training_results, working_dir)
 
         log_status_to_csv(uid, population_id, generation, "completed",
                          start_time=datetime.fromtimestamp(start_time).strftime("%Y-%m-%d %H:%M:%S"),
                          end_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"), working_dir=working_dir)
-
-        generate_training_plots(training_results, individual_dir)
-
-        generate_individual_maps(som, data, ignore_mask, individual_dir)
 
         # Copy maps to centralized dataset for CNN training
         copy_maps_to_dataset(uid, individual_dir, working_dir)

@@ -46,7 +46,6 @@ class KohonenSOM:
 
         self.dim = kwargs.get('dim', 3)
 
-        self.processing_type = kwargs.get('processing_type', 'hybrid')  # 'stochastic', 'deterministic', 'hybrid'
         self.total_weight_updates = 0
 
         # History tracking for training metrics
@@ -287,7 +286,7 @@ class KohonenSOM:
 
         return neuron_error_map, total_qe
 
-    def train(self, data: np.ndarray, ignore_mask: np.ndarray = None, working_dir: str = '.') -> dict:
+    def train(self, data: np.ndarray, ignore_mask: np.ndarray = None, working_dir: str = '.', lstm_early_stop_fn=None) -> dict:
         # Main training loop for SOM
         start_time = time.monotonic()
 
@@ -303,10 +302,9 @@ class KohonenSOM:
         epochs_without_improvement = 0
         recent_mqe_history = deque(maxlen=self.early_stopping_window)
 
-        # Prepare batch indices for hybrid processing
-        if self.processing_type == 'hybrid':
-            shuffled_indices = np.random.permutation(total_samples)
-            section_indices = np.array_split(shuffled_indices, self.num_batches)
+        # Prepare batch indices for processing
+        shuffled_indices = np.random.permutation(total_samples)
+        section_indices = np.array_split(shuffled_indices, self.num_batches)
 
         if self.mqe_evaluations_per_run > 0:
             mqe_compute_interval = max(1, total_iterations // self.mqe_evaluations_per_run)
@@ -331,26 +329,17 @@ class KohonenSOM:
             self.history['learning_rate'].append((iteration, current_lr))
             self.history['radius'].append((iteration, current_radius))
 
-            # Unified logic for sample selection
-            indices_to_process = []
-            if self.processing_type == 'stochastic':
-                idx = np.random.randint(0, total_samples)
-                indices_to_process = [idx]
+            # Sample selection: dynamic batch from divided sections
+            batch_percent = self.get_batch_percent(iteration, total_iterations)
+            samples_per_section_float = (total_samples * batch_percent / 100.0)
+            samples_per_section = max(1, math.ceil(samples_per_section_float))
 
-            elif self.processing_type == 'deterministic':
-                indices_to_process = np.arange(total_samples)
-
-            elif self.processing_type == 'hybrid':
-                batch_percent = self.get_batch_percent(iteration, total_iterations)
-                samples_per_section_float = (total_samples * batch_percent / 100.0)
-                samples_per_section = max(1, math.ceil(samples_per_section_float))
-
-                selected_indices = []
-                for section in section_indices:
-                    num_to_take = min(samples_per_section, len(section))
-                    chosen = np.random.choice(section, num_to_take, replace=False)
-                    selected_indices.extend(chosen)
-                indices_to_process = selected_indices
+            selected_indices = []
+            for section in section_indices:
+                num_to_take = min(samples_per_section, len(section))
+                chosen = np.random.choice(section, num_to_take, replace=False)
+                selected_indices.extend(chosen)
+            indices_to_process = selected_indices
 
             self.history['batch_size'].append((iteration, len(indices_to_process)))
 
@@ -391,6 +380,16 @@ class KohonenSOM:
                         'learning_rate': current_lr,
                         'radius': current_radius
                     })
+
+                    # LSTM early stopping check
+                    if lstm_early_stop_fn is not None and len(checkpoints) >= 2:
+                        should_stop, lstm_score = lstm_early_stop_fn(checkpoints)
+                        if should_stop:
+                            log_message(working_dir, "SYSTEM",
+                                        f"LSTM early stopping triggered at iteration {iteration} "
+                                        f"(predicted quality score: {lstm_score:.3f})")
+                            converged = True
+                            break
 
                 if current_mqe < self.best_mqe:
                     self.best_mqe = current_mqe

@@ -1,4 +1,5 @@
 CONFIG = {
+    "use_nn": False,  # Master switch: enable/disable all neural network features
     "EA_SETTINGS": {
         "population_size": 20,
         "generations": 30
@@ -9,7 +10,6 @@ CONFIG = {
             (10, 10),
             (15, 15)
         ],
-        "processing_type": ["stochastic", "deterministic", "hybrid"],
         "start_learning_rate": [0.9, 0.8, 0.7, 0.6, 0.5],
         "end_learning_rate": [0.2, 0.1, 0.05, 0.01],
         "lr_decay_type": ["linear-drop", "exp-drop", "log-drop", "step-down"],

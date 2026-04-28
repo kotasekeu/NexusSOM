@@ -65,13 +65,47 @@ def simulate_training_history(final_mqe, final_topo_error, final_dead_ratio, num
     }
 
 
+def load_real_checkpoints(individuals_dir, uid, target_length):
+    """
+    Load real training checkpoints from an individual's training_checkpoints.json.
+    Pads to target_length by repeating the last checkpoint if the sequence is shorter.
+
+    Returns a history dict or None if file not found.
+    """
+    checkpoint_path = os.path.join(individuals_dir, uid, "csv", "training_checkpoints.json")
+    if not os.path.exists(checkpoint_path):
+        return None
+
+    with open(checkpoint_path, 'r') as f:
+        checkpoints = json.load(f)
+
+    if len(checkpoints) == 0:
+        return None
+
+    # Pad to target_length by repeating the last entry
+    while len(checkpoints) < target_length:
+        checkpoints.append(checkpoints[-1])
+    # Trim if longer
+    checkpoints = checkpoints[:target_length]
+
+    return {
+        'epochs': [c['iteration'] for c in checkpoints],
+        'mqe': [c['mqe'] for c in checkpoints],
+        'topographic_error': [c['topographic_error'] for c in checkpoints],
+        'dead_neuron_ratio': [c['dead_neuron_ratio'] for c in checkpoints],
+        'num_checkpoints': len(checkpoints)
+    }
+
+
 def collect_training_sequences(results_dir, num_checkpoints=10):
     """
     Collect training sequences from EA results.
+    Uses real training_checkpoints.json per individual when available,
+    falls back to simulated history otherwise.
 
     Args:
         results_dir: Path to EA results directory
-        num_checkpoints: Number of checkpoints per training sequence
+        num_checkpoints: Target number of checkpoints per training sequence
 
     Returns:
         DataFrame with training sequences
@@ -79,8 +113,6 @@ def collect_training_sequences(results_dir, num_checkpoints=10):
     print(f"\n{'='*80}")
     print("COLLECTING LSTM TRAINING DATA")
     print(f"{'='*80}\n")
-    print("NOTE: Using simulated training histories for proof-of-concept")
-    print("In production, replace with actual logged metrics from SOM training\n")
 
     # Load results.csv
     results_file = os.path.join(results_dir, "results.csv")
@@ -91,22 +123,35 @@ def collect_training_sequences(results_dir, num_checkpoints=10):
     df = pd.read_csv(results_file)
     print(f"Loaded {len(df)} configurations")
 
-    # Generate training sequences for each configuration
+    individuals_dir = os.path.join(results_dir, "individuals")
+    has_individuals = os.path.isdir(individuals_dir)
+
     sequences = []
+    real_count = 0
+    simulated_count = 0
 
     for idx, row in df.iterrows():
         if (idx + 1) % 100 == 0:
             print(f"  Progress: {idx+1}/{len(df)}")
 
-        # Simulate training history
-        history = simulate_training_history(
-            final_mqe=row['best_mqe'],
-            final_topo_error=row['topographic_error'],
-            final_dead_ratio=row['dead_neuron_ratio'],
-            num_checkpoints=num_checkpoints
-        )
+        history = None
 
-        # Create sequence entry
+        # Try to load real checkpoint data first
+        if has_individuals:
+            history = load_real_checkpoints(individuals_dir, row['uid'], num_checkpoints)
+
+        if history is not None:
+            real_count += 1
+        else:
+            # Fall back to simulation
+            history = simulate_training_history(
+                final_mqe=row['best_mqe'],
+                final_topo_error=row['topographic_error'],
+                final_dead_ratio=row['dead_neuron_ratio'],
+                num_checkpoints=num_checkpoints
+            )
+            simulated_count += 1
+
         sequence = {
             'uid': row['uid'],
             'final_mqe': row['best_mqe'],
@@ -114,12 +159,13 @@ def collect_training_sequences(results_dir, num_checkpoints=10):
             'final_dead_neuron_ratio': row['dead_neuron_ratio'],
             'training_history': json.dumps(history)
         }
-
         sequences.append(sequence)
 
     sequences_df = pd.DataFrame(sequences)
 
     print(f"\n✓ Generated {len(sequences_df)} training sequences")
+    print(f"  Real checkpoint data: {real_count}")
+    print(f"  Simulated (fallback): {simulated_count}")
     print(f"  Checkpoints per sequence: {num_checkpoints}")
 
     return sequences_df

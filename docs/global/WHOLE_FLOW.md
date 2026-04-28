@@ -22,6 +22,9 @@ Run SOM on BC dataset
 python ./app/run_som.py -i ./data/datasets/BreastCancer/breast-cancer.csv -c ./data/datasets/BreastCancer/config-som.json 
 
 
+python ./app/run_som.py -i ./data/datasets/Iris/iris.csv -c ./data/datasets/Iris/config-som.json 
+
+
 ### EA ###
 Run EA on BC dataset
 

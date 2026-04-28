@@ -1,29 +1,26 @@
 {
   "use_nn": false,
   "EA_SETTINGS": {
-    "population_size": 50,
-    "generations": 20
+    "population_size": 20,
+    "generations": 30
   },
   "SEARCH_SPACE": {
     "map_size": {
       "type": "discrete_int_pair",
-      "min": 5,
-      "max": 20,
-      "comment": "Square-ish map dimensions [m, n]"
+      "min": 3,
+      "max": 8
     },
     "start_learning_rate": {
       "type": "float",
-      "min": 0.01,
-      "max": 1.0,
-      "log_scale": true,
-      "comment": "Initial learning rate — log scale: spacing near 0.01 same as near 1.0"
+      "min": 0.1,
+      "max": 0.9,
+      "log_scale": true
     },
     "end_learning_rate": {
       "type": "float",
-      "min": 0.001,
-      "max": 0.5,
-      "log_scale": true,
-      "comment": "Final learning rate — log scale"
+      "min": 0.005,
+      "max": 0.3,
+      "log_scale": true
     },
     "lr_decay_type": {
       "type": "categorical",
@@ -33,8 +30,7 @@
       "type": "float",
       "min": 0.05,
       "max": 1.0,
-      "log_scale": true,
-      "comment": "Initial radius as ratio of map size — log scale"
+      "log_scale": true
     },
     "radius_decay_type": {
       "type": "categorical",
@@ -42,15 +38,13 @@
     },
     "start_batch_percent": {
       "type": "float",
-      "min": 0.0,
-      "max": 5.0,
-      "comment": "Initial batch size as % of dataset (hybrid mode)"
+      "min": 0.5,
+      "max": 5.0
     },
     "end_batch_percent": {
       "type": "float",
-      "min": 1.0,
-      "max": 15.0,
-      "comment": "Final batch size as % of dataset (must be > start_batch_percent)"
+      "min": 2.0,
+      "max": 10.0
     },
     "batch_growth_type": {
       "type": "categorical",
@@ -58,9 +52,8 @@
     },
     "epoch_multiplier": {
       "type": "int",
-      "min": 0,
-      "max": 25,
-      "comment": "Training duration multiplier"
+      "min": 1,
+      "max": 5
     },
     "normalize_weights_flag": {
       "type": "categorical",
@@ -69,32 +62,29 @@
     "growth_g": {
       "type": "int",
       "min": 10,
-      "max": 40,
-      "comment": "Growth parameter for exp/log curves"
+      "max": 30
     },
     "num_batches": {
       "type": "int",
       "min": 1,
-      "max": 20,
-      "comment": "Number of data sections for hybrid mode"
+      "max": 5
     }
   },
   "GENETIC_OPERATORS": {
     "sbx_eta": 20.0,
     "mutation_eta": 20.0,
     "mutation_prob": 0.1,
-    "crossover_prob": 0.9,
-    "tournament_k": 5,
-    "comment": "SBX and polynomial mutation parameters. tournament_k: if omitted, defaults to max(2, population_size//10)"
+    "crossover_prob": 0.9
   },
   "FIXED_PARAMS": {
     "end_radius": 1.0,
     "random_seed": 42,
-    "mqe_evaluations_per_run": 500,
+    "mqe_evaluations_per_run": 200,
     "map_type": "hex",
+    "max_epochs_without_improvement": 30,
+    "early_stopping_window": 5,
     "save_checkpoints": true,
     "checkpoint_count": 10
-
   },
   "NEURAL_NETWORKS": {
     "use_mlp": false,

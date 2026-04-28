@@ -9,7 +9,7 @@
 **Current Implementation Status**: Phase 1 is 95% complete with all core functionality working.
 
 ### What's Implemented ✅
-- **Three Training Modes**: Stochastic, Deterministic, and advanced Hybrid with section-based sampling
+- **Three Training Modes**: advanced Hybrid with section-based sampling
 - **Comprehensive Parameter Scheduling**: 5 decay types (static, linear, exp, log, step) and 3 growth types
 - **Two Topologies**: Hexagonal (cube coordinates) and Square grids
 - **Full Metrics Suite**: MQE, Topographic Error, Dead Neuron Ratio, U-Matrix Statistics

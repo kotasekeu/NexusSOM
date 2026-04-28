@@ -7,13 +7,15 @@ Implements:
 - Mixed operators for continuous + categorical parameters
 """
 
+import math
 import random
 import numpy as np
 from typing import Tuple, Dict, Any
 
 
 def sbx_crossover(parent1: float, parent2: float, eta: float = 20.0,
-                  bounds: Tuple[float, float] = None) -> Tuple[float, float]:
+                  bounds: Tuple[float, float] = None,
+                  log_scale: bool = False) -> Tuple[float, float]:
     """
     Simulated Binary Crossover (SBX) for continuous parameters.
 
@@ -22,10 +24,19 @@ def sbx_crossover(parent1: float, parent2: float, eta: float = 20.0,
         parent2: Second parent value
         eta: Distribution index (higher = more exploitative, typical: 15-20)
         bounds: (min, max) bounds for clipping
+        log_scale: If True, apply SBX in log-space (better for parameters like learning rate)
 
     Returns:
         (child1, child2) offspring values
     """
+    if log_scale and bounds is not None:
+        # Transform to log-space, apply SBX there, transform back
+        lp1 = math.log(max(parent1, 1e-10))
+        lp2 = math.log(max(parent2, 1e-10))
+        lb = (math.log(bounds[0]), math.log(bounds[1]))
+        lc1, lc2 = sbx_crossover(lp1, lp2, eta, lb, log_scale=False)
+        return math.exp(lc1), math.exp(lc2)
+
     # 50% chance of no crossover
     if random.random() > 0.5:
         return parent1, parent2
@@ -61,7 +72,8 @@ def sbx_crossover(parent1: float, parent2: float, eta: float = 20.0,
 
 def polynomial_mutation(value: float, eta: float = 20.0,
                        bounds: Tuple[float, float] = None,
-                       mutation_prob: float = 1.0) -> float:
+                       mutation_prob: float = 1.0,
+                       log_scale: bool = False) -> float:
     """
     Polynomial mutation for continuous parameters.
 
@@ -70,10 +82,18 @@ def polynomial_mutation(value: float, eta: float = 20.0,
         eta: Distribution index (higher = smaller mutations, typical: 15-20)
         bounds: (min, max) bounds
         mutation_prob: Probability of mutation (default: 1.0 since called per-gene)
+        log_scale: If True, apply mutation in log-space
 
     Returns:
         Mutated value
     """
+    if log_scale and bounds is not None:
+        # Transform to log-space, mutate there, transform back
+        lv = math.log(max(value, 1e-10))
+        lb = (math.log(bounds[0]), math.log(bounds[1]))
+        result = polynomial_mutation(lv, eta, lb, mutation_prob, log_scale=False)
+        return math.exp(result)
+
     if random.random() > mutation_prob:
         return value
 
@@ -141,8 +161,11 @@ def random_config_continuous(param_space: Dict[str, Any]) -> Dict[str, Any]:
         param_type = spec.get('type')
 
         if param_type == 'float':
-            # Uniform random from [min, max], rounded to 2 decimal places
-            config[key] = round(random.uniform(spec['min'], spec['max']), 2)
+            if spec.get('log_scale', False):
+                log_val = random.uniform(math.log(spec['min']), math.log(spec['max']))
+                config[key] = round(math.exp(log_val), 4)
+            else:
+                config[key] = round(random.uniform(spec['min'], spec['max']), 2)
 
         elif param_type == 'int':
             # Random integer from [min, max]
@@ -191,11 +214,12 @@ def crossover_mixed(parent1: Dict[str, Any], parent2: Dict[str, Any],
         param_type = spec.get('type')
 
         if param_type == 'float':
-            # SBX crossover for continuous parameters, rounded to 2 decimal places
             bounds = (spec['min'], spec['max'])
-            c1, c2 = sbx_crossover(parent1[key], parent2[key], eta=eta, bounds=bounds)
-            child1[key] = round(c1, 2)
-            child2[key] = round(c2, 2)
+            ls = spec.get('log_scale', False)
+            c1, c2 = sbx_crossover(parent1[key], parent2[key], eta=eta, bounds=bounds, log_scale=ls)
+            decimals = 4 if ls else 2
+            child1[key] = round(c1, decimals)
+            child2[key] = round(c2, decimals)
 
         elif param_type == 'int':
             # SBX + rounding for integer parameters
@@ -250,10 +274,11 @@ def mutate_mixed(config: Dict[str, Any], param_space: Dict[str, Any],
         param_type = spec.get('type')
 
         if param_type == 'float':
-            # Polynomial mutation for continuous parameters, rounded to 2 decimal places
             bounds = (spec['min'], spec['max'])
+            ls = spec.get('log_scale', False)
+            decimals = 4 if ls else 2
             mutated[key] = round(polynomial_mutation(config[key], eta=eta, bounds=bounds,
-                                              mutation_prob=mutation_prob), 2)
+                                              mutation_prob=mutation_prob, log_scale=ls), decimals)
 
         elif param_type == 'int':
             # Polynomial mutation + rounding for integer parameters

@@ -75,3 +75,14 @@ kohonen-log.txt
 /app/cnn/253_29346_142-pycharm-support-libs/
 /data/cnn/
 /data/datasets/BreastCancer/results/*
+/app/lstm/data/*
+/data/datasets/virtual_bc_1/results/*
+/data/datasets/virtual_bc_2/results/*
+/data/datasets/virtual_bc_3/results/*
+/data/datasets/virtual_bc_4/results/*
+/data/datasets/virtual_bc_5/results/*
+/data/datasets/virtual_bc_6/results/*
+/data/datasets/virtual_bc_7/results/*
+/data/datasets/virtual_bc_8/results/*
+/data/datasets/virtual_bc_9/results/*
+/data/datasets/Iris/results/*

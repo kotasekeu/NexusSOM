@@ -21,10 +21,6 @@ test_search_space = {
         "min": 5,
         "max": 20
     },
-    "processing_type": {
-        "type": "categorical",
-        "values": ["stochastic", "deterministic", "hybrid"]
-    },
     "start_learning_rate": {
         "type": "float",
         "min": 0.0,
@@ -63,7 +59,6 @@ assert 0.0 <= config1['start_learning_rate'] <= 1.0, "LR out of bounds!"
 assert 5 <= config1['map_size'][0] <= 20, "Map size out of bounds!"
 assert config1['map_size'][0] == config1['map_size'][1], "Map is not square!"
 assert config2['map_size'][0] == config2['map_size'][1], "Map is not square!"
-assert config1['processing_type'] in ["stochastic", "deterministic", "hybrid"], "Invalid processing type!"
 print("✓ Random generation successful, bounds respected, maps are square")
 
 # Test 2: SBX Crossover
@@ -100,7 +95,6 @@ assert 0.0 <= child2['start_learning_rate'] <= 1.0, "Child 2 LR out of bounds!"
 assert 1 <= child1['num_batches'] <= 30, "Child 1 num_batches out of bounds!"
 assert child1['map_size'][0] == child1['map_size'][1], "Child 1 map is not square!"
 assert child2['map_size'][0] == child2['map_size'][1], "Child 2 map is not square!"
-assert child1['processing_type'] in ["stochastic", "deterministic", "hybrid"], "Invalid processing type!"
 print("✓ Mixed crossover successful, all bounds respected, maps are square")
 
 # Test 5: Mixed Mutation
