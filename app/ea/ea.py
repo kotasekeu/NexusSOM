@@ -493,20 +493,19 @@ def run_evolution(ea_config: dict, data: np.ndarray, ignore_mask: np.ndarray) ->
             # results are comparable across different map sizes and datasets.
             # ratio < 1 = improvement, ratio > 1 = worse than random init (penalized maps).
             # Fall back to absolute values when ratios are unavailable (e.g. no checkpoints).
+            # mqe_improvement_ratio normalizes MQE across map sizes and datasets.
+            # topographic_error and dead_neuron_ratio are already in [0,1] — no normalization needed.
             def _mqe_obj(res):
-                return res.get('mqe_improvement_ratio') if res.get('mqe_improvement_ratio') is not None else res['best_mqe']
-            def _topo_obj(res):
-                return res.get('topo_improvement_ratio') if res.get('topo_improvement_ratio') is not None else res.get('topographic_error', 1.0)
-            def _dead_obj(res):
-                return res.get('dead_improvement_ratio') if res.get('dead_improvement_ratio') is not None else res.get('dead_neuron_ratio', 1.0)
+                r = res.get('mqe_improvement_ratio')
+                return r if r is not None else res['best_mqe']
 
             if use_cnn_objective:
                 objectives = np.array([
                     [
                         _mqe_obj(res),
                         res['duration'],
-                        _topo_obj(res),
-                        _dead_obj(res),
+                        res.get('topographic_error', 1.0),
+                        res.get('dead_neuron_ratio', 1.0),
                         1.0 - (res.get('cnn_quality_score') or 0.0),
                     ]
                     for cfg, res in combined_population
@@ -516,8 +515,8 @@ def run_evolution(ea_config: dict, data: np.ndarray, ignore_mask: np.ndarray) ->
                     [
                         _mqe_obj(res),
                         res['duration'],
-                        _topo_obj(res),
-                        _dead_obj(res),
+                        res.get('topographic_error', 1.0),
+                        res.get('dead_neuron_ratio', 1.0),
                     ]
                     for cfg, res in combined_population
                 ])
@@ -646,8 +645,7 @@ def log_result_to_csv(config: dict, results: dict, working_dir: str = None) -> N
 
     file_exists = os.path.isfile(csv_path)
     base_fields = ['uid', 'best_mqe', 'initial_mqe', 'mqe_improvement_ratio',
-                   'duration', 'topographic_error', 'topo_improvement_ratio',
-                   'dead_neuron_ratio', 'dead_improvement_ratio',
+                   'duration', 'topographic_error', 'dead_neuron_ratio',
                    'u_matrix_mean', 'u_matrix_std', 'u_matrix_max', 'distance_map_max',
                    'total_weight_updates', 'epochs_ran', 'dead_neuron_count',
                    'cnn_quality_score']
@@ -949,20 +947,16 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
         # Compute improvement ratios vs random initialization (checkpoint[0] = pre-training baseline)
         # These normalize MQE/TE/dead across different map sizes and datasets for NN training targets
         # and are used as EA fitness objectives instead of absolute values.
+        # mqe_improvement_ratio normalizes MQE across different map sizes and datasets.
+        # topographic_error and dead_neuron_ratio are fractions in [0,1] — comparable as-is.
         ckpts = training_results.get('checkpoints', [])
         if ckpts:
-            init_mqe  = max(ckpts[0]['mqe'], 1e-10)
-            init_topo = max(ckpts[0].get('topographic_error', 1.0), 1e-10)
-            init_dead = max(ckpts[0].get('dead_neuron_ratio', 1.0), 1e-10)
+            init_mqe = max(ckpts[0]['mqe'], 1e-10)
             training_results['initial_mqe'] = round(ckpts[0]['mqe'], 8)
-            training_results['mqe_improvement_ratio']  = round(training_results['best_mqe'] / init_mqe, 6)
-            training_results['topo_improvement_ratio'] = round(training_results.get('topographic_error', 1.0) / init_topo, 6)
-            training_results['dead_improvement_ratio'] = round(dead_ratio / init_dead, 6)
+            training_results['mqe_improvement_ratio'] = round(training_results['best_mqe'] / init_mqe, 6)
         else:
             training_results['initial_mqe'] = None
-            training_results['mqe_improvement_ratio']  = None
-            training_results['topo_improvement_ratio'] = None
-            training_results['dead_improvement_ratio'] = None
+            training_results['mqe_improvement_ratio'] = None
 
         log_message(uid, f"Evaluated – QE: {training_results['best_mqe']:.6f} (ratio={training_results['mqe_improvement_ratio']}), TE: {training_results.get('topographic_error', topographic_error):.4f}, Dead ratio: {dead_ratio:.2%}, Time: {training_results['duration']:.2f}s", working_dir)
 

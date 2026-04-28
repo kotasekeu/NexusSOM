@@ -42,8 +42,8 @@ HYPERPARAMETER_COLS = [
 # Fallback to absolute values when ratios are unavailable (old results without checkpoints).
 TARGET_COLS = [
     'mqe_improvement_ratio',
-    'topo_improvement_ratio',
-    'dead_improvement_ratio',
+    'topographic_error',
+    'dead_neuron_ratio',
     'duration',
 ]
 

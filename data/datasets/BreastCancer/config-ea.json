@@ -1,7 +1,7 @@
 {
   "use_nn": false,
   "EA_SETTINGS": {
-    "population_size": 2,
+    "population_size": 5,
     "generations": 3
   },
   "SEARCH_SPACE": {

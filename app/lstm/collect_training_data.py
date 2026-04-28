@@ -88,18 +88,15 @@ def load_real_checkpoints(individuals_dir, uid, target_length):
     # Trim if longer
     checkpoints = checkpoints[:target_length]
 
-    # Normalize each metric by its initial value (checkpoint[0]) so sequences are
-    # comparable across different map sizes and datasets.
-    # ratio=1.0 at start, <1.0 means improvement, >1.0 means degradation.
-    init_mqe  = max(checkpoints[0]['mqe'], 1e-10)
-    init_topo = max(checkpoints[0].get('topographic_error', 1.0), 1e-10)
-    init_dead = max(checkpoints[0].get('dead_neuron_ratio', 1.0), 1e-10)
+    # mqe is normalized by initial value — comparable across map sizes and datasets.
+    # topographic_error and dead_neuron_ratio are already fractions in [0,1] — raw values used.
+    init_mqe = max(checkpoints[0]['mqe'], 1e-10)
 
     return {
         'epochs': [c['iteration'] for c in checkpoints],
         'mqe': [c['mqe'] / init_mqe for c in checkpoints],
-        'topographic_error': [c['topographic_error'] / init_topo for c in checkpoints],
-        'dead_neuron_ratio': [c['dead_neuron_ratio'] / init_dead for c in checkpoints],
+        'topographic_error': [c['topographic_error'] for c in checkpoints],
+        'dead_neuron_ratio': [c['dead_neuron_ratio'] for c in checkpoints],
         'learning_rate': [c.get('learning_rate', 0.0) for c in checkpoints],
         'radius': [c.get('radius', 0.0) for c in checkpoints],
         'num_checkpoints': len(checkpoints)
