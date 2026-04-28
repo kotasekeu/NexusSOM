@@ -71,7 +71,9 @@ class KohonenSOM:
 
         # Checkpointing for LSTM training data collection
         self.save_checkpoints = kwargs.get('save_checkpoints', False)
-        self.checkpoint_count = kwargs.get('checkpoint_count', 10)  # Number of checkpoints to save
+        self.checkpoint_count = kwargs.get('checkpoint_count', 10)
+        # If True, save a checkpoint at every MQE evaluation (ignores checkpoint_count)
+        self.checkpoint_every_mqe = kwargs.get('checkpoint_every_mqe', False)
 
         if self.map_type == 'hex':
             # Calculate cube coordinates for hexagonal grid
@@ -115,31 +117,24 @@ class KohonenSOM:
 
     def calculate_topographic_error(self, data: np.ndarray, mask: np.ndarray = None) -> float:
         """
-        Calculates the topographic error.
-        An error occurs if the BMU and the second-best neuron are not neighbors.
+        Calculates the topographic error (vectorized).
+        An error occurs if the BMU and the second-best neuron are not Moore neighbors.
         """
-        error_count = 0
         flat_weights = self.weights.reshape(-1, self.dim)
 
-        for i in range(data.shape[0]):
-            sample = data[i]
-            sample_mask = mask[i] if mask is not None else None
+        # (N, M, dim) distance matrix for all samples and neurons at once
+        diffs = data[:, np.newaxis, :] - flat_weights[np.newaxis, :, :]
+        if mask is not None:
+            diffs *= (~mask)[:, np.newaxis, :]
+        dists = np.linalg.norm(diffs, axis=2)  # (N, M)
 
-            diffs = flat_weights - sample
-            if sample_mask is not None:
-                diffs *= ~sample_mask
+        best_two = np.argsort(dists, axis=1)[:, :2]  # (N, 2)
+        bmu1_i, bmu1_j = np.divmod(best_two[:, 0], self.n)
+        bmu2_i, bmu2_j = np.divmod(best_two[:, 1], self.n)
 
-            dists = np.linalg.norm(diffs, axis=1)
-
-            best_two_indices = np.argsort(dists)[:2]
-
-            bmu1_i, bmu1_j = divmod(best_two_indices[0], self.n)
-            bmu2_i, bmu2_j = divmod(best_two_indices[1], self.n)
-
-            if (bmu2_i, bmu2_j) not in self._get_neighbors(bmu1_i, bmu1_j):
-                error_count += 1
-
-        return error_count / data.shape[0]
+        # Moore neighborhood: neighbors if max(|Δi|, |Δj|) <= 1
+        not_neighbors = (np.abs(bmu1_i - bmu2_i) > 1) | (np.abs(bmu1_j - bmu2_j) > 1)
+        return not_neighbors.mean()
 
     def calculate_u_matrix_metrics(self) -> dict:
         m, n, weights = self.m, self.n, self.weights
@@ -313,7 +308,9 @@ class KohonenSOM:
 
         # Checkpointing setup for LSTM training data
         checkpoints = []
-        if self.save_checkpoints and self.checkpoint_count > 0:
+        if self.save_checkpoints and self.checkpoint_every_mqe:
+            checkpoint_interval = mqe_compute_interval  # checkpoint at every MQE evaluation
+        elif self.save_checkpoints and self.checkpoint_count > 0:
             checkpoint_interval = max(1, total_iterations // self.checkpoint_count)
         else:
             checkpoint_interval = total_iterations + 1  # Never save checkpoints

@@ -93,9 +93,11 @@
     "mqe_evaluations_per_run": 500,
     "map_type": "hex",
     "save_checkpoints": true,
-    "checkpoint_count": 10,
-      "max_epochs_without_improvement": 200,
-    "early_stopping_window": 20
+    "checkpoint_every_mqe": true,
+    "checkpoint_count": 25,
+    "early_stopping_window": 50,
+    "max_epochs_without_improvement": 500
+
   },
   "NEURAL_NETWORKS": {
     "use_mlp": false,
