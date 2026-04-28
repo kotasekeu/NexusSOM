@@ -4,7 +4,7 @@
 1. Install virtual env for SOM, EA and all NN with all dependencies
 2. /opt/homebrew/opt/python@3.11/bin/python3.11 -m venv .venv
 
-3. source .venv/bin/activate
+3. source .venv/bin/activate   / WIN  python -m venv venv
 4. install all dependencies 
    <br /> python -m pip install -r ./python/requirements.txt
    <br /> and for NN
@@ -28,7 +28,9 @@ python ./app/run_som.py -i ./data/datasets/Iris/iris.csv -c ./data/datasets/Iris
 ### EA ###
 Run EA on BC dataset
 
-python ./app/run_ea.py -i ./data/datasets/BreastCancer/breast-cancer.csv -c ./data/datasets/BreastCancer/config-ea.json 
+python ./app/run_ea.py -i ./data/datasets/BreastCancer/breast-cancer.csv -c ./data/datasets/BreastCancer/config-ea.json
+
+python ./app/run_ea.py -i ./data/datasets/Iris/iris.csv -c ./data/datasets/Iris/config-ea.json
 
 Folder results is created in same folder as is input file (.csv) 
 

@@ -1,8 +1,8 @@
 {
   "use_nn": false,
   "EA_SETTINGS": {
-    "population_size": 50,
-    "generations": 20
+    "population_size": 2,
+    "generations": 3
   },
   "SEARCH_SPACE": {
     "map_size": {
@@ -93,8 +93,9 @@
     "mqe_evaluations_per_run": 500,
     "map_type": "hex",
     "save_checkpoints": true,
-    "checkpoint_count": 10
-
+    "checkpoint_count": 10,
+      "max_epochs_without_improvement": 200,
+    "early_stopping_window": 20
   },
   "NEURAL_NETWORKS": {
     "use_mlp": false,
