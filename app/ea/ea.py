@@ -260,47 +260,61 @@ def tournament_selection(population: list, k: int = 3) -> dict:
 
 def log_pareto_front(generation: int, search_space: dict):
     """
-    Write the current Pareto front (archive) to a file.
-
-    Args:
-        generation: Current generation number.
-        search_space: Dictionary of search space parameters.
+    Append the current Pareto archive to pareto_front.csv — one row per (generation, solution).
+    Columns: generation, uid, raw_mqe_ratio, raw_te, dead_ratio,
+             is_penalized, penalty_factor, penalty_reason,
+             initial_mqe, pen_mqe_ratio, pen_te,
+             u_matrix_mean, u_matrix_std, u_matrix_max, distance_map_max,
+             duration, <search_space_params...>
     """
     global WORKING_DIR
     global ARCHIVE
 
-    log_path = os.path.join(WORKING_DIR, "pareto_front_log.txt")
+    csv_path = os.path.join(WORKING_DIR, "pareto_front.csv")
+    file_exists = os.path.isfile(csv_path)
 
-    with open(log_path, "a", encoding="utf-8") as f:
-        f.write(f"--- Generation {generation + 1} | Number of solutions: {len(ARCHIVE)} ---\n")
+    sorted_archive = sorted(
+        ARCHIVE,
+        key=lambda x: x[1].get('raw_mqe_improvement_ratio') or x[1].get('raw_best_mqe') or x[1]['best_mqe']
+    )
 
-        # Sort by mqe_improvement_ratio (actual EA objective), fall back to raw best_mqe
-        sorted_archive = sorted(ARCHIVE, key=lambda x: x[1].get('mqe_improvement_ratio') or x[1]['best_mqe'])
+    search_keys = sorted(search_space.keys())
+    fieldnames = [
+        'generation', 'uid',
+        'raw_mqe_ratio', 'raw_te', 'dead_ratio',
+        'is_penalized', 'penalty_factor', 'penalty_reason',
+        'initial_mqe', 'pen_mqe_ratio', 'pen_te',
+        'u_matrix_mean', 'u_matrix_std', 'u_matrix_max', 'distance_map_max',
+        'duration',
+    ] + search_keys
+
+    with open(csv_path, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
+        if not file_exists:
+            writer.writeheader()
 
         for config, results in sorted_archive:
-            uid = results['uid']
-            ratio = results.get('mqe_improvement_ratio')
-            init_mqe = results.get('initial_mqe')
-            qe = results['best_mqe']
-            te = results.get('topographic_error', -1)
-            duration = results['training_duration']
-
-            um_mean = results.get('u_matrix_mean', -1)
-            um_std = results.get('u_matrix_std', -1)
-
-            f.write(f"UID: {uid}\n")
-            if ratio is not None:
-                f.write(f"  - Objectives: MQE_ratio={ratio:.4f} (init={init_mqe:.4f} → best={qe:.4f}), TE={te:.4f}, Time={duration:.2f}s\n")
-            else:
-                f.write(f"  - Objectives: QE={qe:.6f}, TE={te:.4f}, Time={duration:.2f}s\n")
-            f.write(f"  - U-Matrix:   Mean={um_mean:.4f}, Std={um_std:.4f}\n")
-
-            # Print only parameters from the search space
-            search_params = {k: v for k, v in config.items() if k in search_space}
-            for key, val in sorted(search_params.items()):
-                f.write(f"  - {key}: {val}\n")
-            f.write("-" * 20 + "\n")
-        f.write("\n")
+            row = {
+                'generation':     generation + 1,
+                'uid':            results['uid'],
+                'raw_mqe_ratio':  results.get('raw_mqe_improvement_ratio'),
+                'raw_te':         results.get('raw_topographic_error', results.get('topographic_error')),
+                'dead_ratio':     results.get('dead_neuron_ratio'),
+                'is_penalized':   results.get('is_penalized', False),
+                'penalty_factor': results.get('penalty_factor', 1.0),
+                'penalty_reason': results.get('penalty_reason', ''),
+                'initial_mqe':    results.get('initial_mqe'),
+                'pen_mqe_ratio':  results.get('mqe_improvement_ratio'),
+                'pen_te':         results.get('topographic_error'),
+                'u_matrix_mean':  results.get('u_matrix_mean'),
+                'u_matrix_std':   results.get('u_matrix_std'),
+                'u_matrix_max':   results.get('u_matrix_max'),
+                'distance_map_max': results.get('distance_map_max'),
+                'duration':       results.get('training_duration', results.get('duration')),
+            }
+            for k in search_keys:
+                row[k] = config.get(k)
+            writer.writerow(row)
 
 
 def get_working_directory(input_file: str = None) -> str:
@@ -500,16 +514,22 @@ def run_evolution(ea_config: dict, data: np.ndarray, ignore_mask: np.ndarray) ->
             # Fall back to absolute values when ratios are unavailable (e.g. no checkpoints).
             # mqe_improvement_ratio normalizes MQE across map sizes and datasets.
             # topographic_error and dead_neuron_ratio are already in [0,1] — no normalization needed.
+            # NSGA-II objectives use RAW values (before penalty) so dominance reflects true quality.
+            # Penalized solutions are still in the population for genetic diversity but their raw
+            # quality metrics determine ranking. Penalty metadata is logged separately.
+            # Objectives: [raw_mqe_ratio, raw_topographic_error, dead_neuron_ratio]
+            # Training duration is removed — it is dataset/config metadata, not a quality objective.
             def _mqe_obj(res):
-                r = res.get('mqe_improvement_ratio')
-                return r if r is not None else res['best_mqe']
+                r = res.get('raw_mqe_improvement_ratio')
+                if r is not None:
+                    return r
+                return res.get('raw_best_mqe', res['best_mqe'])
 
             if use_cnn_objective:
                 objectives = np.array([
                     [
                         _mqe_obj(res),
-                        res['duration'],
-                        res.get('topographic_error', 1.0),
+                        res.get('raw_topographic_error', res.get('topographic_error', 1.0)),
                         res.get('dead_neuron_ratio', 1.0),
                         1.0 - (res.get('cnn_quality_score') or 0.0),
                     ]
@@ -519,8 +539,7 @@ def run_evolution(ea_config: dict, data: np.ndarray, ignore_mask: np.ndarray) ->
                 objectives = np.array([
                     [
                         _mqe_obj(res),
-                        res['duration'],
-                        res.get('topographic_error', 1.0),
+                        res.get('raw_topographic_error', res.get('topographic_error', 1.0)),
                         res.get('dead_neuron_ratio', 1.0),
                     ]
                     for cfg, res in combined_population
@@ -552,6 +571,19 @@ def run_evolution(ea_config: dict, data: np.ndarray, ignore_mask: np.ndarray) ->
             # fronts[0] indices — those index the pre-sort combined_population and are
             # stale after combined_population.sort() above.
             ARCHIVE = [(cfg, res) for cfg, res in combined_population if cfg.get('rank') == 0]
+
+            # Deduplicate by UID — parallel workers may evaluate the same config multiple times
+            # (EVALUATED_CACHE is not shared across processes). Keep the copy with the highest
+            # crowding distance (most diverse position in objective space).
+            seen_uids: set = set()
+            deduped = []
+            for cfg, res in sorted(ARCHIVE, key=lambda x: -x[0].get('crowding_distance', 0)):
+                uid = res.get('uid')
+                if uid not in seen_uids:
+                    seen_uids.add(uid)
+                    deduped.append((cfg, res))
+            ARCHIVE = deduped
+
             max_archive = fixed_params.get('max_archive_size', 0)
             if max_archive > 0 and len(ARCHIVE) > max_archive:
                 ARCHIVE.sort(key=lambda x: -x[0].get('crowding_distance', 0))
@@ -652,8 +684,11 @@ def log_result_to_csv(config: dict, results: dict, working_dir: str = None) -> N
     uid = results['uid']
 
     file_exists = os.path.isfile(csv_path)
-    base_fields = ['uid', 'best_mqe', 'initial_mqe', 'mqe_improvement_ratio',
-                   'duration', 'topographic_error', 'dead_neuron_ratio',
+    base_fields = ['uid',
+                   'raw_best_mqe', 'raw_topographic_error', 'raw_mqe_improvement_ratio',
+                   'best_mqe', 'topographic_error', 'mqe_improvement_ratio',
+                   'initial_mqe', 'penalty_factor', 'is_penalized', 'penalty_reason',
+                   'duration', 'dead_neuron_ratio',
                    'u_matrix_mean', 'u_matrix_std', 'u_matrix_max', 'distance_map_max',
                    'total_weight_updates', 'epochs_ran', 'dead_neuron_count',
                    'cnn_quality_score']
@@ -878,7 +913,11 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
                         'dead_neuron_count': 0, 'training_duration': 0.0,
                         'u_matrix_mean': 0.0, 'u_matrix_std': 0.0, 'u_matrix_max': 0.0,
                         'distance_map_max': 0.0, 'total_weight_updates': 0, 'epochs_ran': 0,
-                        'cnn_quality_score': None
+                        'cnn_quality_score': None,
+                        'raw_best_mqe': pred_mqe * 2.0, 'raw_topographic_error': 1.0,
+                        'raw_mqe_improvement_ratio': None,
+                        'penalty_factor': 1.0, 'is_penalized': True,
+                        'penalty_reason': 'mlp_prescreened',
                     }
                     log_status_to_csv(uid, population_id, generation, "mlp_skipped",
                                       start_time=datetime.fromtimestamp(start_time).strftime("%Y-%m-%d %H:%M:%S"),
@@ -923,50 +962,61 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
         distance_map_max = np.max(distance_map) if distance_map is not None else 0.0
         training_results['distance_map_max'] = distance_map_max
 
+        # Save raw metrics before any penalty is applied
+        raw_best_mqe = training_results['best_mqe']
+        raw_topographic_error = topographic_error
+
         # Apply penalty for poor organization (U-Matrix or Distance Map max > 1.0)
-        # Good SOMs should have values in [0, 1] range
         u_matrix_max = training_results.get('u_matrix_max', 0.0)
         ORGANIZATION_THRESHOLD = 1.0
         penalty_factor = 1.0
+        penalty_reasons = []
 
         if u_matrix_max > ORGANIZATION_THRESHOLD or distance_map_max > ORGANIZATION_THRESHOLD:
-            # Heavy penalty for poor organization: multiply by (1 + excess)
             excess_u = max(0, u_matrix_max - ORGANIZATION_THRESHOLD)
             excess_d = max(0, distance_map_max - ORGANIZATION_THRESHOLD)
             max_excess = max(excess_u, excess_d)
-            penalty_factor = 1.0 + (max_excess * 10.0)  # 10x multiplier for severe penalty
+            penalty_factor = 1.0 + (max_excess * 10.0)
             training_results['best_mqe'] *= penalty_factor
             training_results['topographic_error'] = topographic_error * penalty_factor
+            penalty_reasons.append(f"org(u={u_matrix_max:.3f},d={distance_map_max:.3f})")
             log_message(uid, f"Applied {(penalty_factor - 1.0) * 100:.1f}% penalty for poor organization (U-Matrix max: {u_matrix_max:.3f}, Distance max: {distance_map_max:.3f})", working_dir)
         else:
             training_results['topographic_error'] = topographic_error
 
         # Apply penalty for excessive dead neurons (>10%)
-        # Penalty increases linearly with dead neuron ratio above threshold
-        # Example: 20% dead → 10% penalty, 30% dead → 20% penalty, etc.
         DEAD_NEURON_THRESHOLD = 0.10
         if dead_ratio > DEAD_NEURON_THRESHOLD:
             dead_penalty = 1.0 + (dead_ratio - DEAD_NEURON_THRESHOLD)
             training_results['best_mqe'] *= dead_penalty
             training_results['topographic_error'] *= dead_penalty
             penalty_factor *= dead_penalty
+            penalty_reasons.append(f"dead={dead_ratio:.1%}")
             log_message(uid, f"Applied {(dead_penalty - 1.0) * 100:.1f}% penalty for {dead_ratio:.1%} dead neurons", working_dir)
 
-        # Compute improvement ratios vs random initialization (checkpoint[0] = pre-training baseline)
-        # These normalize MQE/TE/dead across different map sizes and datasets for NN training targets
-        # and are used as EA fitness objectives instead of absolute values.
-        # mqe_improvement_ratio normalizes MQE across different map sizes and datasets.
-        # topographic_error and dead_neuron_ratio are fractions in [0,1] — comparable as-is.
+        # Store raw values and penalty metadata
+        training_results['raw_best_mqe'] = round(raw_best_mqe, 8)
+        training_results['raw_topographic_error'] = round(raw_topographic_error, 8)
+        training_results['penalty_factor'] = round(penalty_factor, 6)
+        training_results['is_penalized'] = penalty_factor > 1.0
+        training_results['penalty_reason'] = "|".join(penalty_reasons)
+
+        # Compute improvement ratios vs random initialization (checkpoint[0] = pre-training baseline).
+        # raw_mqe_improvement_ratio uses raw MQE — reflects true SOM quality, used as NSGA-II objective.
+        # mqe_improvement_ratio uses penalized MQE — logged for reference only.
         ckpts = training_results.get('checkpoints', [])
         if ckpts:
             init_mqe = max(ckpts[0]['mqe'], 1e-10)
             training_results['initial_mqe'] = round(ckpts[0]['mqe'], 8)
+            training_results['raw_mqe_improvement_ratio'] = round(raw_best_mqe / init_mqe, 6)
             training_results['mqe_improvement_ratio'] = round(training_results['best_mqe'] / init_mqe, 6)
         else:
             training_results['initial_mqe'] = None
+            training_results['raw_mqe_improvement_ratio'] = None
             training_results['mqe_improvement_ratio'] = None
 
-        log_message(uid, f"Evaluated – QE: {training_results['best_mqe']:.6f} (ratio={training_results['mqe_improvement_ratio']}), TE: {training_results.get('topographic_error', topographic_error):.4f}, Dead ratio: {dead_ratio:.2%}, Time: {training_results['duration']:.2f}s", working_dir)
+        pen_str = f" [PENALIZED x{penalty_factor:.2f}: {training_results['penalty_reason']}]" if training_results['is_penalized'] else ""
+        log_message(uid, f"Evaluated – raw_ratio={training_results['raw_mqe_improvement_ratio']}, raw_TE={raw_topographic_error:.4f}, Dead={dead_ratio:.2%}, Time={training_results['duration']:.2f}s{pen_str}", working_dir)
 
         generate_training_plots(training_results, individual_dir)
 

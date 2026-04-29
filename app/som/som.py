@@ -57,10 +57,10 @@ class KohonenSOM:
         }
         self.best_mqe = float('inf')
 
-        self.weights = np.random.rand(self.m, self.n, self.dim)
-
         if self.random_seed is not None:
             np.random.seed(self.random_seed)
+
+        self.weights = np.random.rand(self.m, self.n, self.dim)
 
         # Precompute neuron coordinates for distance calculations
         self.neuron_coords = np.indices((self.m, self.n)).transpose(1, 2, 0)

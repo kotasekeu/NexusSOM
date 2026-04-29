@@ -62,10 +62,6 @@
       "max": 25,
       "comment": "Training duration multiplier"
     },
-    "normalize_weights_flag": {
-      "type": "categorical",
-      "values": [false, true]
-    },
     "growth_g": {
       "type": "int",
       "min": 10,
@@ -97,8 +93,8 @@
     "checkpoint_every_mqe": true,
     "checkpoint_count": 25,
     "early_stopping_window": 50,
-    "max_epochs_without_improvement": 500
-
+    "max_epochs_without_improvement": 500,
+    "normalize_weights_flag": false
   },
   "NEURAL_NETWORKS": {
     "use_mlp": false,
