@@ -1,8 +1,8 @@
 {
   "use_nn": false,
   "EA_SETTINGS": {
-    "population_size": 5,
-    "generations": 3
+    "population_size": 80,
+    "generations": 15
   },
   "SEARCH_SPACE": {
     "map_size": {
@@ -58,9 +58,7 @@
     },
     "epoch_multiplier": {
       "type": "int",
-      "min": 0,
-      "max": 25,
-      "comment": "Training duration multiplier"
+      "comment": "Bounds set dynamically by apply_dynamic_search_space (target_iter=[3000, 20000] / n_samples)"
     },
     "growth_g": {
       "type": "int",

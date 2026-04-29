@@ -101,9 +101,9 @@ def validate_and_repair(config: dict) -> dict:
             repaired_config['start_radius'], repaired_config['end_radius'] = \
                 repaired_config['end_radius'], repaired_config['start_radius']
 
-    # Ensure epoch_multiplier has a reasonable minimum value
+    # Clamp epoch_multiplier to at least 1; min enforced by search space config (min: 5)
     if 'epoch_multiplier' in repaired_config:
-        repaired_config['epoch_multiplier'] = max(1.0, repaired_config['epoch_multiplier'])
+        repaired_config['epoch_multiplier'] = max(1, int(repaired_config['epoch_multiplier']))
 
     # Set growth_g = 0 ONLY if ALL decay/growth types are linear (where it's not used at all)
     # This prevents different individuals that are functionally identical
@@ -399,25 +399,52 @@ def get_working_directory(input_file: str = None) -> str:
 
 def apply_dynamic_search_space(search_space: dict, n_samples: int) -> dict:
     """
-    Adjust map_size bounds using Vesanto heuristic: U = 5 * sqrt(n_samples).
-    Sets discrete_int_pair range to [max(8, round(sqrt(U)*0.7)), round(sqrt(U)*1.3)].
+    Adjust map_size and epoch_multiplier bounds from dataset size.
+
+    map_size: Vesanto heuristic U = 5*sqrt(n_samples); side range [0.7*sqrt(U), 1.3*sqrt(U)].
+
+    epoch_multiplier: bounds derived from target total-iteration range so that training
+    time stays roughly constant regardless of dataset size.
+      target_min_iter = 3_000 → new_min = max(1, round(target_min / n_samples))
+      target_max_iter = 20_000 → new_max = max(new_min+2, round(target_max / n_samples))
+    Both values are clamped to [1, 50].
+
     Returns a modified copy — original is not mutated.
     """
     import math
+
+    # --- map_size ---
     U = 5.0 * math.sqrt(n_samples)
     optimal_side = math.sqrt(U)
-    new_min = max(8, round(optimal_side * 0.7))
-    new_max = max(new_min + 2, round(optimal_side * 1.3))
+    map_new_min = max(8, round(optimal_side * 0.7))
+    map_new_max = max(map_new_min + 2, round(optimal_side * 1.3))
+
+    # --- epoch_multiplier ---
+    TARGET_MIN_ITER = 3_000
+    TARGET_MAX_ITER = 20_000
+    em_new_min = max(1, round(TARGET_MIN_ITER / n_samples))
+    em_new_max = max(em_new_min + 2, round(TARGET_MAX_ITER / n_samples))
+    em_new_min = min(em_new_min, 50)
+    em_new_max = min(em_new_max, 50)
+    if em_new_min >= em_new_max:
+        em_new_min = max(1, em_new_max - 1)
 
     adjusted = {}
     for key, spec in search_space.items():
         if key == 'map_size' and isinstance(spec, dict) and spec.get('type') == 'discrete_int_pair':
             new_spec = dict(spec)
-            new_spec['min'] = new_min
-            new_spec['max'] = new_max
+            new_spec['min'] = map_new_min
+            new_spec['max'] = map_new_max
             adjusted[key] = new_spec
-            print(f"INFO: Dynamic map_size bounds [{new_min}, {new_max}] "
+            print(f"INFO: Dynamic map_size bounds [{map_new_min}, {map_new_max}] "
                   f"(optimal_side={optimal_side:.1f}, U={U:.0f}, n_samples={n_samples})")
+        elif key == 'epoch_multiplier' and isinstance(spec, dict):
+            new_spec = dict(spec)
+            new_spec['min'] = em_new_min
+            new_spec['max'] = em_new_max
+            adjusted[key] = new_spec
+            print(f"INFO: Dynamic epoch_multiplier bounds [{em_new_min}, {em_new_max}] "
+                  f"(target_iter=[{TARGET_MIN_ITER}, {TARGET_MAX_ITER}], n_samples={n_samples})")
         else:
             adjusted[key] = spec
     return adjusted
@@ -656,21 +683,9 @@ def run_evolution(ea_config: dict, data: np.ndarray, ignore_mask: np.ndarray) ->
         for gen in range(generations):
             print(f"Generation {gen + 1}/{generations}")
 
-            # Deduplicate population by UID before spawning workers
-            unique_population = []
-            seen_gen_uids: set = set()
-            for ind in population:
-                uid = get_uid(ind)
-                if uid not in seen_gen_uids:
-                    seen_gen_uids.add(uid)
-                    unique_population.append(ind)
-            dup_count = len(population) - len(unique_population)
-            if dup_count:
-                print(f"  Skipping {dup_count} duplicate individuals (genetic collision)")
-
             # Population evaluation (parallel)
-            with Pool(processes=min(10, cpu_count(), len(unique_population))) as pool:
-                args_list = [(ind, i, gen, fixed_params, data, ignore_mask, WORKING_DIR) for i, ind in enumerate(unique_population)]
+            with Pool(processes=min(10, cpu_count(), len(population))) as pool:
+                args_list = [(ind, i, gen, fixed_params, data, ignore_mask, WORKING_DIR) for i, ind in enumerate(population)]
                 results_async = [pool.apply_async(evaluate_individual, args=arg) for arg in args_list]
                 evaluated_population = []
                 for r in results_async:
@@ -779,42 +794,46 @@ def run_evolution(ea_config: dict, data: np.ndarray, ignore_mask: np.ndarray) ->
             log_pareto_front(gen, search_space)  # Log the current best front
 
             # Reproduction (offspring creation)
-            mating_pool = []
-            # Fill the "mating pool" using tournament selection
-            for _ in range(population_size):
-                winner = tournament_selection(population, k=tournament_k)
-                mating_pool.append(winner)
+            # Fill mating pool via tournament selection
+            mating_pool = [tournament_selection(population, k=tournament_k)
+                           for _ in range(population_size)]
 
-            next_gen_offspring = []
-            i = 0
-            while i < population_size:
-                p1_full = mating_pool[i]
-                if i + 1 < population_size:
-                    p2_full = mating_pool[i + 1]
-                else:
-                    # If the number is odd, pair the last one with a random other
-                    p2_full = random.choice(mating_pool[:-1])
+            # Generate exactly population_size unique offspring.
+            # If SBX/mutation produces a duplicate (already in this generation or archive),
+            # retry with a new random pair — up to max_crossovers attempts.
+            archive_uids = {get_uid(cfg) for cfg, _ in ARCHIVE}
+            next_gen_offspring: list = []
+            seen_offspring_uids: set = set(archive_uids)  # skip re-generating known archive members
+            max_crossovers = population_size * 3
+            crossover_attempts = 0
 
-                # Remove fitness keys before crossover and mutation
+            while len(next_gen_offspring) < population_size and crossover_attempts < max_crossovers:
+                crossover_attempts += 1
+                p1_full = random.choice(mating_pool)
+                p2_full = random.choice(mating_pool)
+
                 p1_genes = {k: v for k, v in p1_full.items() if k in search_space}
                 p2_genes = {k: v for k, v in p2_full.items() if k in search_space}
 
-                # Use continuous crossover and mutation operators
                 child1, child2 = crossover_mixed(p1_genes, p2_genes, search_space, eta=sbx_eta)
 
-                mutated_child1 = mutate_mixed(child1, search_space, eta=mutation_eta, mutation_prob=mutation_prob)
-                repaired_child1 = validate_and_repair(mutated_child1)
-                next_gen_offspring.append(repaired_child1)
+                for child in (child1, child2):
+                    if len(next_gen_offspring) >= population_size:
+                        break
+                    mutated = mutate_mixed(child, search_space, eta=mutation_eta, mutation_prob=mutation_prob)
+                    repaired = validate_and_repair(mutated)
+                    uid = get_uid(repaired)
+                    if uid not in seen_offspring_uids:
+                        seen_offspring_uids.add(uid)
+                        next_gen_offspring.append(repaired)
 
-                if len(next_gen_offspring) < population_size:
-                    mutated_child2 = mutate_mixed(child2, search_space, eta=mutation_eta, mutation_prob=mutation_prob)
-                    repaired_child2 = validate_and_repair(mutated_child2)
-                    next_gen_offspring.append(repaired_child2)
-
-                i += 2
+            generated = len(next_gen_offspring)
+            if generated < population_size:
+                print(f"  INFO: Search space saturated — proceeding with {generated}/{population_size} "
+                      f"unique offspring (no new unique configs found after {crossover_attempts} attempts)")
 
             # New population for the next iteration
-            population = next_gen_offspring[:population_size]
+            population = next_gen_offspring
     except KeyboardInterrupt:
         print("\nTerminating evolutionary algorithm...")
     except Exception as e:
