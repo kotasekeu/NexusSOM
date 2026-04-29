@@ -130,12 +130,76 @@ def validate_and_repair(config: dict) -> dict:
 
     return repaired_config
 
-def non_dominated_sort(objectives: np.ndarray) -> list:
+def _dead_neuron_threshold(map_m: int, map_n: int, n_samples: int) -> float:
+    """
+    Dynamic dead neuron threshold from map/dataset coverage ratio.
+    High coverage (small map, many samples/neuron) → strict threshold (few dead expected).
+    Low coverage (large map, few samples/neuron) → lenient threshold (many dead expected).
+    Formula: clamp(1 - coverage_ratio/10, 0.30, 0.85)
+    Examples (n=569): 8x8→0.30, 12x12→0.60, 14x14→0.71, 20x20→0.85
+    """
+    coverage_ratio = n_samples / max(1, map_m * map_n)
+    return float(np.clip(1.0 - coverage_ratio / 10.0, 0.3, 0.85))
+
+
+def compute_constraint_violation(results: dict, n_samples: int, org_threshold: float = 1.0) -> float:
+    """
+    Scalar constraint violation for constrained NSGA-II dominance (Deb 2002).
+    Returns 0.0 for feasible solutions, >0 for infeasible.
+    Organization violation: max(u_matrix_max, distance_map_max) - org_threshold.
+    Dead neuron violation: graduated penalty above dataset-size-calibrated threshold.
+    """
+    u_matrix_max = results.get('u_matrix_max') or 0.0
+    distance_map_max = results.get('distance_map_max') or 0.0
+    org_cv = max(0.0, max(u_matrix_max, distance_map_max) - org_threshold)
+
+    dead_ratio = results.get('dead_neuron_ratio') or 0.0
+    m = results.get('map_m', 10)
+    n_map = results.get('map_n', 10)
+    dead_threshold = _dead_neuron_threshold(m, n_map, n_samples)  # m, n_map = map dimensions
+    dead_excess = max(0.0, dead_ratio - dead_threshold)
+    if dead_excess == 0.0:
+        dead_cv = 0.0
+    elif dead_excess < 0.2:
+        dead_cv = dead_excess * 1.5
+    elif dead_excess < 0.4:
+        dead_cv = dead_excess * 2.5
+    else:
+        dead_cv = dead_excess * 5.0
+
+    return org_cv + dead_cv
+
+
+def _dominates(objectives: np.ndarray, violations, p: int, q: int) -> bool:
+    """
+    Constrained dominance (Deb 2002):
+    - feasible always dominates infeasible
+    - between two infeasible: less violation dominates
+    - between two feasible: standard Pareto dominance
+    Falls back to standard Pareto when violations is None.
+    """
+    if violations is not None:
+        cv_p, cv_q = violations[p], violations[q]
+        feasible_p = cv_p < 1e-9
+        feasible_q = cv_q < 1e-9
+        if feasible_p and not feasible_q:
+            return True
+        if not feasible_p and feasible_q:
+            return False
+        if not feasible_p and not feasible_q:
+            return cv_p < cv_q
+    p_obj, q_obj = objectives[p], objectives[q]
+    return bool(np.all(p_obj <= q_obj) and np.any(p_obj < q_obj))
+
+
+def non_dominated_sort(objectives: np.ndarray, violations: np.ndarray = None) -> list:
     """
     Perform non-dominated sorting for NSGA-II.
+    When violations is provided, uses constrained dominance (Deb 2002).
 
     Args:
         objectives: Array of objective values for all individuals.
+        violations: Optional array of constraint violation scalars (0 = feasible).
 
     Returns:
         List of fronts, each containing indices of individuals.
@@ -147,13 +211,10 @@ def non_dominated_sort(objectives: np.ndarray) -> list:
 
     for p in range(n_individuals):
         for q in range(p + 1, n_individuals):
-            p_obj = objectives[p]
-            q_obj = objectives[q]
-
-            if np.all(p_obj <= q_obj) and np.any(p_obj < q_obj):
+            if _dominates(objectives, violations, p, q):
                 dominated_solutions[p].append(q)
                 domination_count[q] += 1
-            elif np.all(q_obj <= p_obj) and np.any(q_obj < p_obj):
+            elif _dominates(objectives, violations, q, p):
                 dominated_solutions[q].append(p)
                 domination_count[p] += 1
 
@@ -282,8 +343,9 @@ def log_pareto_front(generation: int, search_space: dict):
     fieldnames = [
         'generation', 'uid',
         'raw_mqe_ratio', 'raw_te', 'dead_ratio',
-        'is_penalized', 'penalty_factor', 'penalty_reason',
+        'constraint_violation', 'is_penalized', 'penalty_factor', 'penalty_reason',
         'initial_mqe', 'pen_mqe_ratio', 'pen_te',
+        'map_m', 'map_n',
         'u_matrix_mean', 'u_matrix_std', 'u_matrix_max', 'distance_map_max',
         'duration',
     ] + search_keys
@@ -295,22 +357,25 @@ def log_pareto_front(generation: int, search_space: dict):
 
         for config, results in sorted_archive:
             row = {
-                'generation':     generation + 1,
-                'uid':            results['uid'],
-                'raw_mqe_ratio':  results.get('raw_mqe_improvement_ratio'),
-                'raw_te':         results.get('raw_topographic_error', results.get('topographic_error')),
-                'dead_ratio':     results.get('dead_neuron_ratio'),
-                'is_penalized':   results.get('is_penalized', False),
-                'penalty_factor': results.get('penalty_factor', 1.0),
-                'penalty_reason': results.get('penalty_reason', ''),
-                'initial_mqe':    results.get('initial_mqe'),
-                'pen_mqe_ratio':  results.get('mqe_improvement_ratio'),
-                'pen_te':         results.get('topographic_error'),
-                'u_matrix_mean':  results.get('u_matrix_mean'),
-                'u_matrix_std':   results.get('u_matrix_std'),
-                'u_matrix_max':   results.get('u_matrix_max'),
-                'distance_map_max': results.get('distance_map_max'),
-                'duration':       results.get('training_duration', results.get('duration')),
+                'generation':          generation + 1,
+                'uid':                 results['uid'],
+                'raw_mqe_ratio':       results.get('raw_mqe_improvement_ratio'),
+                'raw_te':              results.get('raw_topographic_error', results.get('topographic_error')),
+                'dead_ratio':          results.get('dead_neuron_ratio'),
+                'constraint_violation': results.get('constraint_violation', 0.0),
+                'is_penalized':        results.get('is_penalized', False),
+                'penalty_factor':      results.get('penalty_factor', 1.0),
+                'penalty_reason':      results.get('penalty_reason', ''),
+                'initial_mqe':         results.get('initial_mqe'),
+                'pen_mqe_ratio':       results.get('mqe_improvement_ratio'),
+                'pen_te':              results.get('topographic_error'),
+                'map_m':               results.get('map_m'),
+                'map_n':               results.get('map_n'),
+                'u_matrix_mean':       results.get('u_matrix_mean'),
+                'u_matrix_std':        results.get('u_matrix_std'),
+                'u_matrix_max':        results.get('u_matrix_max'),
+                'distance_map_max':    results.get('distance_map_max'),
+                'duration':            results.get('training_duration', results.get('duration')),
             }
             for k in search_keys:
                 row[k] = config.get(k)
@@ -331,6 +396,32 @@ def get_working_directory(input_file: str = None) -> str:
 
     os.makedirs(reports_dir, exist_ok=True)
     return reports_dir
+
+def apply_dynamic_search_space(search_space: dict, n_samples: int) -> dict:
+    """
+    Adjust map_size bounds using Vesanto heuristic: U = 5 * sqrt(n_samples).
+    Sets discrete_int_pair range to [max(8, round(sqrt(U)*0.7)), round(sqrt(U)*1.3)].
+    Returns a modified copy — original is not mutated.
+    """
+    import math
+    U = 5.0 * math.sqrt(n_samples)
+    optimal_side = math.sqrt(U)
+    new_min = max(8, round(optimal_side * 0.7))
+    new_max = max(new_min + 2, round(optimal_side * 1.3))
+
+    adjusted = {}
+    for key, spec in search_space.items():
+        if key == 'map_size' and isinstance(spec, dict) and spec.get('type') == 'discrete_int_pair':
+            new_spec = dict(spec)
+            new_spec['min'] = new_min
+            new_spec['max'] = new_max
+            adjusted[key] = new_spec
+            print(f"INFO: Dynamic map_size bounds [{new_min}, {new_max}] "
+                  f"(optimal_side={optimal_side:.1f}, U={U:.0f}, n_samples={n_samples})")
+        else:
+            adjusted[key] = spec
+    return adjusted
+
 
 def load_configuration(json_path: str = None) -> dict:
     """
@@ -426,6 +517,84 @@ def mutate(config: dict, param_space: dict) -> dict:
         config[key] = random.choice(param_space[key])
     return config
 
+def _run_probe_worker(args: tuple):
+    """
+    Lightweight SOM training for calibration probe — no logging, no plots.
+    Returns max(u_matrix_max, dist_map_max) or None on failure.
+    """
+    config, fixed_params, data, ignore_mask, probe_dir = args
+    try:
+        os.makedirs(probe_dir, exist_ok=True)
+        som_params = {**config, **fixed_params}
+        for k in ['sample_size', 'input_dim', 'rank', 'crowding_distance', 'comment',
+                  'nn_config', 'org_threshold', 'max_archive_size']:
+            som_params.pop(k, None)
+        som = KohonenSOM(dim=data.shape[1], **som_params)
+        som.train(data, ignore_mask=ignore_mask, working_dir=probe_dir)
+        u_metrics = som.calculate_u_matrix_metrics()
+        distance_map, _ = som.compute_quantization_error(data, mask=ignore_mask)
+        dist_max = float(np.max(distance_map)) if distance_map is not None else 0.0
+        u_max = float(u_metrics.get('u_matrix_max', 0.0))
+        return max(u_max, dist_max)
+    except Exception:
+        return None
+
+
+def run_calibration_probe(ea_config: dict, data: np.ndarray, ignore_mask: np.ndarray,
+                          working_dir: str) -> float:
+    """
+    Run N quick SOM trainings before EA to calibrate the organization threshold.
+    Uses 70th percentile of max(u_matrix_max, dist_map_max) across all probes.
+    Config section CALIBRATION: {n_probes: 15, probe_epoch_multiplier: 0.3}.
+    Returns calibrated org_threshold (falls back to 1.0 on failure).
+    """
+    cal_cfg = ea_config.get('CALIBRATION', {})
+    n_probes = cal_cfg.get('n_probes', 15)
+    probe_multiplier = cal_cfg.get('probe_epoch_multiplier', 0.3)
+
+    if n_probes <= 0:
+        print("INFO: Calibration probe disabled (n_probes=0), using org_threshold=1.0")
+        return 1.0
+
+    search_space = ea_config['SEARCH_SPACE']
+    probe_fixed = dict(ea_config['FIXED_PARAMS'])
+    probe_fixed.pop('nn_config', None)
+    probe_fixed['epoch_multiplier'] = probe_multiplier
+
+    print(f"\nINFO: Running {n_probes} calibration probes (epoch_multiplier={probe_multiplier})...")
+    probes_base = os.path.join(working_dir, 'calibration_probes')
+
+    configs = [validate_and_repair(random_config_continuous(search_space)) for _ in range(n_probes)]
+    args_list = [
+        (cfg, probe_fixed, data, ignore_mask, os.path.join(probes_base, str(i)))
+        for i, cfg in enumerate(configs)
+    ]
+
+    with Pool(processes=min(n_probes, cpu_count(), 10)) as pool:
+        org_values_raw = pool.map(_run_probe_worker, args_list)
+
+    org_values = [v for v in org_values_raw if v is not None and v > 0]
+
+    if not org_values:
+        print("WARNING: All calibration probes failed, using org_threshold=1.0")
+        return 1.0
+
+    org_threshold = float(np.percentile(org_values, 70))
+
+    probe_csv = os.path.join(working_dir, 'calibration_probe.csv')
+    with open(probe_csv, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerow(['probe_idx', 'org_max'])
+        for i, v in enumerate(org_values):
+            writer.writerow([i + 1, round(v, 6)])
+
+    print(f"INFO: Calibration org_max — min={min(org_values):.3f}, "
+          f"median={float(np.median(org_values)):.3f}, "
+          f"p70={org_threshold:.3f}, max={max(org_values):.3f}")
+    print(f"INFO: ORGANIZATION_THRESHOLD set to {org_threshold:.3f} (70th percentile)")
+    return org_threshold
+
+
 def run_evolution(ea_config: dict, data: np.ndarray, ignore_mask: np.ndarray) -> None:
     """
     Main loop of the evolutionary algorithm with Pareto optimization (NSGA-II).
@@ -487,9 +656,21 @@ def run_evolution(ea_config: dict, data: np.ndarray, ignore_mask: np.ndarray) ->
         for gen in range(generations):
             print(f"Generation {gen + 1}/{generations}")
 
+            # Deduplicate population by UID before spawning workers
+            unique_population = []
+            seen_gen_uids: set = set()
+            for ind in population:
+                uid = get_uid(ind)
+                if uid not in seen_gen_uids:
+                    seen_gen_uids.add(uid)
+                    unique_population.append(ind)
+            dup_count = len(population) - len(unique_population)
+            if dup_count:
+                print(f"  Skipping {dup_count} duplicate individuals (genetic collision)")
+
             # Population evaluation (parallel)
-            with Pool(processes=min(10, cpu_count(), population_size)) as pool:
-                args_list = [(ind, i, gen, fixed_params, data, ignore_mask, WORKING_DIR) for i, ind in enumerate(population)]
+            with Pool(processes=min(10, cpu_count(), len(unique_population))) as pool:
+                args_list = [(ind, i, gen, fixed_params, data, ignore_mask, WORKING_DIR) for i, ind in enumerate(unique_population)]
                 results_async = [pool.apply_async(evaluate_individual, args=arg) for arg in args_list]
                 evaluated_population = []
                 for r in results_async:
@@ -545,8 +726,14 @@ def run_evolution(ea_config: dict, data: np.ndarray, ignore_mask: np.ndarray) ->
                     for cfg, res in combined_population
                 ])
 
-            # Sorting into Pareto fronts (ranks)
-            fronts = non_dominated_sort(objectives)
+            # Constraint violation array for constrained dominance (Deb 2002)
+            violations = np.array([
+                res.get('constraint_violation', 0.0) or 0.0
+                for cfg, res in combined_population
+            ])
+
+            # Sorting into Pareto fronts using constrained dominance
+            fronts = non_dominated_sort(objectives, violations)
 
             # Calculate "distance to neighbors" to maintain diversity
             crowding_distances = crowding_distance_assignment(objectives, fronts)
@@ -687,8 +874,8 @@ def log_result_to_csv(config: dict, results: dict, working_dir: str = None) -> N
     base_fields = ['uid',
                    'raw_best_mqe', 'raw_topographic_error', 'raw_mqe_improvement_ratio',
                    'best_mqe', 'topographic_error', 'mqe_improvement_ratio',
-                   'initial_mqe', 'penalty_factor', 'is_penalized', 'penalty_reason',
-                   'duration', 'dead_neuron_ratio',
+                   'initial_mqe', 'constraint_violation', 'penalty_factor', 'is_penalized', 'penalty_reason',
+                   'duration', 'dead_neuron_ratio', 'map_m', 'map_n',
                    'u_matrix_mean', 'u_matrix_std', 'u_matrix_max', 'distance_map_max',
                    'total_weight_updates', 'epochs_ran', 'dead_neuron_count',
                    'cnn_quality_score']
@@ -916,8 +1103,9 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
                         'cnn_quality_score': None,
                         'raw_best_mqe': pred_mqe * 2.0, 'raw_topographic_error': 1.0,
                         'raw_mqe_improvement_ratio': None,
-                        'penalty_factor': 1.0, 'is_penalized': True,
-                        'penalty_reason': 'mlp_prescreened',
+                        'map_m': 10, 'map_n': 10,
+                        'constraint_violation': 999.0, 'penalty_factor': 1000.0,
+                        'is_penalized': True, 'penalty_reason': 'mlp_prescreened',
                     }
                     log_status_to_csv(uid, population_id, generation, "mlp_skipped",
                                       start_time=datetime.fromtimestamp(start_time).strftime("%Y-%m-%d %H:%M:%S"),
@@ -962,43 +1150,37 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
         distance_map_max = np.max(distance_map) if distance_map is not None else 0.0
         training_results['distance_map_max'] = distance_map_max
 
-        # Save raw metrics before any penalty is applied
+        # Store raw metrics — never modified, used as NSGA-II objectives
         raw_best_mqe = training_results['best_mqe']
         raw_topographic_error = topographic_error
+        training_results['topographic_error'] = topographic_error
 
-        # Apply penalty for poor organization (U-Matrix or Distance Map max > 1.0)
+        # Assess constraint violations (organization quality and dead neuron ratio)
         u_matrix_max = training_results.get('u_matrix_max', 0.0)
-        ORGANIZATION_THRESHOLD = 1.0
-        penalty_factor = 1.0
+        ORGANIZATION_THRESHOLD = fixed_params.get('org_threshold', 1.0)
         penalty_reasons = []
 
         if u_matrix_max > ORGANIZATION_THRESHOLD or distance_map_max > ORGANIZATION_THRESHOLD:
-            excess_u = max(0, u_matrix_max - ORGANIZATION_THRESHOLD)
-            excess_d = max(0, distance_map_max - ORGANIZATION_THRESHOLD)
-            max_excess = max(excess_u, excess_d)
-            penalty_factor = 1.0 + (max_excess * 10.0)
-            training_results['best_mqe'] *= penalty_factor
-            training_results['topographic_error'] = topographic_error * penalty_factor
             penalty_reasons.append(f"org(u={u_matrix_max:.3f},d={distance_map_max:.3f})")
-            log_message(uid, f"Applied {(penalty_factor - 1.0) * 100:.1f}% penalty for poor organization (U-Matrix max: {u_matrix_max:.3f}, Distance max: {distance_map_max:.3f})", working_dir)
-        else:
-            training_results['topographic_error'] = topographic_error
+            log_message(uid, f"Organization violation — U-Matrix max: {u_matrix_max:.3f}, Distance max: {distance_map_max:.3f}", working_dir)
 
-        # Apply penalty for excessive dead neurons (>10%)
-        DEAD_NEURON_THRESHOLD = 0.10
-        if dead_ratio > DEAD_NEURON_THRESHOLD:
-            dead_penalty = 1.0 + (dead_ratio - DEAD_NEURON_THRESHOLD)
-            training_results['best_mqe'] *= dead_penalty
-            training_results['topographic_error'] *= dead_penalty
-            penalty_factor *= dead_penalty
-            penalty_reasons.append(f"dead={dead_ratio:.1%}")
-            log_message(uid, f"Applied {(dead_penalty - 1.0) * 100:.1f}% penalty for {dead_ratio:.1%} dead neurons", working_dir)
+        dead_threshold = _dead_neuron_threshold(som.m, som.n, data.shape[0])
+        if dead_ratio > dead_threshold:
+            penalty_reasons.append(f"dead={dead_ratio:.1%}(thresh={dead_threshold:.1%})")
+            log_message(uid, f"Dead neuron violation: {dead_ratio:.1%} > threshold {dead_threshold:.1%}", working_dir)
 
-        # Store raw values and penalty metadata
+        # Store raw values and map dimensions for constraint violation computation
         training_results['raw_best_mqe'] = round(raw_best_mqe, 8)
         training_results['raw_topographic_error'] = round(raw_topographic_error, 8)
-        training_results['penalty_factor'] = round(penalty_factor, 6)
-        training_results['is_penalized'] = penalty_factor > 1.0
+        training_results['map_m'] = som.m
+        training_results['map_n'] = som.n
+
+        # Constraint violation scalar for constrained NSGA-II dominance (Deb 2002)
+        # 0.0 = feasible; >0 = infeasible; magnitude ranks infeasible solutions
+        cv = compute_constraint_violation(training_results, data.shape[0], ORGANIZATION_THRESHOLD)
+        training_results['constraint_violation'] = round(cv, 6)
+        training_results['is_penalized'] = cv > 0.0
+        training_results['penalty_factor'] = round(1.0 + cv, 6)  # logged for reference; not applied to objectives
         training_results['penalty_reason'] = "|".join(penalty_reasons)
 
         # Compute improvement ratios vs random initialization (checkpoint[0] = pre-training baseline).
@@ -1015,8 +1197,8 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
             training_results['raw_mqe_improvement_ratio'] = None
             training_results['mqe_improvement_ratio'] = None
 
-        pen_str = f" [PENALIZED x{penalty_factor:.2f}: {training_results['penalty_reason']}]" if training_results['is_penalized'] else ""
-        log_message(uid, f"Evaluated – raw_ratio={training_results['raw_mqe_improvement_ratio']}, raw_TE={raw_topographic_error:.4f}, Dead={dead_ratio:.2%}, Time={training_results['duration']:.2f}s{pen_str}", working_dir)
+        cv_str = f" [INFEASIBLE cv={cv:.3f}: {training_results['penalty_reason']}]" if training_results['is_penalized'] else ""
+        log_message(uid, f"Evaluated – raw_ratio={training_results['raw_mqe_improvement_ratio']}, raw_TE={raw_topographic_error:.4f}, Dead={dead_ratio:.2%}, Time={training_results['duration']:.2f}s{cv_str}", working_dir)
 
         generate_training_plots(training_results, individual_dir)
 
@@ -1173,6 +1355,14 @@ def main():
         loaded_data = get_or_generate_data(sample_size, input_dim)
         ignore_mask = None
         print(f"INFO: Data has been generated. Number of samples: {sample_size}, dimension: {input_dim}")
+
+    # Adjust map_size search space for this dataset size
+    config['SEARCH_SPACE'] = apply_dynamic_search_space(config['SEARCH_SPACE'], loaded_data.shape[0])
+
+    # Calibrate organization threshold from representative probe runs
+    org_threshold = run_calibration_probe(config, loaded_data, ignore_mask, WORKING_DIR)
+    config['FIXED_PARAMS'] = dict(config.get('FIXED_PARAMS', {}))
+    config['FIXED_PARAMS']['org_threshold'] = org_threshold
 
     ARCHIVE = []
 

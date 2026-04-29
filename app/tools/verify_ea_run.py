@@ -155,8 +155,24 @@ def _parse_pareto_txt(path: str) -> list[dict]:
 # Pareto dominance helpers
 # ---------------------------------------------------------------------------
 
-def _minimizes(a: dict, b: dict) -> bool:
-    """Return True if a weakly dominates b on 3 raw objectives (lower is better)."""
+def _cv_dominates(a: dict, b: dict) -> bool:
+    """
+    Constrained dominance (Deb 2002) on 3 raw objectives.
+    'constraint_violation' key: 0.0 = feasible, >0 = infeasible.
+    """
+    cv_a = a.get('constraint_violation', 0.0) or 0.0
+    cv_b = b.get('constraint_violation', 0.0) or 0.0
+    feasible_a = cv_a < 1e-9
+    feasible_b = cv_b < 1e-9
+
+    if feasible_a and not feasible_b:
+        return True
+    if not feasible_a and feasible_b:
+        return False
+    if not feasible_a and not feasible_b:
+        return cv_a < cv_b
+
+    # Both feasible: standard Pareto on 3 raw objectives
     objs = ['ratio', 'te', 'dead']
     better = False
     for o in objs:
@@ -171,13 +187,13 @@ def _minimizes(a: dict, b: dict) -> bool:
 
 
 def find_dominated_in_archive(solutions: list[dict]) -> list[str]:
-    """Return UIDs of solutions that are dominated by another in the same list."""
+    """Return UIDs of solutions dominated by another using constrained dominance."""
     dominated = []
     for i, s in enumerate(solutions):
         for j, other in enumerate(solutions):
             if i == j:
                 continue
-            if _minimizes(other, s):
+            if _cv_dominates(other, s):
                 dominated.append(s['uid'])
                 break
     return dominated
@@ -377,41 +393,38 @@ def report_final_archive(gen_data: list[dict], rows: list[dict]):
     enriched: list[dict] = []
     for s in sols:
         row = uid_to_row.get(s['uid'], {})
+        cv = _fv(row.get('constraint_violation'), default=0.0)
         enriched.append({
-            'uid':   s['uid'],
-            'ratio': float(row.get('mqe_improvement_ratio') or s['ratio'] or 999),
-            'te':    float(row.get('topographic_error') or s['te'] or 999),
-            'time':  float(row.get('duration') or s['time'] or 999),
-            'dead':  float(row.get('dead_neuron_ratio') or s['dead'] or 999),
+            'uid':                s['uid'],
+            'ratio':              _fval(row.get('raw_mqe_improvement_ratio'), s['ratio']),
+            'te':                 _fval(row.get('raw_topographic_error'), s['te']),
+            'dead':               _fval(row.get('dead_neuron_ratio'), s['dead']),
+            'constraint_violation': cv,
         })
 
     dominated = find_dominated_in_archive(enriched)
     if dominated:
-        print(f"\n  BUG: {len(dominated)} solutions in archive are dominated by another (4-objective check)!")
+        print(f"\n  BUG: {len(dominated)} solutions in archive are dominated by another (constrained dominance check)!")
         for uid in dominated:
             print(f"    UID {uid[:8]}")
     else:
-        print(f"\n  OK: No internal dominance in final archive (4-objective check using results.csv values).")
+        print(f"\n  OK: No internal dominance in final archive (constrained dominance, raw objectives).")
 
-    print(f"\n  Penalty breakdown from results.csv:")
-    print(f"  {'UID':10}  {'u_mat_max':10}  {'dist_max':10}  {'dead_ratio':12}  penalty_cause")
+    print(f"\n  Constraint violation breakdown from results.csv:")
+    print(f"  {'UID':10}  {'cv':8}  {'u_mat_max':10}  {'dist_max':10}  {'dead_ratio':12}  {'map':8}  penalty_reason")
     print(f"  {SEP2}")
     for s in sorted(sols, key=lambda x: x['ratio'] if x['ratio'] is not None else 999):
         row = uid_to_row.get(s['uid'])
         if not row:
             continue
+        cv  = float(row.get('constraint_violation', 0) or 0)
         um  = float(row.get('u_matrix_max', 0) or 0)
         dm  = float(row.get('distance_map_max', 0) or 0)
         dr  = float(row.get('dead_neuron_ratio', 0) or 0)
-        causes = []
-        if um > 1.0:
-            causes.append(f"U-Matrix max={um:.2f}")
-        if dm > 1.0:
-            causes.append(f"Dist max={dm:.2f}")
-        if dr > 0.10:
-            causes.append(f"dead={dr:.1%}")
-        cause_str = ", ".join(causes) if causes else "none (genuine)"
-        print(f"  {s['uid8']:10}  {um:10.3f}  {dm:10.3f}  {dr:12.4f}  {cause_str}")
+        m_m = row.get('map_m', '?')
+        m_n = row.get('map_n', '?')
+        reason = row.get('penalty_reason', '') or ('none (feasible)' if cv < 1e-9 else '')
+        print(f"  {s['uid8']:10}  {cv:8.4f}  {um:10.3f}  {dm:10.3f}  {dr:12.4f}  {m_m}x{m_n:8}  {reason}")
 
 
 # ---------------------------------------------------------------------------
@@ -456,7 +469,7 @@ def report_crowding_ejection(gen_data: list[dict]):
             next_sols = next_gen_data['solutions']
             # Is it dominated by anything in next gen?
             this_sol = next(s for g in gen_data for s in g['solutions'] if s['uid'] == uid)
-            dominators = [s for s in next_sols if _minimizes(s, this_sol)]
+            dominators = [s for s in next_sols if _cv_dominates(s, this_sol)]
             if dominators:
                 reason = f"dominated by {dominators[0]['uid8']} (ratio={dominators[0]['ratio']:.3f})"
             else:
@@ -471,19 +484,21 @@ def report_crowding_ejection(gen_data: list[dict]):
 def report_param_penalty(rows: list[dict]):
     section("7. PARAMETER CORRELATION WITH PENALTY")
     cat_params = ['lr_decay_type', 'radius_decay_type', 'batch_growth_type', 'normalize_weights_flag']
-    print(f"  Categorical parameters — penalty rate by value:\n")
+    print(f"  Categorical parameters — constraint violation rate by value:\n")
     for param in cat_params:
-        buckets = defaultdict(list)
+        buckets: dict[str, list] = defaultdict(list)
         for r in rows:
-            val = r.get(param, '?')
-            ratio = float(r.get('mqe_improvement_ratio') or 0)
-            buckets[val].append(ratio)
+            val = r.get(param) or '?'
+            raw_ratio = float(r.get('raw_mqe_improvement_ratio') or r.get('mqe_improvement_ratio') or 0)
+            is_pen = str(r.get('is_penalized', '')).lower() == 'true'
+            buckets[val].append((raw_ratio, is_pen))
         if not buckets:
             continue
         print(f"  {param}:")
-        for val, ratios in sorted(buckets.items()):
-            pen_pct = sum(1 for r in ratios if r >= 2) / len(ratios) * 100
-            print(f"    {val:30s} n={len(ratios):5d}  %pen={pen_pct:5.1f}%  avg_raw_ratio={sum(ratios)/len(ratios):.3f}")
+        for val, entries in sorted(buckets.items()):
+            pen_pct = sum(1 for _, p in entries if p) / len(entries) * 100
+            avg_ratio = sum(r for r, _ in entries) / len(entries)
+            print(f"    {val:30s} n={len(entries):5d}  %infeasible={pen_pct:5.1f}%  avg_raw_ratio={avg_ratio:.3f}")
         print()
 
 
@@ -532,9 +547,11 @@ def report_recommendations(rows: list[dict], gen_data: list[dict], results_dir: 
         if peak_good > final_good:
             recs.append(
                 f"ARCHIVE REGRESSION: peak good solutions={peak_good}, final={final_good}.\n"
-                f"    max_archive_size={archive_size} is too small — penalized fast solutions\n"
-                f"    occupy extreme TIME positions with high crowding distance, crowding out good ones.\n"
-                f"    Recommended: increase max_archive_size to {archive_size * 2} or add a penalty filter."
+                f"    Good solutions were later crowded out of the archive (size cap={archive_size}).\n"
+                f"    With constrained dominance, infeasible solutions should rank behind feasible ones;\n"
+                f"    regression may indicate the archive is still too small or constraint thresholds\n"
+                f"    are too strict (check constraint_violation column in pareto_front.csv).\n"
+                f"    Recommended: increase max_archive_size or review ORGANIZATION_THRESHOLD."
             )
 
     # Check for non-deterministic re-evaluations (same UID, different results)
@@ -548,12 +565,30 @@ def report_recommendations(rows: list[dict], gen_data: list[dict], results_dir: 
             uid_counts[_row.get('uid', '')] += 1
     duplicates = sum(c - 1 for c in uid_counts.values() if c > 1)
     if duplicates > 0:
-        recs.append(
-            f"NON-DETERMINISTIC RE-EVALUATION: {duplicates} duplicate UID rows in results.csv.\n"
-            f"    Same individual config evaluated twice with different results.\n"
-            f"    Root cause: np.random.seed() applied AFTER weight init in som.py (now fixed).\n"
-            f"    Future runs should produce at most 1 row per UID."
-        )
+        # Check if duplicates are truly non-deterministic (different values) or just parallel re-evaluations
+        try:
+            import pandas as _pd
+            _df = _pd.read_csv(os.path.join(results_dir, "results.csv"))
+            _dup_uids = _df[_df.duplicated('uid', keep=False)]['uid'].unique()
+            _nondeterministic = 0
+            for _u in _dup_uids:
+                _rows = _df[_df['uid'] == _u][['raw_mqe_improvement_ratio', 'raw_topographic_error', 'dead_neuron_ratio']]
+                if _rows.nunique().max() > 1:
+                    _nondeterministic += 1
+        except Exception:
+            _nondeterministic = duplicates
+
+        if _nondeterministic > 0:
+            recs.append(
+                f"NON-DETERMINISTIC RE-EVALUATION: {_nondeterministic} UIDs have different values across duplicate rows.\n"
+                f"    Root cause: np.random.seed() applied AFTER weight init in som.py — verify the fix is in place."
+            )
+        else:
+            recs.append(
+                f"PARALLEL RE-EVALUATION: {duplicates} duplicate UID rows (identical values — seed is deterministic).\n"
+                f"    Parallel workers evaluated the same config multiple times (no shared EVALUATED_CACHE).\n"
+                f"    Harmless but wasteful — consider SQLite-based shared cache to avoid redundant SOM training."
+            )
 
     has_dead = any(
         s['dead'] is not None
