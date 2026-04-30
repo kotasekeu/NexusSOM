@@ -8,9 +8,7 @@
   "SEARCH_SPACE": {
     "map_size": {
       "type": "discrete_int_pair",
-      "min": 5,
-      "max": 20,
-      "comment": "Square-ish map dimensions [m, n]"
+      "comment": "Bounds set dynamically by apply_dynamic_search_space (Vesanto heuristic: U=5*sqrt(n_samples))"
     },
     "start_learning_rate": {
       "type": "float",
