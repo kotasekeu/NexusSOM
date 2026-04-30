@@ -340,15 +340,17 @@ def log_pareto_front(generation: int, search_space: dict):
     )
 
     search_keys = sorted(search_space.keys())
+    # Collect ds_* keys present in any archive result
+    ds_keys = sorted({k for _, res in ARCHIVE for k in res if k.startswith('ds_')})
     fieldnames = [
-        'generation', 'uid',
+        'generation', 'uid', 'dataset_name',
         'raw_mqe_ratio', 'raw_te', 'dead_ratio',
         'constraint_violation', 'is_penalized', 'penalty_factor', 'penalty_reason',
         'initial_mqe', 'pen_mqe_ratio', 'pen_te',
         'map_m', 'map_n',
         'u_matrix_mean', 'u_matrix_std', 'u_matrix_max', 'distance_map_max',
         'duration',
-    ] + search_keys
+    ] + ds_keys + search_keys
 
     with open(csv_path, "a", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
@@ -359,6 +361,7 @@ def log_pareto_front(generation: int, search_space: dict):
             row = {
                 'generation':          generation + 1,
                 'uid':                 results['uid'],
+                'dataset_name':        results.get('dataset_name'),
                 'raw_mqe_ratio':       results.get('raw_mqe_improvement_ratio'),
                 'raw_te':              results.get('raw_topographic_error', results.get('topographic_error')),
                 'dead_ratio':          results.get('dead_neuron_ratio'),
@@ -377,6 +380,8 @@ def log_pareto_front(generation: int, search_space: dict):
                 'distance_map_max':    results.get('distance_map_max'),
                 'duration':            results.get('training_duration', results.get('duration')),
             }
+            for k in ds_keys:
+                row[k] = results.get(k)
             for k in search_keys:
                 row[k] = config.get(k)
             writer.writerow(row)
@@ -891,6 +896,7 @@ def log_result_to_csv(config: dict, results: dict, working_dir: str = None) -> N
 
     file_exists = os.path.isfile(csv_path)
     base_fields = ['uid',
+                   'dataset_name',
                    'raw_best_mqe', 'raw_topographic_error', 'raw_mqe_improvement_ratio',
                    'best_mqe', 'topographic_error', 'mqe_improvement_ratio',
                    'initial_mqe', 'constraint_violation', 'penalty_factor', 'is_penalized', 'penalty_reason',
@@ -898,13 +904,17 @@ def log_result_to_csv(config: dict, results: dict, working_dir: str = None) -> N
                    'u_matrix_mean', 'u_matrix_std', 'u_matrix_max', 'distance_map_max',
                    'total_weight_updates', 'epochs_ran', 'dead_neuron_count',
                    'cnn_quality_score']
+    ds_keys = sorted(k for k in results if k.startswith('ds_'))
+
     with open(csv_path, mode="a", newline="") as f:
         row = {'uid': uid}
         for key in base_fields[1:]:
             row[key] = results.get(key)
+        for key in ds_keys:
+            row[key] = results.get(key)
         row.update(config)
 
-        fieldnames = ['uid'] + [k for k in base_fields[1:]] + list(config.keys())
+        fieldnames = ['uid'] + [k for k in base_fields[1:]] + ds_keys + list(config.keys())
 
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
         if not file_exists:
@@ -1219,6 +1229,11 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
         cv_str = f" [INFEASIBLE cv={cv:.3f}: {training_results['penalty_reason']}]" if training_results['is_penalized'] else ""
         log_message(uid, f"Evaluated – raw_ratio={training_results['raw_mqe_improvement_ratio']}, raw_TE={raw_topographic_error:.4f}, Dead={dead_ratio:.2%}, Time={training_results['duration']:.2f}s{cv_str}", working_dir)
 
+        # Propagate dataset metadata from fixed_params into results for CSV logging
+        for key, value in fixed_params.items():
+            if key.startswith('ds_') or key == 'dataset_name':
+                training_results[key] = value
+
         generate_training_plots(training_results, individual_dir)
 
         generate_individual_maps(som, data, ignore_mask, individual_dir)
@@ -1382,8 +1397,20 @@ def main():
     # Adjust search space bounds once from dataset size
     config['SEARCH_SPACE'] = apply_dynamic_search_space(config['SEARCH_SPACE'], loaded_data.shape[0])
 
-    # Calibrate org_threshold once — depends on dataset/map size, not on seed
+    # Inject dataset metadata into fixed_params so every results.csv row carries dataset context
     config['FIXED_PARAMS'] = dict(config.get('FIXED_PARAMS', {}))
+    if INPUT_FILE:
+        config['FIXED_PARAMS']['dataset_name'] = os.path.basename(os.path.dirname(os.path.abspath(INPUT_FILE)))
+        meta_path = os.path.join(base_results_dir, "dataset_meta.json")
+        if os.path.exists(meta_path):
+            with open(meta_path, encoding='utf-8') as f:
+                for key, value in json.load(f).items():
+                    config['FIXED_PARAMS'][key] = value
+            print(f"INFO: Dataset metadata loaded from {meta_path}")
+        else:
+            print("INFO: dataset_meta.json not found — dataset columns will be empty")
+
+    # Calibrate org_threshold once — depends on dataset/map size, not on seed
     org_threshold = run_calibration_probe(config, loaded_data, ignore_mask, base_results_dir)
     config['FIXED_PARAMS']['org_threshold'] = org_threshold
 
