@@ -199,11 +199,55 @@ def _add_colorbar(fig, ax, cmap, norm, generations):
     cbar.set_ticks(generations)
 
 
+def export_csv(df: pd.DataFrame, stats: pd.DataFrame, results_dir: str, csv_path: str = None):
+    if csv_path is None:
+        csv_path = os.path.join(results_dir, "pareto_evolution_stats.csv")
+
+    # Per-generation summary (data behind panels 1 and 2)
+    stats.to_csv(csv_path, index=False)
+    print(f"Saved stats: {csv_path}")
+
+    # Per-generation parameter distributions for archive solutions
+    param_cols = [c for c in df.columns if c not in (
+        "generation", "uid", "is_penalized", "is_feasible", "map_area",
+        "raw_mqe_ratio", "raw_te", "dead_ratio", "constraint_violation",
+        "map_m", "map_n", "duration",
+    )]
+    obj_cols = ["raw_mqe_ratio", "raw_te", "dead_ratio", "constraint_violation"]
+
+    rows = []
+    for g in sorted(df["generation"].unique()):
+        gdf = df[df["generation"] == g]
+        for col in param_cols + obj_cols:
+            if col not in gdf.columns:
+                continue
+            numeric = pd.to_numeric(gdf[col], errors="coerce").dropna()
+            if numeric.empty:
+                continue
+            rows.append({
+                "generation": g,
+                "param": col,
+                "mean":   round(numeric.mean(), 6),
+                "median": round(numeric.median(), 6),
+                "std":    round(numeric.std(), 6),
+                "min":    round(numeric.min(), 6),
+                "max":    round(numeric.max(), 6),
+                "p25":    round(numeric.quantile(0.25), 6),
+                "p75":    round(numeric.quantile(0.75), 6),
+            })
+
+    dist_path = csv_path.replace(".csv", "_param_dist.csv")
+    pd.DataFrame(rows).to_csv(dist_path, index=False)
+    print(f"Saved param distributions: {dist_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Plot Pareto front evolution from EA run.")
     parser.add_argument("results_dir", help="Path to EA results directory")
     parser.add_argument("--output", "-o",
                         help="Output image path (default: results_dir/pareto_evolution.png)")
+    parser.add_argument("--csv", "-c", nargs="?", const=True, default=False,
+                        help="Export plot data to CSV (optional custom path)")
     args = parser.parse_args()
 
     if not os.path.isdir(args.results_dir):
@@ -212,6 +256,13 @@ def main():
     df = load_pareto_csv(args.results_dir)
     print(f"Loaded {len(df)} rows, {df['generation'].nunique()} generations, "
           f"{df['uid'].nunique()} unique solutions.")
+
+    stats = _gen_stats(df)
+
+    if args.csv is not False:
+        csv_path = args.csv if isinstance(args.csv, str) else None
+        export_csv(df, stats, args.results_dir, csv_path)
+
     plot_evolution(df, args.results_dir, args.output)
 
 

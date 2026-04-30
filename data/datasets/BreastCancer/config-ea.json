@@ -1,8 +1,9 @@
 {
   "use_nn": false,
   "EA_SETTINGS": {
-    "population_size": 80,
-    "generations": 15
+    "population_size": 50,
+    "generations": 6,
+    "seeds": [42, 1337, 7, 101, 2026]
   },
   "SEARCH_SPACE": {
     "map_size": {
@@ -13,10 +14,10 @@
     },
     "start_learning_rate": {
       "type": "float",
-      "min": 0.01,
+      "min": 0.5,
       "max": 1.0,
       "log_scale": true,
-      "comment": "Initial learning rate — log scale: spacing near 0.01 same as near 1.0"
+      "comment": "Initial learning rate — standard SOM global phase range [0.5, 1.0]"
     },
     "end_learning_rate": {
       "type": "float",
@@ -31,10 +32,10 @@
     },
     "start_radius_init_ratio": {
       "type": "float",
-      "min": 0.05,
+      "min": 0.5,
       "max": 1.0,
       "log_scale": true,
-      "comment": "Initial radius as ratio of map size — log scale"
+      "comment": "Initial radius as ratio of max(m,n) — min=0.5 ensures radius covers at least half the map (global organization phase)"
     },
     "radius_decay_type": {
       "type": "categorical",

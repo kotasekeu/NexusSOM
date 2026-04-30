@@ -1354,19 +1354,23 @@ def main():
             sys.exit(1)
         INPUT_FILE = args.input
 
-    WORKING_DIR = get_working_directory(INPUT_FILE)
     config = load_configuration(args.config)
     preprocess_config = config.get("PREPROCES_DATA", {})
 
+    # Preprocessing and search space adjustment happen once — shared across all seed runs
+    if INPUT_FILE:
+        base_results_dir = os.path.join(os.path.dirname(os.path.abspath(INPUT_FILE)), "results")
+    else:
+        base_results_dir = os.path.join(os.getcwd(), "results")
+    os.makedirs(base_results_dir, exist_ok=True)
+
     print("INFO: Preparing data for evolution...")
     if INPUT_FILE:
-        input_data_df = validate_input_data(INPUT_FILE, WORKING_DIR, preprocess_config)
-        training_data_path, _, ignore_mask, _ = preprocess_data(input_data_df, preprocess_config, WORKING_DIR)
+        input_data_df = validate_input_data(INPUT_FILE, base_results_dir, preprocess_config)
+        training_data_path, _, ignore_mask, _ = preprocess_data(input_data_df, preprocess_config, base_results_dir)
         loaded_data = np.load(training_data_path)
         config['PREPROCES_DATA'] = preprocess_config
-
-        print(
-            f"INFO: Data loaded and normalized from file {training_data_path}. Shape: {loaded_data.shape}")
+        print(f"INFO: Data loaded and normalized from file {training_data_path}. Shape: {loaded_data.shape}")
     else:
         data_params = config.get("DATA_PARAMS", {})
         sample_size = data_params.get("sample_size", 1000)
@@ -1375,21 +1379,40 @@ def main():
         ignore_mask = None
         print(f"INFO: Data has been generated. Number of samples: {sample_size}, dimension: {input_dim}")
 
-    # Adjust map_size search space for this dataset size
+    # Adjust search space bounds once from dataset size
     config['SEARCH_SPACE'] = apply_dynamic_search_space(config['SEARCH_SPACE'], loaded_data.shape[0])
 
-    # Calibrate organization threshold from representative probe runs
-    org_threshold = run_calibration_probe(config, loaded_data, ignore_mask, WORKING_DIR)
+    # Calibrate org_threshold once — depends on dataset/map size, not on seed
     config['FIXED_PARAMS'] = dict(config.get('FIXED_PARAMS', {}))
+    org_threshold = run_calibration_probe(config, loaded_data, ignore_mask, base_results_dir)
     config['FIXED_PARAMS']['org_threshold'] = org_threshold
 
-    ARCHIVE = []
+    # Seed list: EA_SETTINGS.seeds overrides FIXED_PARAMS.random_seed
+    seeds = config.get('EA_SETTINGS', {}).get('seeds')
+    if not seeds:
+        seeds = [config['FIXED_PARAMS'].get('random_seed', 42)]
 
-    run_evolution(config, loaded_data, ignore_mask)
+    print(f"\nINFO: Running {len(seeds)} independent EA runs — seeds: {seeds}")
 
-    # Combine individual maps into RGB images for CNN training
-    print("\nINFO: Generating RGB images from individual maps...")
-    combine_maps_to_rgb(WORKING_DIR)
+    for i, seed in enumerate(seeds):
+        print(f"\n{'='*60}")
+        print(f"EA run {i+1}/{len(seeds)} — seed={seed}")
+        print(f"{'='*60}")
+
+        WORKING_DIR = os.path.join(base_results_dir, f"seed_{seed}")
+        os.makedirs(WORKING_DIR, exist_ok=True)
+
+        run_config = dict(config)
+        run_config['FIXED_PARAMS'] = dict(config['FIXED_PARAMS'])
+        run_config['FIXED_PARAMS']['random_seed'] = seed
+
+        ARCHIVE = []
+        run_evolution(run_config, loaded_data, ignore_mask)
+
+        print(f"\nINFO: Generating RGB images for seed={seed}...")
+        combine_maps_to_rgb(WORKING_DIR)
+
+    print(f"\nINFO: All {len(seeds)} seed runs complete. Results in: {base_results_dir}")
 
 if __name__ == "__main__":
     try:
