@@ -1373,10 +1373,11 @@ def main():
     preprocess_config = config.get("PREPROCES_DATA", {})
 
     # Preprocessing and search space adjustment happen once — shared across all seed runs
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     if INPUT_FILE:
-        base_results_dir = os.path.join(os.path.dirname(os.path.abspath(INPUT_FILE)), "results")
+        base_results_dir = os.path.join(os.path.dirname(os.path.abspath(INPUT_FILE)), "results", timestamp)
     else:
-        base_results_dir = os.path.join(os.getcwd(), "results")
+        base_results_dir = os.path.join(os.getcwd(), "results", timestamp)
     os.makedirs(base_results_dir, exist_ok=True)
 
     print("INFO: Preparing data for evolution...")
