@@ -101,7 +101,6 @@ def validate_and_repair(config: dict) -> dict:
             repaired_config['start_radius'], repaired_config['end_radius'] = \
                 repaired_config['end_radius'], repaired_config['start_radius']
 
-    # Clamp epoch_multiplier to at least 1; min enforced by search space config (min: 5)
     if 'epoch_multiplier' in repaired_config:
         repaired_config['epoch_multiplier'] = max(1, int(repaired_config['epoch_multiplier']))
 
@@ -411,7 +410,8 @@ def apply_dynamic_search_space(search_space: dict, n_samples: int) -> dict:
 
     epoch_multiplier:
       target_iter = max(3000, min(20000, 10_000_000 // n_samples))
-      Scales inversely with n_samples to keep iteration count reasonable.
+      em_max = max(1, round(target_iter / n_samples))
+      em_min = max(1, round(em_max * 0.2))
 
     Returns a modified copy — original is not mutated.
     """
@@ -425,12 +425,10 @@ def apply_dynamic_search_space(search_space: dict, n_samples: int) -> dict:
 
     # --- epoch_multiplier ---
     target_iter = max(3_000, min(20_000, 10_000_000 // n_samples))
-    em_new_min = max(1, round(target_iter * 0.15 / n_samples))
-    em_new_max = max(em_new_min + 1, round(target_iter / n_samples))
-    em_new_min = min(em_new_min, 50)
-    em_new_max = min(em_new_max, 50)
-    if em_new_min >= em_new_max:
-        em_new_min = max(1, em_new_max - 1)
+    em_max = max(1, round(target_iter / n_samples))
+    em_min = max(1, round(em_max * 0.2))
+    if em_min >= em_max:
+        em_min = max(1, em_max - 1)
 
     adjusted = {}
     for key, spec in search_space.items():
@@ -443,10 +441,10 @@ def apply_dynamic_search_space(search_space: dict, n_samples: int) -> dict:
                   f"(optimal_side={optimal_side:.1f}, U={U:.0f}, n_samples={n_samples})")
         elif key == 'epoch_multiplier' and isinstance(spec, dict):
             new_spec = dict(spec)
-            new_spec['min'] = em_new_min
-            new_spec['max'] = em_new_max
+            new_spec['min'] = em_min
+            new_spec['max'] = em_max
             adjusted[key] = new_spec
-            print(f"INFO: Dynamic epoch_multiplier bounds [{em_new_min}, {em_new_max}] "
+            print(f"INFO: Dynamic epoch_multiplier bounds [{em_min}, {em_max}] "
                   f"(target_iter={target_iter}, n_samples={n_samples})")
         else:
             adjusted[key] = spec
