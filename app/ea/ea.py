@@ -102,7 +102,7 @@ def validate_and_repair(config: dict) -> dict:
                 repaired_config['end_radius'], repaired_config['start_radius']
 
     if 'epoch_multiplier' in repaired_config:
-        repaired_config['epoch_multiplier'] = max(1, int(repaired_config['epoch_multiplier']))
+        repaired_config['epoch_multiplier'] = max(0.1, float(repaired_config['epoch_multiplier']))
 
     # Set growth_g = 0 ONLY if ALL decay/growth types are linear (where it's not used at all)
     # This prevents different individuals that are functionally identical
@@ -401,6 +401,23 @@ def get_working_directory(input_file: str = None) -> str:
     os.makedirs(reports_dir, exist_ok=True)
     return reports_dir
 
+_EM_MAX_ANCHORS = [(100, 5.0), (500, 5.0), (5_000, 3.0), (20_000, 1.0), (50_000, 0.3)]
+_EM_MIN_ANCHORS = [(100, 1.0), (500, 1.0), (5_000, 0.5), (20_000, 0.3), (50_000, 0.1)]
+
+
+def _interp_log(n: int, anchors: list) -> float:
+    """Log-linear interpolation between (n, value) anchor points."""
+    import math
+    if n <= anchors[0][0]:
+        return anchors[0][1]
+    if n >= anchors[-1][0]:
+        return anchors[-1][1]
+    for (n1, v1), (n2, v2) in zip(anchors, anchors[1:]):
+        if n1 <= n <= n2:
+            t = math.log(n / n1) / math.log(n2 / n1)
+            return round(v1 * (v2 / v1) ** t, 2)
+
+
 def apply_dynamic_search_space(search_space: dict, n_samples: int) -> dict:
     """
     Adjust map_size and epoch_multiplier bounds from dataset size.
@@ -409,9 +426,9 @@ def apply_dynamic_search_space(search_space: dict, n_samples: int) -> dict:
       Vesanto heuristic U = 5*sqrt(n_samples); side range [0.7*sqrt(U), 1.3*sqrt(U)].
 
     epoch_multiplier:
-      target_iter = max(3000, min(20000, 10_000_000 // n_samples))
-      em_max = max(1, round(target_iter / n_samples))
-      em_min = max(1, round(em_max * 0.2))
+      Log-linear interpolation between empirical anchors.
+      em_max anchors: (100→5.0), (500→5.0), (5000→3.0), (20000→1.0), (50000→0.3)
+      em_min anchors: (100→1.0), (500→1.0), (5000→0.5), (20000→0.3), (50000→0.1)
 
     Returns a modified copy — original is not mutated.
     """
@@ -424,11 +441,10 @@ def apply_dynamic_search_space(search_space: dict, n_samples: int) -> dict:
     map_new_max = max(map_new_min + 2, round(optimal_side * 1.3))
 
     # --- epoch_multiplier ---
-    target_iter = max(3_000, min(20_000, 10_000_000 // n_samples))
-    em_max = max(1, round(target_iter / n_samples))
-    em_min = max(1, round(em_max * 0.2))
+    em_max = _interp_log(n_samples, _EM_MAX_ANCHORS)
+    em_min = _interp_log(n_samples, _EM_MIN_ANCHORS)
     if em_min >= em_max:
-        em_min = max(1, em_max - 1)
+        em_min = round(em_max * 0.5, 2)
 
     adjusted = {}
     for key, spec in search_space.items():
@@ -445,7 +461,7 @@ def apply_dynamic_search_space(search_space: dict, n_samples: int) -> dict:
             new_spec['max'] = em_max
             adjusted[key] = new_spec
             print(f"INFO: Dynamic epoch_multiplier bounds [{em_min}, {em_max}] "
-                  f"(target_iter={target_iter}, n_samples={n_samples})")
+                  f"(n_samples={n_samples})")
         else:
             adjusted[key] = spec
     return adjusted

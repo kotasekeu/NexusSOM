@@ -56,8 +56,8 @@
       "values": ["linear-growth", "exp-growth"]
     },
     "epoch_multiplier": {
-      "type": "int",
-      "comment": "Bounds set dynamically by apply_dynamic_search_space (target_iter=10_000_000//n_samples, em=target_iter//n_samples)"
+      "type": "float",
+      "comment": "Bounds set dynamically by apply_dynamic_search_space (target_iter=10_000_000//n_samples, em=target_iter/n_samples)"
     },
     "growth_g": {
       "type": "int",
