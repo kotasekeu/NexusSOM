@@ -53,7 +53,7 @@
     },
     "batch_growth_type": {
       "type": "categorical",
-      "values": ["linear-growth", "exp-growth", "log-growth"]
+      "values": ["linear-growth", "exp-growth"]
     },
     "epoch_multiplier": {
       "type": "int",

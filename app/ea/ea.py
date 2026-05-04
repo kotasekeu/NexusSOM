@@ -406,13 +406,12 @@ def apply_dynamic_search_space(search_space: dict, n_samples: int) -> dict:
     """
     Adjust map_size and epoch_multiplier bounds from dataset size.
 
-    map_size: Vesanto heuristic U = 5*sqrt(n_samples); side range [0.7*sqrt(U), 1.3*sqrt(U)].
+    map_size:
+      Vesanto heuristic U = 5*sqrt(n_samples); side range [0.7*sqrt(U), 1.3*sqrt(U)].
 
-    epoch_multiplier: bounds derived from target total-iteration range so that training
-    time stays roughly constant regardless of dataset size.
-      target_min_iter = 3_000 → new_min = max(1, round(target_min / n_samples))
-      target_max_iter = 20_000 → new_max = max(new_min+2, round(target_max / n_samples))
-    Both values are clamped to [1, 50].
+    epoch_multiplier:
+      target_iter = max(3000, min(20000, 10_000_000 // n_samples))
+      Scales inversely with n_samples to keep iteration count reasonable.
 
     Returns a modified copy — original is not mutated.
     """
@@ -425,10 +424,9 @@ def apply_dynamic_search_space(search_space: dict, n_samples: int) -> dict:
     map_new_max = max(map_new_min + 2, round(optimal_side * 1.3))
 
     # --- epoch_multiplier ---
-    TARGET_MIN_ITER = 3_000
-    TARGET_MAX_ITER = 20_000
-    em_new_min = max(1, round(TARGET_MIN_ITER / n_samples))
-    em_new_max = max(em_new_min + 2, round(TARGET_MAX_ITER / n_samples))
+    target_iter = max(3_000, min(20_000, 10_000_000 // n_samples))
+    em_new_min = max(1, round(target_iter * 0.15 / n_samples))
+    em_new_max = max(em_new_min + 1, round(target_iter / n_samples))
     em_new_min = min(em_new_min, 50)
     em_new_max = min(em_new_max, 50)
     if em_new_min >= em_new_max:
@@ -449,7 +447,7 @@ def apply_dynamic_search_space(search_space: dict, n_samples: int) -> dict:
             new_spec['max'] = em_new_max
             adjusted[key] = new_spec
             print(f"INFO: Dynamic epoch_multiplier bounds [{em_new_min}, {em_new_max}] "
-                  f"(target_iter=[{TARGET_MIN_ITER}, {TARGET_MAX_ITER}], n_samples={n_samples})")
+                  f"(target_iter={target_iter}, n_samples={n_samples})")
         else:
             adjusted[key] = spec
     return adjusted
