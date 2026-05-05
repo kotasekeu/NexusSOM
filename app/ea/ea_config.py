@@ -27,7 +27,7 @@ CONFIG = {
     "FIXED_PARAMS": {
         "end_radius": 1.0,
         "random_seed": 42,
-        "mqe_evaluations_per_run": 500,
+        "mqe_evaluations_per_run": 300,
         "max_epochs_without_improvement": 50,
         "early_stopping_window": 5,
         "save_checkpoints": True,  # Save training checkpoints for LSTM training data

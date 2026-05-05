@@ -573,6 +573,7 @@ def _run_probe_worker(args: tuple):
         for k in ['sample_size', 'input_dim', 'rank', 'crowding_distance', 'comment',
                   'nn_config', 'org_threshold', 'max_archive_size']:
             som_params.pop(k, None)
+        som_params['save_checkpoints'] = False
         som = KohonenSOM(dim=data.shape[1], **som_params)
         som.train(data, ignore_mask=ignore_mask, working_dir=probe_dir)
         u_metrics = som.calculate_u_matrix_metrics()
