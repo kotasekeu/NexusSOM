@@ -74,6 +74,7 @@ class NeuralNetworkIntegration:
                  mlp_model_path: Optional[str] = None,
                  mlp_scaler_path: Optional[str] = None,
                  lstm_model_path: Optional[str] = None,
+                 lstm_scaler_path: Optional[str] = None,
                  cnn_model_path: Optional[str] = None,
                  verbose: bool = True):
         """
@@ -99,6 +100,7 @@ class NeuralNetworkIntegration:
         self.mlp_metadata = None
 
         self.lstm_model = None
+        self.lstm_scaler = None
         self.lstm_metadata = None
 
         self.cnn_model = None
@@ -118,7 +120,7 @@ class NeuralNetworkIntegration:
             self._load_mlp(mlp_model_path, mlp_scaler_path)
 
         if self.use_lstm:
-            self._load_lstm(lstm_model_path)
+            self._load_lstm(lstm_model_path, lstm_scaler_path)
 
         if self.use_cnn:
             self._load_cnn(cnn_model_path)
@@ -167,29 +169,47 @@ class NeuralNetworkIntegration:
             self.mlp_model = None
             self.use_mlp = False
 
-    def _load_lstm(self, model_path: Optional[str]):
-        """Load LSTM model"""
+    def _load_lstm(self, model_path: Optional[str], scaler_path: Optional[str] = None):
+        """Load LSTM model and optional context scaler"""
         try:
+            lstm_dir = os.path.join(os.path.dirname(__file__), '..', 'lstm', 'models')
+
+            # Prefer stable path over auto-detected timestamped
             if model_path is None:
-                # Auto-detect latest model
-                model_dir = os.path.join(os.path.dirname(__file__), '..', 'lstm', 'models')
-                if os.path.exists(model_dir):
-                    models = [f for f in os.listdir(model_dir) if f.endswith('_best.keras')]
+                stable = os.path.join(lstm_dir, 'lstm_latest.keras')
+                if os.path.exists(stable):
+                    model_path = stable
+                elif os.path.exists(lstm_dir):
+                    models = [f for f in os.listdir(lstm_dir) if f.endswith('_best.keras')]
                     if models:
                         models.sort(reverse=True)
-                        model_path = os.path.join(model_dir, models[0])
+                        model_path = os.path.join(lstm_dir, models[0])
 
             if model_path and os.path.exists(model_path):
                 self._print(f"Loading LSTM model: {model_path}")
                 self.lstm_model = _keras.models.load_model(model_path)
-                self._print("✓ LSTM model loaded")
+
+                # Load context scaler (used by hybrid model)
+                if scaler_path is None:
+                    scaler_path = os.path.join(lstm_dir, 'lstm_scaler_latest.pkl')
+                if os.path.exists(scaler_path):
+                    self.lstm_scaler = _joblib.load(scaler_path)
+                    self._print("✓ LSTM model and scaler loaded")
+                else:
+                    self._print("✓ LSTM model loaded (no context scaler — sequence-only mode)")
 
                 # Load metadata
-                metadata_path = model_path.replace('_best.keras', '_metadata.json')
-                if os.path.exists(metadata_path):
-                    import json
-                    with open(metadata_path, 'r') as f:
-                        self.lstm_metadata = json.load(f)
+                meta_candidates = [
+                    os.path.join(lstm_dir, 'lstm_latest_metadata.json'),
+                    model_path.replace('.keras', '_metadata.json'),
+                    model_path.replace('_best.keras', '_metadata.json'),
+                ]
+                import json
+                for mp in meta_candidates:
+                    if os.path.exists(mp):
+                        with open(mp) as f:
+                            self.lstm_metadata = json.load(f)
+                        break
             else:
                 self._print("⚠ LSTM model not found. LSTM features disabled.")
                 self.use_lstm = False
@@ -324,13 +344,16 @@ class NeuralNetworkIntegration:
         return self.use_lstm and self.lstm_model is not None
 
     def should_stop_early(self, training_history: Dict[str, list],
-                         quality_threshold: float = 1.0) -> Tuple[bool, Optional[float]]:
+                         quality_threshold: float = 1.0,
+                         dataset_context: Optional[list] = None) -> Tuple[bool, Optional[float]]:
         """
         Check if training should be stopped early based on predicted final quality.
 
         Args:
-            training_history: Dict with lists of 'mqe', 'topographic_error', 'dead_neuron_ratio'
-            quality_threshold: Threshold for stopping (higher = more likely to stop)
+            training_history: Dict with 6 fields: progress, mqe, topographic_error,
+                              dead_neuron_ratio, learning_rate, radius
+            quality_threshold: Stop when quality_score > threshold (lower = higher quality)
+            dataset_context: [n_samples, n_active_dimensions, n_numeric, n_categorical]
 
         Returns:
             Tuple of (should_stop, predicted_quality_score)
@@ -339,23 +362,37 @@ class NeuralNetworkIntegration:
             return False, None
 
         try:
-            # Prepare sequence
-            sequence = np.array([
-                training_history['mqe'],
+            mqe    = training_history['mqe']
+            init_mqe    = max(mqe[0],    1e-10)
+            lr     = training_history.get('learning_rate', [1.0] * len(mqe))
+            init_lr     = max(lr[0],     1e-10)
+            radius = training_history.get('radius', [1.0] * len(mqe))
+            init_radius = max(radius[0], 1e-10)
+
+            sequence = np.stack([
+                training_history.get('progress', list(np.linspace(0, 1, len(mqe)))),
+                [m / init_mqe    for m in mqe],
                 training_history['topographic_error'],
-                training_history['dead_neuron_ratio']
-            ]).T  # Shape: (num_checkpoints, 3)
+                training_history['dead_neuron_ratio'],
+                [l / init_lr     for l in lr],
+                [r / init_radius for r in radius],
+            ], axis=1).astype(np.float32)   # (N, 6)
 
-            # Expand dims for batch
-            sequence_batch = np.expand_dims(sequence, axis=0)
+            seq_batch = np.expand_dims(sequence, axis=0)   # (1, N, 6)
 
-            # Predict final quality
-            prediction = self.lstm_model.predict(sequence_batch, verbose=0)[0]
+            # Hybrid model: two inputs (sequence + context)
+            if dataset_context is not None and self.lstm_scaler is not None:
+                ctx = np.array(dataset_context, dtype=np.float32).reshape(1, -1)
+                ctx = self.lstm_scaler.transform(ctx)
+                prediction = self.lstm_model.predict(
+                    {'sequence': seq_batch, 'context': ctx}, verbose=0)[0]
+            else:
+                # Fallback: single-input legacy model
+                prediction = self.lstm_model.predict(seq_batch, verbose=0)[0]
+
             final_mqe, final_topo, final_dead = prediction
 
-            # Calculate quality score (lower is better)
             quality_score = final_mqe * 1.0 + final_topo * 1.0 + final_dead * 0.5
-
             should_stop = quality_score > quality_threshold
 
             return should_stop, float(quality_score)

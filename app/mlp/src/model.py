@@ -50,9 +50,8 @@ def create_mlp_model(input_dim, output_dim=3, learning_rate=0.001):
     model.compile(
         optimizer=keras.optimizers.Adam(learning_rate=learning_rate),
         loss='mse',
-        metrics=['mae', 'mse']
+        metrics=['mae'],
     )
-
     return model
 
 
@@ -85,9 +84,8 @@ def create_lightweight_mlp(input_dim, output_dim=3, learning_rate=0.001):
     model.compile(
         optimizer=keras.optimizers.Adam(learning_rate=learning_rate),
         loss='mse',
-        metrics=['mae', 'mse']
+        metrics=['mae'],
     )
-
     return model
 
 

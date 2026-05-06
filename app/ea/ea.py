@@ -64,7 +64,8 @@ def _get_nn_integration(nn_config: dict) -> NeuralNetworkIntegration:
     global _NN_INTEGRATION_CACHE
     cache_key = (
         nn_config.get('use_mlp'), nn_config.get('use_lstm'), nn_config.get('use_cnn'),
-        nn_config.get('mlp_model_path'), nn_config.get('lstm_model_path'), nn_config.get('cnn_model_path')
+        nn_config.get('mlp_model_path'), nn_config.get('lstm_model_path'),
+        nn_config.get('lstm_scaler_path'), nn_config.get('cnn_model_path')
     )
     if cache_key not in _NN_INTEGRATION_CACHE:
         _NN_INTEGRATION_CACHE[cache_key] = NeuralNetworkIntegration(
@@ -74,6 +75,7 @@ def _get_nn_integration(nn_config: dict) -> NeuralNetworkIntegration:
             mlp_model_path=nn_config.get('mlp_model_path'),
             mlp_scaler_path=nn_config.get('mlp_scaler_path'),
             lstm_model_path=nn_config.get('lstm_model_path'),
+            lstm_scaler_path=nn_config.get('lstm_scaler_path'),
             cnn_model_path=nn_config.get('cnn_model_path'),
             verbose=nn_config.get('verbose', False),
         )
@@ -1160,13 +1162,22 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
         lstm_early_stop_fn = None
         if nn is not None and nn.can_check_early_stopping():
             lstm_threshold = nn_config.get('lstm_quality_threshold', 1.0)
+            _ds_context = [
+                fixed_params.get('ds_n_samples', 0),
+                fixed_params.get('ds_n_active_dimensions', 0),
+                fixed_params.get('ds_n_numeric', 0),
+                fixed_params.get('ds_n_categorical', 0),
+            ]
             def lstm_early_stop_fn(checkpoints):
                 history = {
-                    'mqe': [c['mqe'] for c in checkpoints],
+                    'progress':          [c['progress'] for c in checkpoints],
+                    'mqe':               [c['mqe'] for c in checkpoints],
                     'topographic_error': [c['topographic_error'] for c in checkpoints],
                     'dead_neuron_ratio': [c['dead_neuron_ratio'] for c in checkpoints],
+                    'learning_rate':     [c['learning_rate'] for c in checkpoints],
+                    'radius':            [c['radius'] for c in checkpoints],
                 }
-                return nn.should_stop_early(history, lstm_threshold)
+                return nn.should_stop_early(history, lstm_threshold, dataset_context=_ds_context)
 
         som = KohonenSOM(dim=data.shape[1], **som_params)
 

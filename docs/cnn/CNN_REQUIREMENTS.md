@@ -1,15 +1,97 @@
-# The Eye (CNN) - Visual Quality Assessment Requirements
+# CNN — Vizuální hodnocení kvality SOM map
 
-**Document Version**: 2.1
-**Last Updated**: 2026-02-02
-**Component**: CNN - "The Eye"
+**Verze dokumentu**: 3.0  
+**Aktualizováno**: 2026-05-06  
+**Stav**: ⛔ UZAVŘENO — přístup opuštěn, viz sekce Rozhodnutí níže
+
+---
+
+## Rozhodnutí: CNN track uzavřen
+
+### Závěr
+
+CNN přístup pro hodnocení kvality SOM map se ukázal jako **slepá ulice**. Vývoj je zastaven. Vizualizace map nebudou generovány pro účely ML a CNN kód zůstává pouze jako archiv.
+
+### Důvody uzavření
+
+#### 1. Strukturální problémy s obrazovými daty
+
+SOM mapa není fotografická scéna. Je to malá pravidelná mřížka 8×8 až 15×20 buněk:
+
+- **Resize → aliasing**: 10×10 mapa resizovaná na 224×224 = každý neuron je 22px blob s artefakty
+- **Nekonzistentní pixel-per-neuron**: 10×10 a 15×20 mapa mají po resize jiný vizuální charakter pro identickou topologickou strukturu — CNN vidí jiné features pro totéž
+- **ImageNet pre-training nepomáhá**: CNN váhy trénované na fotografiích nemají žádný vztah k SOM vizualizacím; transfer learning je zde bezvýznamný
+- GAP architektura (GroupedSizeDataLoader) problém sníží, ale neodstraní
+
+#### 2. Pseudolabelizace není řešitelná bez manuální validace
+
+Pipeline počítá s tímto cyklem:
+```
+auto-label extrémů → trénink CNN → pseudo-label středu → re-trénink
+```
+
+**Problém**: Aby pseudo-labeling konvergoval ke správným labelům, musí být počáteční auto-labely spolehlivé. Ale:
+- `auto_topo`: 46.9 % vzorků — label vznikl z `topographic_error`, ne z vizuální kvality
+- `auto_dead`: 41.4 % vzorků — label vznikl z `dead_neuron_ratio`
+- `auto_good`: 0.1 % vzorků (!!) — prakticky žádné pozitivní příklady
+
+CNN se de facto naučí přepisovat `topographic_error` a `dead_neuron_ratio` z vizualizace zpět na číslo — což MLP dělá přímo, bez obrazové mezivrstvy.
+
+#### 3. Kvalitu mapy umíme identifikovat matematicky
+
+Metriky, které máme přímo v `results.csv`, jsou přesnější než vizuální odhad:
+
+| Co CNN "vidí" z obrazu | Co máme přímo v datech |
+|---|---|
+| Mrtvé neurony (tmavé oblasti) | `dead_neuron_ratio` — přesné číslo |
+| Topologická organizace | `topographic_error` — přesné číslo |
+| Cluster separace | `u_matrix_mean`, `u_matrix_std`, `u_matrix_max` |
+| Rovnoměrnost pokrytí | hit map statistiky |
+| Kvantizační chyba | `raw_mqe_improvement_ratio` |
+
+**MLP již tyto metriky predikuje přesně** (MAE≈0.048 pro MQE, ≈0.019 pro TE) — CNN by přidalo další vrstvu nejistoty bez informačního přínosu.
+
+#### 4. Nechceme generovat tisíce zbytečných vizualizací
+
+Každá SOM mapa = renderování váhové matice do PNG souboru. Pro 5 853 individuí × potenciálně více variant (Phase 3) by to bylo desítky tisíc souborů bez využití. Vizualizace jsou užitečné pro **ruční inspekci**, ne pro ML pipeline.
+
+### Alternativa: Prostorové features z U-matrix v MLP
+
+Pokud by bylo potřeba přidat prostorový signál (zachytit lokální strukturu mapy, ne jen globální metriky), správný přístup je extrahovat **kvantitativní prostorové příznaky** přímo z váhové matice a přidat je do MLP:
+
+```
+U-matrix:    mean, std, max, percentily (75, 95)
+             počet lokálních maxim (odhad počtu hranic clusterů)
+             Gini koeficient (nerovnoměrnost)
+Hit mapa:    entropie distribuce, počet mrtvých zón, std hitů
+Component planes: korelace mezi planes (redundance dimenzí)
+```
+
+Tyto features jsou:
+- **Velikostně invariantní** — fungují stejně pro 8×8 i 15×20 mapu
+- **Deterministické** — žádný label noise
+- **Interpretovatelné** — víme přesně co příznaky znamenají
+- **Plně kompatibilní s MLP** — přidáme ~20 neuronů na vstup
+
+Tato rozšíření lze přidat do MLP kdykoliv v budoucnu pokud se ukáže, že aktuální metriky nestačí. Aktuálně MLP dosahuje MAE≈0.048 pro klíčový target (MQE improvement ratio) — to je dostatečné pro EA pre-screen filtr.
+
+---
+
+## Archiv původní specifikace (v2.1, 2026-02-02)
+
+> Následující sekce zachovávají původní požadavkovou dokumentaci CNN jako historický záznam.
+
+---
+
+**Document Version**: 2.1 (archived)  
+**Component**: CNN - "The Eye"  
 **Purpose**: Visual quality assessment of SOM maps through deep learning
 
 ---
 
-## Executive Summary
+## Executive Summary (archived)
 
-**Current Implementation Status**: Phase 2 is **77% complete** (10/13 requirements) - Ready for first training run.
+**Implementation Status at closure**: Phase 2 was **77% complete** (10/13 requirements) — training pipeline ready but never executed due to labeling and architectural issues described above.
 
 ### What's Implemented ✅
 
@@ -461,41 +543,10 @@ if cnn_evaluator is not None:
 
 ---
 
-## Next Steps
+---
 
-### Immediate (Ready to Execute)
-
-1. ✅ **Create `data/cnn/` directory structure** - DONE
-2. ✅ **Implement `app/cnn/src/prepare_dataset.py`** - DONE
-   - ✅ Parse all EA results.csv files
-   - ✅ Auto-label extreme cases
-   - ✅ Generate/copy images organized by size
-   - ✅ Create dataset CSV
-3. **Run first training with auto-labels**:
-   ```bash
-   python3 app/cnn/src/train.py \
-       --dataset data/cnn/datasets/dataset_v1.csv \
-       --model standard \
-       --epochs 50 \
-       --batch-size 32
-   ```
-
-### Short-term (After First Training)
-
-4. **Iterate pseudo-labeling**:
-   ```bash
-   python3 app/cnn/src/prepare_dataset.py \
-       --pseudo-label \
-       --model app/cnn/models/best.keras
-   ```
-5. **Retrain with expanded dataset**
-
-### Medium-term (Integration)
-
-6. **Implement `app/cnn/src/predict.py`** - inference script
-7. **Implement `app/cnn/src/evaluator.py`** - CNNQualityEvaluator for EA
-8. **Integrate CNN into EA pipeline** - add `cnn_quality_score` to objectives
+**End of archived CNN Requirements Specification v2.1**
 
 ---
 
-**End of CNN Requirements Specification v2.0**
+> Vývoj CNN byl ukončen 2026-05-06. Kód v `app/cnn/` zůstává jako archiv, není aktivně udržován.
