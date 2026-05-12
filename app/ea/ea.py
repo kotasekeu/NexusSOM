@@ -675,6 +675,7 @@ def run_evolution(ea_config: dict, data: np.ndarray, ignore_mask: np.ndarray) ->
             'mlp_model_path': nn_cfg.get('mlp_model_path'),
             'mlp_scaler_path': nn_cfg.get('mlp_scaler_path'),
             'lstm_model_path': nn_cfg.get('lstm_model_path'),
+            'lstm_scaler_path': nn_cfg.get('lstm_scaler_path'),
             'cnn_model_path': nn_cfg.get('cnn_model_path'),
             'lstm_quality_threshold': nn_cfg.get('lstm_quality_threshold', 1.0),
             'mlp_filter_bad_configs': nn_cfg.get('mlp_filter_bad_configs', False),
@@ -1134,10 +1135,10 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
         if nn is not None and nn.can_predict_fitness() and nn_config.get('mlp_filter_bad_configs', False):
             predicted = nn.predict_fitness(ind)
             if predicted is not None:
-                pred_mqe = max(0.0, predicted[0])
+                pred_mqe = max(0.0, predicted[0])   # raw_mqe_improvement_ratio, higher=better
                 threshold = nn_config.get('mlp_bad_quality_threshold', 0.5)
-                if pred_mqe > threshold:
-                    log_message(uid, f"MLP pre-screen: predicted MQE={pred_mqe:.3f} > threshold={threshold:.3f}, skipping SOM training", working_dir)
+                if pred_mqe < threshold:             # skip when predicted improvement is LOW
+                    log_message(uid, f"MLP pre-screen: predicted improvement={pred_mqe:.3f} < threshold={threshold:.3f}, skipping SOM training", working_dir)
                     penalty_results = {
                         'uid': uid, 'best_mqe': pred_mqe * 2.0, 'duration': 0.0,
                         'topographic_error': 1.0, 'dead_neuron_ratio': 1.0,

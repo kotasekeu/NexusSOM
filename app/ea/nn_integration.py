@@ -151,12 +151,22 @@ class NeuralNetworkIntegration:
                     self.mlp_scaler = _joblib.load(scaler_path)
                     self._print("✓ MLP model and scaler loaded")
 
-                    # Load metadata
-                    metadata_path = model_path.replace('_best.keras', '_metadata.json')
-                    if os.path.exists(metadata_path):
-                        import json
-                        with open(metadata_path, 'r') as f:
-                            self.mlp_metadata = json.load(f)
+                    # Resolve metadata: stable path or timestamped path
+                    import json
+                    mlp_dir = os.path.dirname(model_path)
+                    meta_candidates = [
+                        os.path.join(mlp_dir, 'mlp_latest_metadata.json'),
+                        model_path.replace('.keras', '_metadata.json'),
+                        model_path.replace('_best.keras', '_metadata.json'),
+                    ]
+                    for mp in meta_candidates:
+                        if os.path.exists(mp):
+                            try:
+                                with open(mp) as f:
+                                    self.mlp_metadata = json.load(f)
+                                break
+                            except Exception:
+                                pass
                 else:
                     self._print("⚠ MLP scaler not found. MLP disabled.")
                     self.mlp_model = None
@@ -390,9 +400,11 @@ class NeuralNetworkIntegration:
                 # Fallback: single-input legacy model
                 prediction = self.lstm_model.predict(seq_batch, verbose=0)[0]
 
-            final_mqe, final_topo, final_dead = prediction
+            final_mqe_ratio, final_topo, final_dead = prediction
 
-            quality_score = final_mqe * 1.0 + final_topo * 1.0 + final_dead * 0.5
+            # Badness score — higher means worse predicted outcome → stop when > threshold
+            # (1 - mqe_ratio): penalty for low improvement; topo and dead: lower is better
+            quality_score = (1.0 - final_mqe_ratio) + final_topo + final_dead * 0.5
             should_stop = quality_score > quality_threshold
 
             return should_stop, float(quality_score)

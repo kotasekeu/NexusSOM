@@ -9,6 +9,7 @@ scikit-learn
 scipy
 psutil
 tqdm
+fpdf2
 
 # Optional: Neural Network Dependencies
 # Install separately with: pip install -r requirements_nn.txt

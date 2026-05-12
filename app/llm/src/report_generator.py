@@ -69,10 +69,25 @@ def generate_report(dataset_path, model="llama3.1:8b", base_url="http://localhos
     else:
         response = client.generate(prompt=full_prompt, system=system_prompt)
 
-    # Save outputs
+    # Save outputs and build PDF
     _save_outputs(dataset_path, response, system_prompt, full_prompt, model)
 
     return response
+
+
+def build_pdf_report(dataset_path: str) -> str | None:
+    """
+    Build a PDF from an already-generated report.md.
+    Returns PDF path or None if report.md doesn't exist.
+    """
+    from llm.src.context_builder import find_som_results
+    from llm.src.pdf_builder import build_pdf
+
+    som_dir = find_som_results(dataset_path)
+    report_md = os.path.join(som_dir, 'llm', 'report.md')
+    if not os.path.isfile(report_md):
+        return None
+    return build_pdf(som_dir, report_md)
 
 
 def start_chat(dataset_path, model="llama3.1:8b", base_url="http://localhost:11434"):
@@ -118,8 +133,9 @@ def start_chat(dataset_path, model="llama3.1:8b", base_url="http://localhost:114
 
 
 def _save_outputs(dataset_path, report, system_prompt, full_prompt, model):
-    """Save report and prompt log."""
+    """Save report, prompt log, and PDF."""
     from llm.src.context_builder import find_som_results
+    from llm.src.pdf_builder import build_pdf
 
     som_dir = find_som_results(dataset_path)
     llm_dir = os.path.join(som_dir, "llm")
@@ -143,3 +159,10 @@ def _save_outputs(dataset_path, report, system_prompt, full_prompt, model):
     with open(log_path, 'w', encoding='utf-8') as f:
         json.dump(log_data, f, indent=2, ensure_ascii=False)
     print(f"Prompt log saved to: {log_path}")
+
+    # Build PDF
+    try:
+        pdf_path = build_pdf(som_dir, report_path)
+        print(f"PDF saved to:    {pdf_path}")
+    except Exception as e:
+        print(f"PDF generation failed: {e}")

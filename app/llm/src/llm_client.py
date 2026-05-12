@@ -38,7 +38,7 @@ class OllamaClient:
             "stream": stream_callback is not None,
             "options": {
                 "temperature": 0,
-                "num_ctx": 8192
+                "num_ctx": 16384
             }
         }
         if system:
@@ -99,7 +99,7 @@ class OllamaClient:
             "stream": stream_callback is not None,
             "options": {
                 "temperature": 0,
-                "num_ctx": 8192
+                "num_ctx": 16384
             }
         }
 

@@ -24,6 +24,27 @@ python ./app/run_som.py -i ./data/datasets/BreastCancer/breast-cancer.csv -c ./d
 
 python ./app/run_som.py -i ./data/datasets/Iris/iris.csv -c ./data/datasets/Iris/config-som.json 
 
+Po doběhnutí se automaticky:
+- uloží `run_metrics.json` (map_size, topographic_error, duration)
+- zavolá `app/analysis/` → uloží `json/llm_context.json`
+
+### Analýza výsledků ###
+
+Zpětné spuštění analýzy pro existující výsledky nebo po aktualizaci modulu:
+
+python ./app/run_analysis.py -i ./data/datasets/LungCancerDataset/results/20260512_104148
+
+### LLM Report / Chat ###
+
+Report (jednorázová analýza):
+python ./app/run_llm.py -i ./data/datasets/LungCancerDataset/results/20260512_104148 -m report --model llama3.1:8b
+
+Chat (interaktivní dialog):
+python ./app/run_llm.py -i ./data/datasets/LungCancerDataset/results/20260512_104148 -m chat --model llama3.1:8b
+
+Ollama musí běžet: ollama serve
+Viz docs/llm/RUN.md pro detaily (vzdálený server, velké modely, dataset_context.txt)
+
 
 ### EA ###
 Run EA on BC dataset

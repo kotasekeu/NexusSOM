@@ -307,13 +307,19 @@ class KohonenSOM:
             mqe_compute_interval = total_iterations
 
         # Checkpointing setup for LSTM training data
-        checkpoints = []
+        checkpoints = []          # written to disk when save_checkpoints=True
+        lstm_checkpoints = []     # in-memory only, for LSTM early stopping
         if self.save_checkpoints and self.checkpoint_every_mqe:
             checkpoint_interval = mqe_compute_interval  # checkpoint at every MQE evaluation
         elif self.save_checkpoints and self.checkpoint_count > 0:
             checkpoint_interval = max(1, total_iterations // self.checkpoint_count)
         else:
             checkpoint_interval = total_iterations + 1  # Never save checkpoints
+
+        # LSTM fires after this many checkpoints (≥ 20 % of training = minimum K the model saw)
+        lstm_min_checkpoints = max(2, self.mqe_evaluations_per_run // 5)
+        lstm_stopped = False
+        lstm_stop_progress = None
 
         pbar = tqdm(range(total_iterations), desc="SOM Training", unit="iter")
         iteration = 0  # Initialize iteration variable to avoid scope issues
@@ -363,12 +369,13 @@ class KohonenSOM:
                 _, current_mqe = self.compute_quantization_error(data, mask=ignore_mask)
                 self.history['mqe'].append((iteration, current_mqe))
 
-                # Save checkpoint for LSTM training data
-                if self.save_checkpoints and iteration % checkpoint_interval == 0:
+                # Build checkpoint record (needed for both file saving and LSTM)
+                if (self.save_checkpoints and iteration % checkpoint_interval == 0) \
+                        or lstm_early_stop_fn is not None:
                     topo_error = self.calculate_topographic_error(data, mask=ignore_mask)
                     _, dead_ratio = self.calculate_dead_neurons(data)
                     progress = iteration / total_iterations
-                    checkpoints.append({
+                    cp = {
                         'iteration': iteration,
                         'progress': progress,
                         'mqe': current_mqe,
@@ -376,16 +383,23 @@ class KohonenSOM:
                         'dead_neuron_ratio': dead_ratio,
                         'learning_rate': current_lr,
                         'radius': current_radius
-                    })
+                    }
+                    if self.save_checkpoints and iteration % checkpoint_interval == 0:
+                        checkpoints.append(cp)
+                    if lstm_early_stop_fn is not None:
+                        lstm_checkpoints.append(cp)
 
-                    # LSTM early stopping check
-                    if lstm_early_stop_fn is not None and len(checkpoints) >= 2:
-                        should_stop, lstm_score = lstm_early_stop_fn(checkpoints)
+                    # LSTM early stopping — only after enough progress (≥ 20 % of run)
+                    if lstm_early_stop_fn is not None \
+                            and len(lstm_checkpoints) >= lstm_min_checkpoints:
+                        should_stop, lstm_score = lstm_early_stop_fn(lstm_checkpoints)
                         if should_stop:
                             log_message(working_dir, "SYSTEM",
                                         f"LSTM early stopping triggered at iteration {iteration} "
-                                        f"(predicted quality score: {lstm_score:.3f})")
+                                        f"(progress={progress:.1%}, score={lstm_score:.3f})")
                             converged = True
+                            lstm_stopped = True
+                            lstm_stop_progress = progress
                             break
 
                 if current_mqe < self.best_mqe:
@@ -449,6 +463,8 @@ class KohonenSOM:
             'total_weight_updates': self.total_weight_updates,
             "epochs_ran": iteration + 1,
             "converged": converged,
+            "lstm_stopped": lstm_stopped,
+            "lstm_stop_progress": lstm_stop_progress,
             "history": self.history,
             "checkpoints": checkpoints if self.save_checkpoints else []
         }

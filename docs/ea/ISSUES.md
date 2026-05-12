@@ -138,6 +138,20 @@
 
 ---
 
+## Integrace NN modelů (MLP + LSTM) — Phase 2
+
+55. **LSTM early stopping bylo gated za `save_checkpoints` — LSTM nikdy nespustilo** — checkpoint blok v `som.py` byl podmíněn `if self.save_checkpoints and iteration % checkpoint_interval == 0:`; LSTM callback `lstm_early_stop_fn` byl volaný uvnitř tohoto bloku; pokud `save_checkpoints=False` nebo nebyl splněn interval, LSTM se nikdy nevyvolalo; opraveno přidáním samostatného seznamu `lstm_checkpoints = []` nezávislého na `checkpoints[]`; podmínka pro budování checkpointu rozšířena na `if self.save_checkpoints and ... or lstm_early_stop_fn is not None:` přičemž LSTM vždy dostane přehledný stream checkpointů bez ohledu na nastavení ukládání souborů.
+
+56. **LSTM se spustilo po 2 checkpointech — příliš brzy (< 20 % trénování)** — model byl natrénován na K-prefix oknech s K ∈ {20,30,...,70}% délky sekvence; minimální K = 20 %, ale LSTM callback se aktivoval po `len(checkpoints) >= 2` tj. po ~2 % trénování; predikce ze 2 % dat byly nesmyslné (model viděl takové situace jen náhodně); opraveno zavedením `lstm_min_checkpoints = max(2, mqe_evaluations_per_run // 5)` = 60 pro 300 evaluací (= 20 % trénování); LSTM callback se volá pouze po nashromáždění dostatečného prefix okna.
+
+57. **`quality_score` formule invertovaná — LSTM zastavovalo dobré běhy** — `should_stop_early` v `nn_integration.py` počítalo `quality_score = final_mqe_ratio + te + dead*0.5` kde `final_mqe_ratio` je `raw_mqe_improvement_ratio`; tato hodnota je **vyšší = lepší** (ratio ≈ 0.7 → 30% MQE improvement = špatné; ratio ≈ 0.95 → 5% improvement = výborné); přičtením raw ratia místo jeho invertování skript zastavoval konfigurace s vysokým (dobrým) mqe_improvement_ratio; opraveno na `quality_score = (1.0 - final_mqe_ratio) + te + dead*0.5` — nižší = lepší, LSTM zastavuje pouze skutečně slabé konfigurace; práh `lstm_quality_threshold = 0.75` kalibrován na p75 distribuce quality_score z testovacích dat.
+
+58. **MLP filtr invertovaný — přeskakoval dobré konfigurace** — podmínka v `ea.py` pro pre-screen MLP byla `if pred_mqe > threshold: skip`; `pred_mqe` je predikovaný `raw_mqe_improvement_ratio` kde **vyšší = lepší** (ratio 0.9 = dobré); podmínka `> 0.5` přeskakovala konfigurace s vysokým predikovaným zlepšením a propouštela slabé; opraveno na `if pred_mqe < threshold: skip` — přeskočit pouze když model predikuje nízké zlepšení (špatná konfigurace); chyba existovala od první implementace filtru a způsobovala opačný efekt optimalizace.
+
+59. **MLP metadata cesta selhávala pro `mlp_latest.keras` stable path** — `_load_mlp` v `nn_integration.py` odvozoval cestu k metadatům z cesty modelu pomocí `model_path.replace('_best.keras', '_metadata.json')`; pro stable path `mlp_latest.keras` (bez suffixu `_best`) nahrazení nenašlo nic a cesta zůstala `mlp_latest.keras`; pokus o `json.load()` na binárním `.keras` souboru způsobil `'utf-8' codec can't decode` nebo `JSONDecodeError`; MLP se deaktivovalo i při existujícím modelu a metadatech; opraveno seznam kandidátních cest: `['mlp_latest_metadata.json', model_path.replace('_best.keras','_metadata.json'), 'metadata.json']` — první existující soubor se použije.
+
+---
+
 ## Checkpointy a LSTM data
 
 23. **Řídké checkpointy při dlouhém tréninku SOM** — 15 000 iterací a 25 checkpointů = 1 checkpoint na 600 iterací; příliš málo dat pro LSTM trénink; přidán flag `checkpoint_every_mqe` pro uložení při každém výpočtu MQE (~500 checkpointů na běh).

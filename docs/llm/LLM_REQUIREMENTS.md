@@ -1,6 +1,7 @@
 # LLM Module — The Voice — Requirements
 
-Version: 1.0
+**Verze**: 1.1  
+**Aktualizováno**: 2026-05-11
 
 ---
 
@@ -16,11 +17,15 @@ The Voice translates SOM analysis results into natural language. The LLM does no
 
 #### FR-LLM-1.1 SOM Analysis Summary
 Generate a structured text/JSON file from SOM results that the LLM can consume. Must include:
-- [ ] Map overview: map size, topology, total samples, training quality (MQE, topographic error, dead ratio)
-- [ ] Cluster summary: for each neuron — sample count, dominant category (from pie data), quantization error
-- [ ] Extremes summary: outlier samples with human-readable explanations (from extremes.json)
-- [ ] Dimension statistics: per-column global min, max, mean, std (from preprocessing_info.json + original data)
-- [ ] Category distributions: per-neuron category counts (from pie_data_*.json)
+- [x] Map overview: map size, topology, total samples, training quality (MQE, topographic error, dead ratio)
+- [x] Cluster summary: for each neuron — sample count, dominant category (from pie data), quantization error
+- [x] Cluster purity per categorical column
+- [x] Cluster dimension means (original unnormalized values) per numeric column
+- [x] Extremes summary: outlier samples with human-readable explanations (from extremes.json)
+- [x] Dimension statistics: per-column global min, max, mean, std (from preprocessing_info.json + original data)
+- [x] Category distributions: per-neuron category counts (from pie_data_*.json)
+
+**Implementace**: `app/analysis/` — viz `docs/llm/RESULT_ANALYZER.md`
 
 #### FR-LLM-1.2 Dataset Context File
 User-provided text file describing the dataset in natural language. Must include:
@@ -32,37 +37,37 @@ User-provided text file describing the dataset in natural language. Must include
 
 #### FR-LLM-1.3 Analysis Context File
 Auto-generated file combining FR-LLM-1.1 and FR-LLM-1.2 into a single LLM-ready context document.
-- [ ] Merge SOM summary + dataset context into one structured prompt-ready text
-- [ ] Include section markers so LLM can reference specific parts
-- [ ] Keep total size within LLM context window limits
+- [x] Merge SOM summary + dataset context into one structured prompt-ready text
+- [x] Include section markers so LLM can reference specific parts
+- [x] Keep total size within LLM context window limits (~30 KB / ~7 400 tokenů pro 18×18, 3 000 vzorků)
 
 ### FR-LLM-2: LLM Constraints
 
 #### FR-LLM-2.1 Dataset Scope Lock
-- [ ] LLM must only answer questions about the provided dataset and its SOM analysis
-- [ ] LLM must refuse or redirect questions outside the dataset scope
-- [ ] System prompt must enforce this boundary
+- [x] LLM must only answer questions about the provided dataset and its SOM analysis
+- [x] LLM must refuse or redirect questions outside the dataset scope
+- [x] System prompt must enforce this boundary
 
 #### FR-LLM-2.2 Grounded Responses
-- [ ] All claims must reference specific data from the SOM analysis (neuron IDs, sample IDs, metric values)
-- [ ] LLM must not invent data points or statistics
-- [ ] When uncertain, LLM must state uncertainty explicitly
+- [x] All claims must reference specific data from the SOM analysis (neuron IDs, sample IDs, metric values)
+- [x] LLM must not invent data points or statistics
+- [x] When uncertain, LLM must state uncertainty explicitly
 
 #### FR-LLM-2.3 Report Generation
-- [ ] Generate structured report: summary → clusters → anomalies → patterns → recommendations
-- [ ] Report must be reproducible — same input produces consistent structure
+- [x] Generate structured report: summary → clusters → anomalies → patterns → recommendations
+- [ ] Report must be reproducible — same input produces consistent structure (závisí na LLM temperature)
 - [ ] Support different detail levels (brief summary vs full report)
 
 ### FR-LLM-3: Interaction Modes
 
 #### FR-LLM-3.1 Report Mode
-- [ ] One-shot: provide context, get full analysis report
-- [ ] No conversation needed — suitable for automated pipeline output
+- [x] One-shot: provide context, get full analysis report
+- [x] No conversation needed — suitable for automated pipeline output
 
 #### FR-LLM-3.2 Conversational Mode
-- [ ] User asks questions about the dataset and SOM results
-- [ ] LLM answers using the provided context
-- [ ] Follow-up questions possible within the same session
+- [x] User asks questions about the dataset and SOM results
+- [x] LLM answers using the provided context
+- [x] Follow-up questions possible within the same session
 
 ### FR-LLM-4: Output Format
 
@@ -115,14 +120,25 @@ Dataset Context (TXT)   ──┘
 | `original_input.csv` | raw data | Reference for specific sample values |
 | `training_data_readable.csv` | normalized data | Not needed for LLM |
 
-### 4.2 Missing Data (Must Be Created)
+### 4.2 Implementovaná data (app/analysis/)
 
-| Data | Source | Purpose |
-|------|--------|---------|
-| Per-neuron dimension means | Compute from original_input.csv + clusters.json | Cluster characterization |
-| Cluster size distribution | Compute from clusters.json | Balance analysis |
-| Inter-cluster distances | Compute from weights.csv | Cluster separation quality |
-| Dataset context file | User-provided | Domain knowledge for interpretation |
+| Data | Zdroj | Stav |
+|------|--------|------|
+| Per-neuron dimension means + median + std + min + max | original_input.csv + clusters.json | ✅ |
+| Global dimension statistics (incl. percentiles p25/p75/p90/p95) | original_input.csv | ✅ |
+| Global category distributions | pie_data_*.json | ✅ |
+| Cluster size distribution | clusters.json | ✅ |
+| Cluster purity per categorical column | pie_data_*.json | ✅ |
+| Cluster category counts per value | pie_data_*.json | ✅ |
+| Cluster Z-score deviation from global mean | original_input.csv | ✅ |
+| Map topology metrics (Gini, coverage ratio, dead neurons) | clusters.json + weights.npy | ✅ |
+| Local numeric outliers (z-score >2.5σ per cluster) | original_input.csv | ✅ |
+| Multi-dimensional outliers (outlier on ≥2 dims) | original_input.csv | ✅ |
+| "1 of N" isolated outlier per cluster | original_input.csv | ✅ |
+| Global extremes enrichment | extremes.json | ✅ |
+| Inter-cluster distances | weights.npy | ❌ (budoucí) |
+| Map region spatial summary | cluster positions + categories | ❌ (budoucí) |
+| Dataset context file | User-provided | — |
 
 ---
 

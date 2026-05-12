@@ -137,7 +137,7 @@ Aktualizuj `NEURAL_NETWORKS` sekci v `config-ea.json` konkrétního datasetu:
 | Parametr | Popis |
 |---|---|
 | `use_mlp` | Zapne načtení modelu. Samotné načtení nezpomaluje EA — predikce proběhne pouze když je zapnuto filtrování |
-| `mlp_filter_bad_configs` | Zapne pre-screen filtr. Konfigurace s predikovaným `mqe_improvement_ratio > threshold` jsou přeskočeny |
+| `mlp_filter_bad_configs` | Zapne pre-screen filtr. Konfigurace s predikovaným `mqe_improvement_ratio < threshold` jsou přeskočeny (nízké predikované zlepšení = špatná konfigurace) |
 | `mlp_bad_quality_threshold` | Práh pro přeskočení. Hodnota 0.5 = přeskoč konfigurace kde model predikuje zlepšení MQE < 50 %. Doporučené rozmezí: 0.4–0.6 |
 | `verbose` | Loguje každé přeskočení do logu jedince |
 

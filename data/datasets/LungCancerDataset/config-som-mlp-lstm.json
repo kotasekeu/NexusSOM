@@ -1,0 +1,39 @@
+{
+    "map_size": [20, 20],
+    "start_learning_rate": 0.90,
+    "end_learning_rate": 0.01,
+    "lr_decay_type": "step-down",
+
+    "start_radius_init_ratio": 1.00,
+    "end_radius": 1.0,
+    "radius_decay_type": "step-down",
+
+    "start_batch_percent": 1.00,
+    "end_batch_percent": 3.50,
+    "batch_growth_type": "linear-growth",
+
+    "epoch_multiplier": 3.50,
+    "normalize_weights_flag": false,
+    "growth_g": 25,
+    "random_seed": 42,
+    "map_type": "hex",
+    "num_batches": 8,
+    "max_epochs_without_improvement": 500,
+    "mqe_evaluations_per_run": 300,
+    "save_checkpoints": true,
+    "checkpoint_every_mqe": true,
+    "checkpoint_count": 25,
+
+    "delimiter": ",",
+    "categorical_threshold_numeric": 30,
+    "noise_threshold_ratio": 0.2,
+    "categorical_threshold_text": 30,
+    "primary_id": "id",
+
+    "NEURAL_NETWORKS": {
+        "use_lstm": true,
+        "lstm_model_path": "app/lstm/models/lstm_latest.keras",
+        "lstm_scaler_path": "app/lstm/models/lstm_scaler_latest.pkl",
+        "lstm_quality_threshold": 0.75
+    }
+}

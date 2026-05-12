@@ -178,43 +178,55 @@
 
 ## Application Layer (Priority 3 - Productization)
 
-### 6. Data Mining Module 🔍
-**Role**: Automated anomaly and pattern detection
+### 6. Analysis Module 🔍
+**Role**: Automated statistics and anomaly detection on SOM results
 
-**Status**: Future Development 🔜
+**Status**: Implemented ✅
 
 **Capabilities**:
-- **Cluster analysis**: Identify distinct groups in data
-- **Anomaly detection**: Find outliers and unusual patterns
-- **Pattern discovery**: Detect trends, correlations, dependencies
-- **Automated insights**: Generate findings without human guidance
+- **Global statistics**: min, max, mean, std, percentiles (p25/p75/p90/p95) per numeric column
+- **Category distributions**: global class balance per categorical column
+- **Cluster statistics**: mean, median, std, min, max + purity + category counts per neuron
+- **Cluster Z-score deviation**: how far each cluster's mean is from the global mean
+- **Map topology**: active/dead neurons, Gini coefficient, coverage ratio
+- **Local outliers**: Z-score-based (>2.5σ from cluster mean) + multi-dimensional outlier detection
+- **"1 of N" pattern**: isolated sample significantly farther from cluster centroid than peers
+- **Global extremes enrichment**: links extremes.json entries to cluster context
+
+**Structure**:
+```
+app/analysis/
+├── src/loader.py      ← IO only, no computation
+├── src/stats.py       ← pure statistics
+├── src/anomalies.py   ← anomaly detection
+└── src/context.py     ← assembles llm_context.json
+```
 
 **Integration**:
-- Operates on trained SOM maps
-- Uses cluster boundaries from U-Matrix
-- Identifies anomalies from distance map
-- Reports findings to LLM for interpretation
+- Called automatically by `run.py` after `perform_analysis()`
+- Can be run standalone: `python3 app/run_analysis.py -i <results_dir>`
+- `context_builder.py` calls it as fallback when `llm_context.json` is missing
+- Output: `<results_dir>/json/llm_context.json`
 
 ---
 
 ### 7. LLM "The Voice" 🗣️
 **Role**: Natural language interpretation and reporting
 
-**Status**: Future Development 🔜
+**Status**: Implemented ✅
 
 **Capabilities**:
-- **Translation**: Convert technical outputs to human language
-- **Report generation**: Create understandable summaries
-  - "The analysis found 5 distinct clusters..."
-  - "Anomalies detected in region X represent 3% of data..."
-  - "The map quality is excellent with low quantization error..."
-- **Context integration**: Use user-provided dataset description
-- **Recommendation**: Suggest next steps based on findings
+- **Translation**: Convert technical SOM outputs to human language
+- **Report mode**: One-shot full analysis report (streamed to terminal + saved as `report.md`)
+- **Chat mode**: Interactive Q&A about the dataset and SOM results
+- **Context integration**: Uses `dataset_context.txt` (or `ABOUT.MD` fallback) for domain knowledge
+- **Remote model support**: Works with local Ollama or remote GPU server via `--url`
 
 **Integration**:
-- Input: SOM metrics, Data Mining findings, visual map quality
-- Output: Natural language report (markdown, PDF, HTML)
-- Template-based generation with dynamic content
+- Input: `llm_context.json` (from Analysis Module) + `dataset_context.txt`
+- Output: `<results_dir>/llm/report.md` + `prompt_log.json`
+- Entry point: `python3 app/run_llm.py -i <results_dir> -m report|chat --model llama3.1:8b`
+- Docs: `docs/llm/RUN.md`
 
 ---
 
@@ -322,11 +334,11 @@ Database: Store Results
 | **EA (Optimizer)** | 1 | ✅ Implemented | P1 |
 | **CNN (Eye)** | 1-2 | 🔄 In Progress | P1 |
 | **EA + CNN** | 2 | 🔄 In Progress | P1 |
+| **Analysis Module** | 2 | ✅ Implemented | P2 |
+| **LLM (Voice)** | 2 | ✅ Implemented | P2 |
 | **SOM (Dynamic)** | 2 | 🔜 Planned | P2 |
 | **LSTM (Brain)** | 2 | 🔜 Planned | P2 |
 | **MLP (Oracle)** | 2 | 🔜 Planned | P2 |
-| **Data Mining** | 3 | 🔜 Future | P3 |
-| **LLM (Voice)** | 3 | 🔜 Future | P3 |
 | **UI** | 3 | 🔜 Future | P3 |
 | **Database** | 3 | 🔜 Future | P3 |
 

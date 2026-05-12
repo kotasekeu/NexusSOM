@@ -1,7 +1,7 @@
 # LSTM — Strategie dynamického řízení SOM tréninku
 
-**Verze**: 1.1  
-**Aktualizováno**: 2026-05-06  
+**Verze**: 1.2  
+**Aktualizováno**: 2026-05-07  
 **Stav**: návrh — otevřené otázky k rozhodnutí označeny `[ROZHODNUTÍ]`
 
 ---
@@ -240,6 +240,106 @@ FR-LSTM-2.6: ověření v EA ❌
 
 ---
 
+## Pozorování z reálných SOM běhů (LungCancer, 18×18, Pareto config)
+
+Z porovnávacích běhů v `data/results/analysis/som-comparison/`:
+
+- **U-matrix bez výrazných hranic** — očekávané pro datasety s převahou kategorických
+  features (LungCancer: 15 kat. / 2 num.). Gradients jsou plynulé. Component diagramy
+  jsou relevantnější vizualizací než U-matrix pro tento typ dat.
+
+- **dead_neuron_ratio = 0, pokrytí celé mapy** — mapa 18×18 je přiměřená pro 3000 vzorků
+  (coverage_ratio ≈ 9.3). Vesantovo pravidlo dobře kalibrovalo search space.
+
+---
+
+## Elbow body v MQE křivce jako fázové přechody
+
+### Pozorování
+
+MQE křivka reálného SOM tréninku (300 MQE checkpointů) obsahuje typicky **3 elbow body**
+odpovídající přirozeným fázovým přechodům:
+
+```
+MQE
+│
+│\         ← fáze 1: globální organizace (velký LR, velký radius)
+│ \
+│  ·─·     ← elbow 1: topologie stabilizována, začíná lokální doladění
+│     \
+│      ·─  ← elbow 2: lokální struktura ustálena, začíná konvergenční plato
+│        ──── ← elbow 3: marginální zlepšení, trénink se vyčerpává
+└──────────────── progress
+    20%  50%  80%
+```
+
+### Implikace pro Phase 2 (early stopping)
+
+Aktuální přístup: pevné K% okno (20–70 % délky sekvence).
+Lepší přístup: predikovat po dosažení elbow 2 — v tomto bodě je lokální struktura
+ustálena a zbývající trénink přináší jen marginální zlepšení. Závisí na datasetu
+a konfiguraci, ale empiricky odpovídá ~50–65 % progress.
+
+Přínos: menší variance v délce prefixu, modelu se vždy předá sémanticky ekvivalentní
+bod ("po druhé fázi"), ne jen procento délky.
+
+### Implikace pro Phase 3 (dynamický controller)
+
+Elbow body jsou přirozené momenty pro intervenci:
+- **Elbow 1** (~20–30 %): globální fáze končí → zpomalit pokles radius (nechat
+  lokální organizaci proběhnout déle)
+- **Elbow 2** (~50–65 %): lokální fáze končí → agresivněji snížit LR, přepnout
+  batch do fine-tuning velikosti
+- **Elbow 3** (~80–90 %): konvergence → případné early stop, dál trénovat nemá smysl
+
+### Technická implementace: druhá derivace MQE
+
+Elbow = lokální maximum druhé derivace MQE sekvence (největší změna sklonu).
+
+```python
+def compute_mqe_derivatives(mqe_values: list) -> tuple[list, list]:
+    """Vrátí první a druhou derivaci MQE sekvence (numericky)."""
+    mqe = np.array(mqe_values)
+    d1 = np.gradient(mqe)           # rychlost poklesu
+    d2 = np.gradient(d1)            # zrychlení poklesu (elbow = max |d2|)
+    return d1.tolist(), d2.tolist()
+```
+
+Detekce elbow bodů:
+```python
+peaks, _ = scipy.signal.find_peaks(np.abs(d2), prominence=threshold)
+# peaks[0], peaks[1], peaks[2] → tři hlavní přechody
+```
+
+### Použití jako feature pro LSTM
+
+**Možnost A — přidané scalar features do context vstupu:**
+```
+context vstup (aktuálně 4 dimenze) rozšířit o:
+  d2_mqe_current    — aktuální druhá derivace (jsme na elbow?)
+  elbow1_passed     — 0/1 flag, zda byl detekován první přechod
+  elbow2_passed     — 0/1 flag
+  progress_since_elbow2  — jak daleko jsme od druhého elbow
+```
+
+**Možnost B — přidat d1 a d2 jako 2 nové dimenze sekvence:**
+```
+sekvence vstup (aktuálně 6 dimenzí) rozšířit na 8:
+  + d1_mqe (normalizovaná první derivace)
+  + d2_mqe (normalizovaná druhá derivace)
+```
+
+Možnost B je přirozenější — LSTM pak sám naučí korelaci mezi tvarem křivky
+a vhodnou intervencí, aniž bychom explicitně definovali prahy pro elbow detekci.
+
+### Priorita implementace
+
+Elbow features nejsou podmínkou pro základní Phase 3 — lze začít bez nich
+a přidat jako vylepšení po validaci základní architektury kontroleru.
+Přidáno jako otázka č. 6 v souhrnu.
+
+---
+
 ## Souhrn otevřených otázek
 
 | # | Otázka | Navrhovaná odpověď | Stav |
@@ -249,3 +349,4 @@ FR-LSTM-2.6: ověření v EA ❌
 | 3 | Kolik Pareto individuí na dataset | 3 | ❓ k rozhodnutí |
 | 4 | Perturbace při každém checkpointu, nebo jen náhodně s pravděpodobností p? | každý checkpoint | ❓ k rozhodnutí |
 | 5 | Spustit generate_phase3_data.py před nebo po ověření Phase 2? | po ověření Phase 2 | doporučeno |
+| 6 | Přidat detekci elbow points (2. derivace MQE) jako feature pro LSTM? | zvážit pro Phase 3 | ❓ k rozhodnutí |

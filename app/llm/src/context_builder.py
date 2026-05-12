@@ -26,6 +26,27 @@ def find_som_results(dataset_path):
     raise FileNotFoundError(f"No SOM results found in '{dataset_path}'")
 
 
+def _find_dataset_context(start_path: str, max_levels: int = 4) -> str | None:
+    """Search for dataset_context.txt (or ABOUT.MD fallback) walking up parent dirs."""
+    current = os.path.abspath(start_path)
+    about_fallback = None
+    for _ in range(max_levels):
+        candidate = os.path.join(current, "dataset_context.txt")
+        if os.path.isfile(candidate):
+            return candidate
+        if about_fallback is None:
+            for name in ("ABOUT.MD", "ABOUT.md", "about.md"):
+                about = os.path.join(current, name)
+                if os.path.isfile(about):
+                    about_fallback = about
+                    break
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    return about_fallback
+
+
 def build_context(dataset_path, max_clusters=50, max_anomalies=10):
     """
     Build LLM context from SOM results and dataset description.
@@ -42,12 +63,9 @@ def build_context(dataset_path, max_clusters=50, max_anomalies=10):
     else:
         context_data = _build_context_from_raw(json_dir, som_dir)
 
-    # Load dataset description
-    dataset_context_path = os.path.join(dataset_path, "dataset_context.txt")
-    if os.path.isfile(dataset_context_path):
-        dataset_description = load_text(dataset_context_path)
-    else:
-        dataset_description = "No dataset description provided."
+    # Search for dataset_context.txt upward from dataset_path (also covers parent dataset dirs)
+    ctx_path = _find_dataset_context(dataset_path)
+    dataset_description = load_text(ctx_path) if ctx_path else "No dataset description provided."
 
     system_prompt = _build_system_prompt()
     user_context = _format_context(context_data, dataset_description,
@@ -58,33 +76,28 @@ def build_context(dataset_path, max_clusters=50, max_anomalies=10):
 
 def _build_context_from_raw(json_dir, som_dir):
     """Build context from raw SOM output files when llm_context.json doesn't exist."""
-    context = {}
+    try:
+        import sys as _sys
+        _app_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        if _app_dir not in _sys.path:
+            _sys.path.insert(0, _app_dir)
+        from analysis.src.context import build_llm_context
+        return build_llm_context(som_dir)
+    except Exception:
+        pass
 
-    # Load clusters
+    # Minimal fallback when analysis module is unavailable
+    context = {}
     clusters_path = os.path.join(json_dir, "clusters.json")
     if os.path.isfile(clusters_path):
-        clusters = load_json(clusters_path)
-        context["clusters_raw"] = clusters
-
-    # Load quantization errors
+        context["clusters_raw"] = load_json(clusters_path)
     qe_path = os.path.join(json_dir, "quantization_errors.json")
     if os.path.isfile(qe_path):
         qe_data = load_json(qe_path)
         context["mqe"] = qe_data.get("total_quantization_error")
-        context["neuron_qe"] = qe_data.get("neuron_quantization_errors", {})
-
-    # Load extremes
     extremes_path = os.path.join(json_dir, "extremes.json")
     if os.path.isfile(extremes_path):
         context["extremes"] = load_json(extremes_path)
-
-    # Load pie data (all categorical columns)
-    pie_files = [f for f in os.listdir(json_dir) if f.startswith("pie_data_")]
-    context["categories"] = {}
-    for pf in pie_files:
-        col_name = pf.replace("pie_data_", "").replace(".json", "")
-        context["categories"][col_name] = load_json(os.path.join(json_dir, pf))
-
     return context
 
 
@@ -113,11 +126,14 @@ def _format_context(context_data, dataset_description, max_clusters, max_anomali
     if "map" in context_data:
         m = context_data["map"]
         sections.append("\n=== MAP OVERVIEW ===")
-        sections.append(f"Size: {m['size'][0]}x{m['size'][1]} {m.get('topology', 'unknown')}")
+        size = m.get('size', [])
+        size_str = f"{size[0]}x{size[1]}" if len(size) == 2 else "unknown"
+        sections.append(f"Size: {size_str} {m.get('topology', 'hex')}")
         sections.append(f"Total samples: {m['total_samples']}")
         sections.append(f"Total neurons: {m['total_neurons']}, Dead: {m['dead_neurons']} ({m['dead_ratio']:.0%})")
         sections.append(f"Mean Quantization Error (MQE): {m['mqe']:.4f}")
-        sections.append(f"Topographic Error: {m.get('topographic_error', 'N/A')}")
+        te = m.get('topographic_error')
+        sections.append(f"Topographic Error: {te:.4f}" if te is not None else "Topographic Error: N/A")
 
     # Section 3: Clusters
     if "clusters" in context_data:

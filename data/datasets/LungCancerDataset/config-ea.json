@@ -1,5 +1,5 @@
 {
-  "use_nn": false,
+  "use_nn": true,
   "EA_SETTINGS": {
     "population_size": 50,
     "generations": 6,
@@ -94,17 +94,18 @@
     "normalize_weights_flag": false
   },
   "NEURAL_NETWORKS": {
-    "use_mlp": false,
-    "use_lstm": false,
+    "use_mlp": true,
+    "use_lstm": true,
     "use_cnn": false,
-    "mlp_model_path": null,
-    "mlp_scaler_path": null,
-    "lstm_model_path": null,
+    "mlp_model_path": "app/mlp/models/mlp_latest.keras",
+    "mlp_scaler_path": "app/mlp/models/mlp_scaler_latest.pkl",
+    "lstm_model_path": "app/lstm/models/lstm_latest.keras",
+    "lstm_scaler_path": "app/lstm/models/lstm_scaler_latest.pkl",
     "cnn_model_path": null,
-    "lstm_quality_threshold": 1.0,
-    "mlp_filter_bad_configs": false,
+    "lstm_quality_threshold": 0.75,
+    "mlp_filter_bad_configs": true,
     "mlp_bad_quality_threshold": 0.5,
-    "verbose": false
+    "verbose": true
   },
   "PREPROCES_DATA": {
     "delimiter": ",",

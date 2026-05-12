@@ -1,7 +1,7 @@
 # LSTM — Požadavky a roadmapa
 
-**Verze**: 3.1  
-**Aktualizováno**: 2026-05-06  
+**Verze**: 3.2  
+**Aktualizováno**: 2026-05-07  
 **Komponenta**: LSTM
 
 ---
@@ -36,7 +36,7 @@
 
 ---
 
-## Přehled dvou fází
+## Přehled dvou fází a jejich přínos
 
 ```
 Phase 2 (nyní)          Phase 3 (budoucnost)
@@ -47,6 +47,23 @@ Výstup: quality_score     Výstup: lr_factor, radius_factor, stop
 Trénink: supervised       Trénink: RL nebo behavioral cloning
 Data: existují ✅          Data: CHYBÍ ❌ (viz sekce níže)
 ```
+
+### Kde každá fáze přináší hodnotu
+
+**Phase 2 — přínos je v EA, ne ve standalone SOM:**
+Early stopping je relevantní jen pro EA, který evaluuje stovky konfigurací za běh.
+LSTM zastaví slabé konfigurace na 30–50 % tréninku → EA zvládne více generací
+za stejný výpočetní budget → lepší Pareto fronta.
+
+Pro standalone SOM (jeden záměrně dobrý config) nemá early stop co dělat —
+konfigurace je předem dobrá a LSTM ji nezastaví. Overhead monitoringu (~+22 %)
+převáží přínos. Proto `checkpoint_every_mqe` v `config-som.json` bez LSTM = false.
+
+**Phase 3 — přínos je v standalone SOM:**
+Dynamický controller nahradí statické decay křivky (linear-drop, step-down…).
+LSTM v každém checkpointu rozhodne na základě aktuálního konvergenčního tempa:
+"zpomal pokles LR", "zmenši radius rychleji", "přepni do fine-tuning fáze".
+Výsledkem je lepší výsledná kvalita SOM mapy — to je skutečný přínos pro aplikaci.
 
 ---
 
