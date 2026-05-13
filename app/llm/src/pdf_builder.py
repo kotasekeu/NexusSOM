@@ -381,59 +381,185 @@ def _add_cluster_table(pdf: _SomPDF, context: dict):
 # ─── Anomaly list ─────────────────────────────────────────────────────────────
 
 def _add_anomaly_list(pdf: _SomPDF, context: dict):
-    anom = context.get('anomalies', {})
-    top  = anom.get('top_anomalies', [])
-    if not top:
+    anom    = context.get('anomalies', {})
+    records = context.get('anomaly_records', [])
+    top     = anom.get('top_anomalies', [])
+    if not top and not records:
         return
 
     pdf.add_page()
     pdf.section_title('Anomaly Detection Results')
 
-    # Summary line
     pdf.set_font('Helvetica', '', 9)
     pdf.cell(0, 5,
         f"Global extremes: {anom.get('global_outlier_count', 0)}    "
         f"Local outliers: {anom.get('local_outlier_count', 0)}    "
-        f"Top anomalies shown: {len(top)}",
+        f"Top anomalies shown: {len(records or top)}",
         ln=True)
     pdf.ln(2)
 
     type_labels = {
-        'one_of_n':   '1-of-N',
-        'multi_dim':  'Multi-dim',
-        'numeric':    'Numeric',
-        'global_extreme': 'Global extreme',
+        'one_of_n':        '1-of-N',
+        'multi_dim':       'Multi-dim',
+        'numeric':         'Numeric',
+        'global_extreme':  'Global extreme',
         'categorical_minority': 'Cat. minority',
     }
+    flag_sym = {
+        'global_min':       'MIN',
+        'global_max':       'MAX',
+        'high_deviation':   '>>',
+        'moderate_deviation': '>',
+    }
 
-    headers = ['#', 'Sample ID', 'Neuron', 'Type', 'Reason']
-    widths  = [8, 22, 20, 22, CONTENT_W - 8 - 22 - 20 - 22]
-    _table_header(pdf, headers, widths)
-    pdf.set_font('Helvetica', '', 8)
+    if records:
+        # ── Full row table from anomaly_records ──
+        # Collect all numeric/categorical columns from first record
+        first_cols   = list(records[0]['columns'].keys()) if records else []
+        numeric_cols = [c for c in first_cols if 'delta' in records[0]['columns'].get(c, {})]
+        cat_cols     = [c for c in first_cols if c not in numeric_cols]
 
-    for rank, a in enumerate(top, 1):
-        reason = _safe(a.get('reasons', [''])[0])
-        atype  = type_labels.get(a.get('type', ''), _safe(str(a.get('type', ''))))
-        neuron = _safe(str(a.get('neuron') or ''))
-        sid    = _safe(str(a.get('sample_id', '')))
+        # Compact header: ID | Neuron | Type | numeric_cols... | key cat cols
+        show_num = numeric_cols[:4]
+        show_cat = cat_cols[:4]
+        headers  = ['#', 'ID', 'Neuron', 'Type'] + show_num + [c[:8] for c in show_cat]
+        col_w    = [7, 18, 18, 18] + [max(14, len(c)+2) for c in show_num] + [14] * len(show_cat)
+        # Trim to page width
+        while sum(col_w) > CONTENT_W + 1 and len(col_w) > 4:
+            col_w.pop()
+            headers.pop()
 
-        # Truncate reason to fit
-        max_chars = int(widths[-1] / 1.9)
-        if len(reason) > max_chars:
-            reason = reason[:max_chars - 2] + '..'
+        _table_header(pdf, headers, col_w)
+        pdf.set_font('Helvetica', '', 7.5)
 
-        row = [str(rank), sid, neuron, atype, reason]
-        highlight = a.get('type') in ('multi_dim', 'one_of_n')
-        _table_row(pdf, row, widths, highlight_fn=lambda r, h=highlight: h)
+        for rank, rec in enumerate(records, 1):
+            atype  = type_labels.get(rec.get('type', ''), str(rec.get('type', '')))
+            row    = [
+                str(rank),
+                _safe(str(rec['sample_id'])),
+                _safe(str(rec.get('neuron') or '')),
+                atype,
+            ]
+            cols_data = rec.get('columns', {})
+            for nc in show_num:
+                if nc not in [h for h in headers[4:]]:
+                    break
+                info = cols_data.get(nc, {})
+                val  = info.get('value', '')
+                flag = info.get('flag', '')
+                sym  = flag_sym.get(flag, '')
+                dpct = info.get('delta_pct')
+                cell = f"{val}"
+                if dpct is not None:
+                    cell += f" ({dpct:+.0f}%)"
+                if sym:
+                    cell += f" {sym}"
+                row.append(_safe(cell))
+            for cc in show_cat:
+                if cc not in [h for h in headers[4 + len(show_num):]]:
+                    break
+                info    = cols_data.get(cc, {})
+                val     = str(info.get('value', ''))
+                differs = info.get('differs_from_cluster_dominant')
+                cell    = val + ('*' if differs else '')
+                row.append(_safe(cell))
 
-    pdf.ln(3)
-    pdf.set_font('Helvetica', 'I', 8)
-    pdf.set_text_color(100)
-    pdf.multi_cell(CONTENT_W, 4,
-        '1-of-N: one sample significantly farther from cluster centroid than all others. '
-        'Multi-dim: outlier on 2+ dimensions simultaneously. '
-        'Global extreme: at or near global min/max for a column.')
+            # Only pass as many values as headers
+            row = row[:len(headers)]
+            highlight = rec.get('type') in ('multi_dim', 'one_of_n')
+            _table_row(pdf, row, col_w[:len(row)],
+                       highlight_fn=lambda r, h=highlight: h)
+
+        pdf.ln(2)
+        pdf.set_font('Helvetica', 'I', 7.5)
+        pdf.set_text_color(100)
+        pdf.multi_cell(CONTENT_W, 4,
+            'Numeric cells: value (delta% from mean). '
+            'MIN/MAX = global extreme. >> = >50% deviation. > = >20%. '
+            'Cat col * = value differs from cluster dominant.')
+        pdf.set_text_color(0)
+
+        # ── Per-record detail block for top 5 ──
+        if len(records) > 0:
+            pdf.ln(4)
+            pdf.subsection_title('Top anomaly detail (all columns)')
+            for rec in records[:5]:
+                _add_anomaly_record_block(pdf, rec, type_labels, flag_sym)
+
+    else:
+        # Fallback: plain reason table (old format without anomaly_records)
+        headers = ['#', 'Sample ID', 'Neuron', 'Type', 'Reason']
+        widths  = [8, 22, 20, 22, CONTENT_W - 8 - 22 - 20 - 22]
+        _table_header(pdf, headers, widths)
+        pdf.set_font('Helvetica', '', 8)
+        for rank, a in enumerate(top, 1):
+            reason = _safe(a.get('reasons', [''])[0])
+            atype  = type_labels.get(a.get('type', ''), _safe(str(a.get('type', ''))))
+            max_c  = int(widths[-1] / 1.9)
+            if len(reason) > max_c:
+                reason = reason[:max_c - 2] + '..'
+            row = [str(rank), _safe(str(a.get('sample_id',''))),
+                   _safe(str(a.get('neuron') or '')), atype, reason]
+            _table_row(pdf, row, widths,
+                       highlight_fn=lambda r, t=a.get('type'): t in ('multi_dim','one_of_n'))
+
+
+def _add_anomaly_record_block(pdf: _SomPDF, rec: dict,
+                               type_labels: dict, flag_sym: dict):
+    """Compact per-record card: all column values with delta annotations."""
+    atype = type_labels.get(rec.get('type', ''), str(rec.get('type', '')))
+    ratio = f", ratio={rec['distance_ratio']:.2f}x" if rec.get('distance_ratio') else ""
+    pdf.set_font('Helvetica', 'B', 8.5)
+    pdf.set_text_color(30, 60, 120)
+    pdf.cell(0, 5,
+        f"Sample {rec['sample_id']}  |  neuron {rec.get('neuron','')}  |  {atype}{ratio}",
+        ln=True)
     pdf.set_text_color(0)
+
+    # Render columns in a compact 2-column layout
+    col_items = list(rec.get('columns', {}).items())
+    half = (CONTENT_W) / 2
+    x_left  = MARGIN
+    x_right = MARGIN + half
+
+    for i, (col, info) in enumerate(col_items):
+        x = x_left if i % 2 == 0 else x_right
+        if i % 2 == 0 and i > 0:
+            pdf.ln(0)  # already advanced by previous right cell
+
+        val  = info.get('value', '')
+        flag = info.get('flag', '')
+        sym  = flag_sym.get(flag, '')
+        dpct = info.get('delta_pct')
+        differs = info.get('differs_from_cluster_dominant')
+
+        # Choose color by flag
+        if flag in ('global_min', 'global_max'):
+            pdf.set_text_color(180, 0, 0)
+        elif flag == 'high_deviation':
+            pdf.set_text_color(180, 80, 0)
+        elif flag == 'moderate_deviation':
+            pdf.set_text_color(140, 110, 0)
+        else:
+            pdf.set_text_color(60)
+
+        cell_text = f"{col}: {val}"
+        if dpct is not None:
+            cell_text += f"  ({dpct:+.1f}%)"
+        if sym:
+            cell_text += f" {sym}"
+        if differs:
+            cell_text += f"  [dom={differs}]"
+
+        pdf.set_font('Helvetica', 'B' if flag else '', 8)
+        pdf.set_xy(x, pdf.get_y())
+        pdf.cell(half, 4.5, _safe(cell_text), ln=(i % 2 == 1))
+
+    if len(col_items) % 2 == 1:
+        pdf.ln(4.5)
+
+    pdf.set_text_color(0)
+    pdf.ln(3)
 
 
 # ─── Table helpers ────────────────────────────────────────────────────────────

@@ -156,27 +156,72 @@ def _format_context(context_data, dataset_description, max_clusters, max_anomali
             if "description" in c:
                 sections.append(f"  Description: {c['description']}")
 
-    # Section 4: Anomalies
+    # Section 4: Anomalies summary
     if "anomalies" in context_data:
         a = context_data["anomalies"]
         sections.append(f"\n=== ANOMALIES ===")
-        sections.append(f"Global outliers: {a['global_outlier_count']}, Local outliers: {a['local_outlier_count']}")
-
+        sections.append(
+            f"Global extremes: {a['global_outlier_count']}, "
+            f"Local outliers: {a['local_outlier_count']}"
+        )
         for anomaly in a.get("top_anomalies", [])[:max_anomalies]:
-            sections.append(f"\nSample {anomaly['sample_id']} (neuron {anomaly['neuron']}):")
-            for reason in anomaly["reasons"]:
+            atype = anomaly.get('type', '')
+            line  = f"\nSample {anomaly['sample_id']} (neuron {anomaly['neuron']}, type={atype})"
+            if anomaly.get('distance_ratio'):
+                line += f", distance_ratio={anomaly['distance_ratio']:.2f}x"
+            sections.append(line)
+            for reason in anomaly.get("reasons", []):
                 sections.append(f"  - {reason}")
 
-    # Section 5: Dimension statistics
+    # Section 5: Anomaly records — full row values with delta annotations
+    if "anomaly_records" in context_data and context_data["anomaly_records"]:
+        sections.append("\n=== ANOMALY RECORDS (full row data) ===")
+        sections.append(
+            "Format: col=value [delta / delta_pct%] [FLAG]  "
+            "FLAGS: global_min, global_max, high_deviation(>50%), moderate_deviation(>20%)"
+        )
+        for rec in context_data["anomaly_records"][:max_anomalies]:
+            sections.append(
+                f"\nSample {rec['sample_id']} | neuron {rec['neuron']} | "
+                f"type={rec.get('type','')} "
+                + (f"| ratio={rec['distance_ratio']:.2f}x" if rec.get('distance_ratio') else "")
+            )
+            col_parts = []
+            for col, info in rec.get("columns", {}).items():
+                val   = info.get("value", "")
+                delta = info.get("delta")
+                dpct  = info.get("delta_pct")
+                flag  = info.get("flag", "")
+                differs = info.get("differs_from_cluster_dominant")
+                part  = f"{col}={val}"
+                if delta is not None:
+                    part += f" [{delta:+.2f} / {dpct:+.1f}%]"
+                if flag:
+                    part += f" [{flag.upper()}]"
+                if differs:
+                    part += f" [cluster_dom={differs}]"
+                col_parts.append(part)
+            sections.append("  " + "  |  ".join(col_parts))
+
+    # Section 6: Dimension statistics
     if "dimension_stats" in context_data:
         sections.append("\n=== DIMENSION STATISTICS ===")
         for dim, stats in context_data["dimension_stats"].items():
             sections.append(
                 f"{dim}: min={stats['min']}, max={stats['max']}, "
-                f"mean={stats['mean']:.2f}, std={stats['std']:.2f}"
+                f"mean={stats['mean']:.2f}, std={stats['std']:.2f}, "
+                f"median={stats.get('median', stats['mean']):.2f}, "
+                f"p25={stats.get('p25', '')}, p75={stats.get('p75', '')}"
             )
 
-    # Section 6: Map regions
+    # Section 7: Category distributions
+    if "category_distributions" in context_data:
+        sections.append("\n=== CATEGORY DISTRIBUTIONS ===")
+        for col, dist in context_data["category_distributions"].items():
+            parts = ", ".join(f"{v}={r:.0%}" for v, r in dist.items())
+            sections.append(f"{col}: {parts}")
+
+    # Section 8: Map regions
     if "map_regions" in context_data:
         sections.append("\n=== MAP SPATIAL PATTERNS ===")
         sections.append(context_data["map_regions"].get("summary", ""))
