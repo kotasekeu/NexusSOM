@@ -166,6 +166,16 @@
 
 ---
 
+## Pareto metriky — HV, Spacing, Spread
+
+65. **`np.clip` bez normalizace měřítka zkresloval HV** — původní implementace používala `np.clip(objectives, 0.0, 1.1)` jako "normalizaci" před výpočtem hypervolumu; pokud `raw_mqe_ratio` nabývá hodnot 0.1–0.5 a `topo_error` 0.01–0.05, má mqe_ratio ~10× větší vliv na objem HV — dimenze s malým absolutním rozsahem jsou v HV neviditelné; per-generace min-max normalizace by měřítka srovnala, ale zlomila by cross-generace srovnatelnost (reference bod [1.1,1.1,1.1] by měnil smysl každou generaci); opraveno globálním running min/max (`_OBJ_RUNNING_MIN`, `_OBJ_RUNNING_MAX`) aktualizovaným každou generaci přes všechny feasible solutions v daném sedu; normalizace `(x - running_min) / span` zajišťuje konzistentní HV přes celý běh; running stats se resetují na začátku každého sedu.
+
+66. **HV a Spacing nebyly implementovány — chyběla per-generace metrika kvality fronty** — pro Phase 5 srovnání (statický vs dynamický LSTM schedule) je nutné sledovat, jak se kvalita Pareto fronty vyvíjí přes generace; implementovány funkce `_compute_pareto_metrics()` (pymoo HV s reference point [1.1,1.1,1.1] v normalizovaném prostoru + nearest-neighbor Spacing) a `_log_pareto_metrics()` (zapíše do `pareto_metrics.csv`); `log_pareto_front()` volá obě automaticky na konci každé generace; do HV a Spacing vstupují pouze feasible (nepenalizovaná) řešení; pymoo přidán do `python/requirements.txt`.
+
+67. **Spacing bez Maximum Spread nezachycuje pokrytí fronty** — Spacing měří rovnoměrnost rozložení bodů (0 = dokonale uniformní), ale nic neříká o rozsahu; fronta s dokonalým Spacing může pokrývat jen 1 % objective prostoru (body jsou rovnoměrně u sebe); pro Phase 5 analýzu je důležité vědět, jak široké spektrum trade-offů fronta nabízí; přidán Maximum Spread per dimenzi (`max − min` v normalizovaném prostoru) jako `spread_mqe`, `spread_te`, `spread_dead` do `pareto_metrics.csv`; hodnota blízko 1.0 znamená, že fronta pokrývá celý pozorovaný rozsah dané dimenze.
+
+---
+
 ## Checkpointy a LSTM data
 
 23. **Řídké checkpointy při dlouhém tréninku SOM** — 15 000 iterací a 25 checkpointů = 1 checkpoint na 600 iterací; příliš málo dat pro LSTM trénink; přidán flag `checkpoint_every_mqe` pro uložení při každém výpočtu MQE (~500 checkpointů na běh).

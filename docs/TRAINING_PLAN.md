@@ -167,7 +167,9 @@ Srovnávací běh na stejných datasetech jako Fáze 3:
 
 | Metrika | Větev A (statická) | Větev B (dynamická) | Δ |
 |---|---|---|---|
-| Pareto front hypervolume | ? | ? | ? |
+| Pareto HV (finální gen) | ? | ? | ? |
+| Pareto Spacing (finální gen) | ? | ? | ? |
+| HV křivka (per-gen) | ? | ? | Δ trend |
 | Průměrný `raw_mqe_improvement_ratio` | ? | ? | ? |
 | Průměrný `topographic_error` | ? | ? | ? |
 | Počet feasible řešení | ? | ? | ? |
@@ -273,6 +275,6 @@ Fáze 7  Anomaly detection    → dataset se zanesenou chybou
 |---|---|---|
 | 1 | Který decay type fixovat pro produkci? | ❓ Čeká na analýzu výsledků EA Fáze 1 |
 | 2 | Generované datasety — nástroj existuje, fáze odložena | ⏸ Odloženo |
-| 3 | Hypervolume výpočet pro Pareto srovnání — implementován? | ❓ Ověřit v `verify_ea_run.py` |
+| 3 | Hypervolume výpočet pro Pareto srovnání — implementován? | ✅ Implementováno: `_compute_pareto_metrics()` v `ea.py` — HV (pymoo, ref=[1.1,1.1,1.1]) + Spacing per-gen, výstup do `pareto_metrics.csv` |
 | 4 | LLM integrace — jak bohatý kontext pro anomaly test? | ❓ Závisí na analýza implementaci |
 | 5 | Přetrénování na dynamicky řízených datech (Fáze 5) — jak hodnotit distribuci shift? | ❓ KL divergence trajektorií |

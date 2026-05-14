@@ -14,6 +14,12 @@ import multiprocessing
 import shutil
 import warnings
 
+try:
+    from pymoo.indicators.hv import HV as _PyMooHV
+    _PYMOO_AVAILABLE = True
+except ImportError:
+    _PYMOO_AVAILABLE = False
+
 # Suppress resource tracker warnings on Python 3.14+
 # These warnings appear because Python 3.14 has stricter resource tracking
 # The semaphores are actually cleaned up properly at exit
@@ -54,6 +60,10 @@ WORKING_DIR = None
 EVALUATED_CACHE = {}  # Cache for evaluated individuals: {uid: (training_results, config)}
 EVALUATION_STATS = {'total_requested': 0, 'cache_hits': 0, 'new_evaluations': 0}  # Track deduplication stats
 _NN_INTEGRATION_CACHE = {}  # Per-process NN model cache: {cache_key: NeuralNetworkIntegration}
+# Running min/max for objective normalization — updated each generation from all feasible solutions.
+# Shape (3,): [mqe_ratio, topo_error, dead_ratio]. None until first update.
+_OBJ_RUNNING_MIN = None
+_OBJ_RUNNING_MAX = None
 
 
 def _get_nn_integration(nn_config: dict) -> NeuralNetworkIntegration:
@@ -325,6 +335,117 @@ def tournament_selection(population: list, k: int = 3) -> dict:
     return best_participant
 
 
+_HV_REFERENCE = np.array([1.1, 1.1, 1.1])
+
+
+def _update_obj_running_stats(raw_objectives: np.ndarray):
+    """
+    Update global running min/max from a batch of raw objective vectors.
+    Called once per generation with all feasible solutions evaluated so far.
+    Shape: (N, 3).
+    """
+    global _OBJ_RUNNING_MIN, _OBJ_RUNNING_MAX
+    if len(raw_objectives) == 0:
+        return
+    batch_min = raw_objectives.min(axis=0)
+    batch_max = raw_objectives.max(axis=0)
+    if _OBJ_RUNNING_MIN is None:
+        _OBJ_RUNNING_MIN = batch_min.copy()
+        _OBJ_RUNNING_MAX = batch_max.copy()
+    else:
+        _OBJ_RUNNING_MIN = np.minimum(_OBJ_RUNNING_MIN, batch_min)
+        _OBJ_RUNNING_MAX = np.maximum(_OBJ_RUNNING_MAX, batch_max)
+
+
+def _normalize_objectives(raw_objectives: np.ndarray) -> np.ndarray:
+    """
+    Normalize objectives to [0, 1] using global running min/max, then clip to [0, 1.1].
+    Falls back to plain clip if running stats not available yet.
+    """
+    if _OBJ_RUNNING_MIN is None:
+        return np.clip(raw_objectives, 0.0, 1.1)
+    span = _OBJ_RUNNING_MAX - _OBJ_RUNNING_MIN
+    # Avoid division by zero for degenerate dimensions (all values equal)
+    span = np.where(span < 1e-9, 1.0, span)
+    normalized = (raw_objectives - _OBJ_RUNNING_MIN) / span
+    return np.clip(normalized, 0.0, 1.1)
+
+
+def _compute_pareto_metrics(front_objectives: np.ndarray) -> dict:
+    """
+    Compute per-generation Pareto quality metrics from the non-dominated front.
+
+    front_objectives must already be normalized via _normalize_objectives().
+    Reference point is fixed at [1.1, 1.1, 1.1] in normalized space.
+
+    Returns dict with keys: front_size, hv, spacing, spread_mqe, spread_te, spread_dead.
+    hv=None if pymoo not available; spacing/spread=None if front has <2 solutions.
+    """
+    n = len(front_objectives)
+    result = {
+        'front_size': n,
+        'hv': None,
+        'spacing': None,
+        'spread_mqe': None,
+        'spread_te': None,
+        'spread_dead': None,
+    }
+
+    if n == 0:
+        return result
+
+    obj = front_objectives  # already normalized + clipped
+
+    if _PYMOO_AVAILABLE:
+        try:
+            ind = _PyMooHV(ref_point=_HV_REFERENCE)
+            result['hv'] = float(ind.do(obj))
+        except Exception:
+            pass
+
+    if n >= 2:
+        # Spacing: sqrt(mean((d_bar - d_i)^2)) where d_i = nearest-neighbor distance
+        dists = []
+        for i in range(n):
+            others = np.delete(obj, i, axis=0)
+            nn_dist = float(np.min(np.linalg.norm(others - obj[i], axis=1)))
+            dists.append(nn_dist)
+        d = np.array(dists)
+        result['spacing'] = float(np.sqrt(np.mean((d.mean() - d) ** 2)))
+
+        # Maximum Spread per objective dimension — how much of the objective space is covered
+        result['spread_mqe']  = float(obj[:, 0].max() - obj[:, 0].min())
+        result['spread_te']   = float(obj[:, 1].max() - obj[:, 1].min())
+        result['spread_dead'] = float(obj[:, 2].max() - obj[:, 2].min())
+
+    return result
+
+
+def _log_pareto_metrics(generation: int, metrics: dict):
+    """Write per-generation HV + Spacing + Spread summary to pareto_metrics.csv."""
+    global WORKING_DIR
+    csv_path = os.path.join(WORKING_DIR, "pareto_metrics.csv")
+    file_exists = os.path.isfile(csv_path)
+    fieldnames = ['generation', 'front_size', 'hv', 'spacing', 'spread_mqe', 'spread_te', 'spread_dead']
+
+    def _fmt(v):
+        return round(v, 6) if v is not None else ''
+
+    with open(csv_path, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow({
+            'generation':  generation + 1,
+            'front_size':  metrics['front_size'],
+            'hv':          _fmt(metrics['hv']),
+            'spacing':     _fmt(metrics['spacing']),
+            'spread_mqe':  _fmt(metrics['spread_mqe']),
+            'spread_te':   _fmt(metrics['spread_te']),
+            'spread_dead': _fmt(metrics['spread_dead']),
+        })
+
+
 def log_pareto_front(generation: int, search_space: dict):
     """
     Append the current Pareto archive to pareto_front.csv — one row per (generation, solution).
@@ -344,6 +465,21 @@ def log_pareto_front(generation: int, search_space: dict):
         ARCHIVE,
         key=lambda x: x[1].get('raw_mqe_improvement_ratio') or x[1].get('raw_best_mqe') or x[1]['best_mqe']
     )
+
+    # Compute and log per-generation HV + Spacing + Spread from feasible front solutions.
+    # Running min/max is updated first so normalization covers the full observed range.
+    feasible_raw = np.array([
+        [
+            res.get('raw_mqe_improvement_ratio', 1.0) or 1.0,
+            res.get('raw_topographic_error', res.get('topographic_error', 1.0)),
+            res.get('dead_neuron_ratio', 1.0),
+        ]
+        for _, res in ARCHIVE
+        if not res.get('is_penalized', False)
+    ]) if ARCHIVE else np.empty((0, 3))
+    _update_obj_running_stats(feasible_raw)
+    feasible_norm = _normalize_objectives(feasible_raw) if len(feasible_raw) > 0 else feasible_raw
+    _log_pareto_metrics(generation, _compute_pareto_metrics(feasible_norm))
 
     search_keys = sorted(search_space.keys())
     # Collect ds_* keys present in any archive result
@@ -1411,6 +1547,7 @@ def main():
     global WORKING_DIR
     global ARCHIVE
     global INPUT_FILE
+    global _OBJ_RUNNING_MIN, _OBJ_RUNNING_MAX
 
     parser = argparse.ArgumentParser(description='Evolutionary optimization of the SOM algorithm')
     parser.add_argument('-i', '--input', help='Path to the input CSV file')
@@ -1489,6 +1626,8 @@ def main():
         run_config['FIXED_PARAMS']['random_seed'] = seed
 
         ARCHIVE = []
+        _OBJ_RUNNING_MIN = None
+        _OBJ_RUNNING_MAX = None
         run_evolution(run_config, loaded_data, ignore_mask)
 
         print(f"\nINFO: Generating RGB images for seed={seed}...")
