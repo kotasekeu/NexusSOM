@@ -12,7 +12,7 @@
     "end_batch_percent": 6.00,
     "batch_growth_type": "exp-growth",
 
-    "epoch_multiplier": 10.0,
+    "epoch_multiplier": 1.0,
     "normalize_weights_flag": false,
     "growth_g": 15,
     "random_seed": 42,

@@ -626,7 +626,7 @@ def load_configuration(json_path: str = None) -> dict:
             print(f"ERROR: Configuration file {json_path} does not exist.")
             sys.exit(1)
         try:
-            with open(json_path, 'r') as f:
+            with open(json_path, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except json.JSONDecodeError as e:
             print(f"ERROR: File {json_path} is not valid JSON: {e}")
@@ -1044,7 +1044,7 @@ def log_message(uid: str, message: str, working_dir: str = None) -> None:
         working_dir = WORKING_DIR
     log_path = os.path.join(working_dir, "log.txt")
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with open(log_path, "a") as f:
+    with open(log_path, "a", encoding='utf-8') as f:
         f.write(f"[{now}] [{uid}] {message}\n")
 
 def log_result_to_csv(config: dict, results: dict, working_dir: str = None) -> None:
@@ -1069,7 +1069,7 @@ def log_result_to_csv(config: dict, results: dict, working_dir: str = None) -> N
                    'cnn_quality_score']
     ds_keys = sorted(k for k in results if k.startswith('ds_'))
 
-    with open(csv_path, mode="a", newline="") as f:
+    with open(csv_path, mode="a", newline="", encoding='utf-8') as f:
         row = {'uid': uid}
         for key in base_fields[1:]:
             row[key] = results.get(key)
@@ -1090,7 +1090,7 @@ def log_progress(current: int, total: int) -> None:
     """
     global WORKING_DIR
     progress_path = os.path.join(WORKING_DIR, "progress.log")
-    with open(progress_path, "a") as f:
+    with open(progress_path, "a", encoding='utf-8') as f:
         f.write(f"{current}/{total} completed\n")
 
 def get_or_generate_data(sample_size: int, input_dim: int) -> np.ndarray:
@@ -1127,7 +1127,7 @@ def log_status_to_csv(uid: str, population_id: int, generation: int, status: str
     csv_path = os.path.join(working_dir, "status.csv")
     write_header = not os.path.exists(csv_path) or os.path.getsize(csv_path) == 0
 
-    with open(csv_path, mode="a", newline="") as f:
+    with open(csv_path, mode="a", newline="", encoding='utf-8') as f:
         fieldnames = ['uid', 'population_id', 'generation', 'status', 'start_time', 'end_time']
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         if write_header:
@@ -1149,7 +1149,7 @@ def log_final_best(uid: str, config: dict, score: float, duration: float) -> Non
     """
     global WORKING_DIR
     best_path = os.path.join(WORKING_DIR, "final_best.txt")
-    with open(best_path, "a") as f:
+    with open(best_path, "a", encoding='utf-8') as f:
         f.write(f"UID: {uid}\n")
         f.write(f"Score (quantization error): {score:.6f}\n")
         f.write(f"Duration: {duration:.2f} s\n")
