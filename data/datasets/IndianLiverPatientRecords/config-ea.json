@@ -1,0 +1,116 @@
+{
+  "use_nn": false,
+  "EA_SETTINGS": {
+    "population_size": 50,
+    "generations": 6,
+    "seeds": [42, 1337, 7, 101, 2026]
+  },
+  "SEARCH_SPACE": {
+    "map_size": {
+      "type": "discrete_int_pair",
+      "comment": "Bounds set dynamically by apply_dynamic_search_space (Vesanto heuristic: U=5*sqrt(n_samples))"
+    },
+    "start_learning_rate": {
+      "type": "float",
+      "min": 0.5,
+      "max": 1.0,
+      "log_scale": true,
+      "comment": "Initial learning rate — standard SOM global phase range [0.5, 1.0]"
+    },
+    "end_learning_rate": {
+      "type": "float",
+      "min": 0.001,
+      "max": 0.5,
+      "log_scale": true,
+      "comment": "Final learning rate — log scale"
+    },
+    "lr_decay_type": {
+      "type": "categorical",
+      "values": ["linear-drop", "exp-drop", "log-drop", "step-down"]
+    },
+    "start_radius_init_ratio": {
+      "type": "float",
+      "min": 0.5,
+      "max": 1.0,
+      "log_scale": true,
+      "comment": "Initial radius as ratio of max(m,n) — min=0.5 ensures radius covers at least half the map (global organization phase)"
+    },
+    "radius_decay_type": {
+      "type": "categorical",
+      "values": ["linear-drop", "exp-drop", "log-drop", "step-down"]
+    },
+    "start_batch_percent": {
+      "type": "float",
+      "min": 0.0,
+      "max": 5.0,
+      "comment": "Initial batch size as % of dataset (hybrid mode)"
+    },
+    "end_batch_percent": {
+      "type": "float",
+      "min": 1.0,
+      "max": 15.0,
+      "comment": "Final batch size as % of dataset (must be > start_batch_percent)"
+    },
+    "batch_growth_type": {
+      "type": "categorical",
+      "values": ["linear-growth", "exp-growth", "log-growth"]
+    },
+    "epoch_multiplier": {
+      "type": "int",
+      "comment": "Bounds set dynamically by apply_dynamic_search_space (target_iter=[3000, 20000] / n_samples)"
+    },
+    "growth_g": {
+      "type": "int",
+      "min": 10,
+      "max": 40,
+      "comment": "Growth parameter for exp/log curves"
+    },
+    "num_batches": {
+      "type": "int",
+      "min": 1,
+      "max": 20,
+      "comment": "Number of data sections for hybrid mode"
+    }
+  },
+  "GENETIC_OPERATORS": {
+    "sbx_eta": 20.0,
+    "mutation_eta": 20.0,
+    "mutation_prob": 0.1,
+    "crossover_prob": 0.9,
+    "tournament_k": 5,
+    "comment": "SBX and polynomial mutation parameters. tournament_k: if omitted, defaults to max(2, population_size//10)"
+  },
+  "FIXED_PARAMS": {
+    "end_radius": 1.0,
+    "random_seed": 42,
+    "max_archive_size": 20,
+    "mqe_evaluations_per_run": 500,
+    "map_type": "hex",
+    "save_checkpoints": true,
+    "checkpoint_every_mqe": true,
+    "checkpoint_count": 25,
+    "early_stopping_window": 50,
+    "max_epochs_without_improvement": 500,
+    "normalize_weights_flag": false
+  },
+  "NEURAL_NETWORKS": {
+    "use_mlp": false,
+    "use_lstm": false,
+    "use_cnn": false,
+    "mlp_model_path": null,
+    "mlp_scaler_path": null,
+    "lstm_model_path": null,
+    "cnn_model_path": null,
+    "lstm_quality_threshold": 1.0,
+    "mlp_filter_bad_configs": false,
+    "mlp_bad_quality_threshold": 0.5,
+    "verbose": false
+  },
+  "PREPROCES_DATA": {
+    "delimiter": ",",
+    "categorical_threshold_numeric": 30,
+    "noise_threshold_ratio": 0.2,
+    "categorical_threshold_text": 30,
+    "primary_id": "id"
+  }
+}
