@@ -1,9 +1,12 @@
 {
-  "use_nn": false,
+  "_comment": "Phase 3 LSTM training data collection run. LSTM early stopping DISABLED — full trajectories required for advantage-weighted training (truncated runs cannot serve as baseline reference). MLP filter ON to avoid wasting time on clearly bad configs.",
+
+  "use_nn": true,
   "EA_SETTINGS": {
-    "population_size": 50,
-    "generations": 6,
-    "seeds": [42, 1337, 7, 101, 2026]
+    "population_size": 30,
+    "generations": 5,
+    "seeds": [42, 1337, 7, 101, 2026],
+    "_comment": "30 × 5 gen × 5 seeds ≈ 750 individuals. Each with 300 checkpoints = baseline corpus for generate_phase3_data.py"
   },
   "SEARCH_SPACE": {
     "map_size": {
@@ -33,7 +36,7 @@
       "min": 0.5,
       "max": 1.0,
       "log_scale": true,
-      "comment": "Initial radius as ratio of max(m,n) — min=0.5 ensures radius covers at least half the map (global organization phase)"
+      "comment": "Initial radius as ratio of max(m,n)"
     },
     "radius_decay_type": {
       "type": "categorical",
@@ -42,13 +45,13 @@
     "start_batch_percent": {
       "type": "float",
       "min": 0.0,
-      "max": 5.0,
+      "max": 3.0,
       "comment": "Initial batch size as % of dataset (hybrid mode)"
     },
     "end_batch_percent": {
       "type": "float",
       "min": 1.0,
-      "max": 15.0,
+      "max": 5.0,
       "comment": "Final batch size as % of dataset (must be > start_batch_percent)"
     },
     "batch_growth_type": {
@@ -57,7 +60,7 @@
     },
     "epoch_multiplier": {
       "type": "float",
-      "comment": "Bounds set dynamically by apply_dynamic_search_space (target_iter=10_000_000//n_samples, em=target_iter/n_samples)"
+      "comment": "Bounds set dynamically by apply_dynamic_search_space"
     },
     "growth_g": {
       "type": "int",
@@ -68,7 +71,7 @@
     "num_batches": {
       "type": "int",
       "min": 1,
-      "max": 20,
+      "max": 10,
       "comment": "Number of data sections for hybrid mode"
     }
   },
@@ -77,8 +80,7 @@
     "mutation_eta": 20.0,
     "mutation_prob": 0.1,
     "crossover_prob": 0.9,
-    "tournament_k": 5,
-    "comment": "SBX and polynomial mutation parameters. tournament_k: if omitted, defaults to max(2, population_size//10)"
+    "tournament_k": 5
   },
   "FIXED_PARAMS": {
     "end_radius": 1.0,
@@ -91,20 +93,26 @@
     "checkpoint_count": 25,
     "early_stopping_window": 50,
     "max_epochs_without_improvement": 500,
-    "normalize_weights_flag": false
+    "normalize_weights_flag": false,
+    "generate_individual_maps": false
   },
   "NEURAL_NETWORKS": {
-    "use_mlp": false,
+    "use_mlp": true,
     "use_lstm": false,
     "use_cnn": false,
-    "mlp_model_path": null,
-    "mlp_scaler_path": null,
-    "lstm_model_path": null,
+    "use_lstm_controller": false,
+    "mlp_model_path": "app/mlp/models/mlp_latest.keras",
+    "mlp_scaler_path": "app/mlp/models/mlp_scaler_latest.pkl",
+    "lstm_model_path": "app/lstm/models/lstm_latest.keras",
+    "lstm_scaler_path": "app/lstm/models/lstm_scaler_latest.pkl",
     "cnn_model_path": null,
-    "lstm_quality_threshold": 1.0,
-    "mlp_filter_bad_configs": false,
+    "lstm_controller_model_path": "app/lstm/models/lstm_controller_latest.keras",
+    "lstm_controller_scaler_path": "app/lstm/models/lstm_controller_scaler_latest.pkl",
+    "lstm_quality_threshold": 0.75,
+    "mlp_filter_bad_configs": true,
     "mlp_bad_quality_threshold": 0.5,
-    "verbose": false
+    "verbose": false,
+    "_comment": "use_lstm=false: early stopping disabled — full 300-checkpoint trajectories required. use_lstm_controller=false: set to true once Phase 3 training is done. mlp_filter_bad_configs=true: keeps run times reasonable without truncating sequences."
   },
   "PREPROCES_DATA": {
     "delimiter": ",",

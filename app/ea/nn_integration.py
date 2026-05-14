@@ -71,23 +71,29 @@ class NeuralNetworkIntegration:
                  use_mlp: bool = False,
                  use_lstm: bool = False,
                  use_cnn: bool = False,
+                 use_lstm_controller: bool = False,
                  mlp_model_path: Optional[str] = None,
                  mlp_scaler_path: Optional[str] = None,
                  lstm_model_path: Optional[str] = None,
                  lstm_scaler_path: Optional[str] = None,
                  cnn_model_path: Optional[str] = None,
+                 lstm_controller_model_path: Optional[str] = None,
+                 lstm_controller_scaler_path: Optional[str] = None,
                  verbose: bool = True):
         """
         Initialize neural network integration.
 
         Args:
             use_mlp: Enable MLP for fitness prediction
-            use_lstm: Enable LSTM for early stopping
+            use_lstm: Enable LSTM for early stopping (Phase 2)
             use_cnn: Enable CNN for visual quality assessment
+            use_lstm_controller: Enable LSTM controller for dynamic schedule (Phase 3)
             mlp_model_path: Path to MLP model (.keras)
             mlp_scaler_path: Path to MLP scaler (.pkl)
             lstm_model_path: Path to LSTM model (.keras)
             cnn_model_path: Path to CNN model (.keras)
+            lstm_controller_model_path: Path to Phase 3 controller model (.keras)
+            lstm_controller_scaler_path: Path to Phase 3 controller scaler (.pkl)
             verbose: Print status messages
         """
         self.use_mlp = use_mlp
@@ -106,8 +112,13 @@ class NeuralNetworkIntegration:
         self.cnn_model = None
         self.cnn_metadata = None
 
+        self.lstm_controller = None
+        self.lstm_controller_scaler = None
+        self.lstm_controller_metadata = None
+        self.use_lstm_controller = use_lstm_controller
+
         # Only load TensorFlow if any NN feature is enabled
-        if self.use_mlp or self.use_lstm or self.use_cnn:
+        if self.use_mlp or self.use_lstm or self.use_cnn or self.use_lstm_controller:
             if not _ensure_tensorflow():
                 self._print("⚠ TensorFlow not available. All NN features disabled.")
                 self.use_mlp = False
@@ -124,6 +135,9 @@ class NeuralNetworkIntegration:
 
         if self.use_cnn:
             self._load_cnn(cnn_model_path)
+
+        if self.use_lstm_controller:
+            self._load_lstm_controller(lstm_controller_model_path, lstm_controller_scaler_path)
 
     def _print(self, message: str):
         """Print message if verbose"""
@@ -258,6 +272,45 @@ class NeuralNetworkIntegration:
             self._print(f"⚠ Failed to load CNN: {e}. CNN features disabled.")
             self.cnn_model = None
             self.use_cnn = False
+
+    def _load_lstm_controller(self, model_path: Optional[str], scaler_path: Optional[str]):
+        """Load Phase 3 LSTM dynamic schedule controller."""
+        try:
+            ctrl_dir = os.path.join(os.path.dirname(__file__), '..', 'lstm', 'models')
+            if model_path is None:
+                stable = os.path.join(ctrl_dir, 'lstm_controller_latest.keras')
+                model_path = stable if os.path.exists(stable) else None
+
+            if model_path and os.path.exists(model_path):
+                self._print(f"Loading LSTM controller: {model_path}")
+                src_dir = os.path.join(os.path.dirname(__file__), '..', 'lstm', 'src')
+                if src_dir not in sys.path:
+                    sys.path.insert(0, src_dir)
+                from model_controller import _TileContext, _ScaleSigmoid  # required for deserialization
+                self.lstm_controller = _keras.models.load_model(
+                    model_path,
+                    custom_objects={'_TileContext': _TileContext, '_ScaleSigmoid': _ScaleSigmoid},
+                )
+
+                if scaler_path is None:
+                    scaler_path = os.path.join(ctrl_dir, 'lstm_controller_scaler_latest.pkl')
+                if os.path.exists(scaler_path):
+                    self.lstm_controller_scaler = _joblib.load(scaler_path)
+
+                import json
+                meta_path = os.path.join(ctrl_dir, 'lstm_controller_latest_metadata.json')
+                if os.path.exists(meta_path):
+                    with open(meta_path) as f:
+                        self.lstm_controller_metadata = json.load(f)
+
+                self._print("✓ LSTM controller loaded (Phase 3)")
+            else:
+                self._print("⚠ LSTM controller not found. Dynamic schedule disabled.")
+                self.use_lstm_controller = False
+        except Exception as e:
+            self._print(f"⚠ Failed to load LSTM controller: {e}. Dynamic schedule disabled.")
+            self.lstm_controller = None
+            self.use_lstm_controller = False
 
     # =========================================================================
     # MLP - "The Prophet" - Fast Fitness Estimation
@@ -414,6 +467,84 @@ class NeuralNetworkIntegration:
             return False, None
 
     # =========================================================================
+    # LSTM Controller - Phase 3 Dynamic Schedule
+    # =========================================================================
+
+    def can_use_dynamic_schedule(self) -> bool:
+        return self.use_lstm_controller and self.lstm_controller is not None
+
+    def get_dynamic_schedule_fn(self, dataset_context: Optional[list] = None):
+        """
+        Return a dynamic_schedule_fn suitable for som.train(dynamic_schedule_fn=...).
+
+        The returned closure accumulates checkpoints during one SOM run and at
+        each call passes the full sequence so far to the non-stateful LSTM
+        controller, returning the output for the most recent timestep.
+
+        Args:
+            dataset_context: [n_samples, n_active_dims, n_numeric, n_categorical]
+
+        Returns:
+            Callable(checkpoint_dict) -> (lr_factor, radius_factor)
+            or None if controller is unavailable
+        """
+        if not self.can_use_dynamic_schedule():
+            return None
+
+        model  = self.lstm_controller
+        scaler = self.lstm_controller_scaler
+
+        # Pre-compute scaled context once
+        if dataset_context is not None and scaler is not None:
+            ctx_arr = np.array(dataset_context, dtype=np.float32).reshape(1, -1)
+            ctx_scaled = scaler.transform(ctx_arr)   # (1, 4)
+        elif dataset_context is not None:
+            ctx_scaled = np.array(dataset_context, dtype=np.float32).reshape(1, -1)
+        else:
+            ctx_scaled = np.zeros((1, 4), dtype=np.float32)
+
+        accumulated = []   # list of 6-feature vectors
+
+        def _schedule_fn(cp: dict) -> tuple:
+            mqe    = cp.get('mqe', 1.0)
+            lr     = cp.get('learning_rate', 1.0)
+            radius = cp.get('radius', 1.0)
+
+            if not accumulated:
+                init_mqe    = max(mqe, 1e-10)
+                init_lr     = max(lr, 1e-10)
+                init_radius = max(radius, 1e-10)
+                _schedule_fn._init = (init_mqe, init_lr, init_radius)
+            else:
+                init_mqe, init_lr, init_radius = _schedule_fn._init
+
+            feat = np.array([
+                cp.get('progress', 0.0),
+                mqe    / init_mqe,
+                cp.get('topographic_error', 0.0),
+                cp.get('dead_neuron_ratio', 0.0),
+                lr     / init_lr,
+                radius / init_radius,
+            ], dtype=np.float32)
+            accumulated.append(feat)
+
+            seq = np.array(accumulated, dtype=np.float32)      # (T, 6)
+            seq_batch = np.expand_dims(seq, 0)                  # (1, T, 6)
+
+            try:
+                pred = model.predict(
+                    {'sequence': seq_batch, 'context': ctx_scaled},
+                    verbose=0)[0]                                # (T, 2)
+                lr_f, rad_f = float(pred[-1, 0]), float(pred[-1, 1])
+            except Exception:
+                lr_f, rad_f = 1.0, 1.0
+
+            return lr_f, rad_f
+
+        _schedule_fn._init = (1.0, 1.0, 1.0)
+        return _schedule_fn
+
+    # =========================================================================
     # CNN - "The Eye" - Visual Quality Assessment
     # =========================================================================
 
@@ -457,13 +588,15 @@ class NeuralNetworkIntegration:
     def get_status_summary(self) -> Dict[str, Any]:
         """Get summary of NN integration status"""
         return {
-            'mlp_enabled': self.use_mlp,
-            'mlp_available': self.can_predict_fitness(),
-            'lstm_enabled': self.use_lstm,
-            'lstm_available': self.can_check_early_stopping(),
-            'cnn_enabled': self.use_cnn,
-            'cnn_available': self.can_assess_visual_quality(),
-            'tensorflow_loaded': _tf_loaded
+            'mlp_enabled':              self.use_mlp,
+            'mlp_available':            self.can_predict_fitness(),
+            'lstm_enabled':             self.use_lstm,
+            'lstm_available':           self.can_check_early_stopping(),
+            'lstm_controller_enabled':  self.use_lstm_controller,
+            'lstm_controller_available': self.can_use_dynamic_schedule(),
+            'cnn_enabled':              self.use_cnn,
+            'cnn_available':            self.can_assess_visual_quality(),
+            'tensorflow_loaded':        _tf_loaded
         }
 
 
@@ -474,14 +607,16 @@ class NeuralNetworkIntegration:
 def create_nn_integration(use_mlp: bool = False,
                          use_lstm: bool = False,
                          use_cnn: bool = False,
+                         use_lstm_controller: bool = False,
                          **kwargs) -> NeuralNetworkIntegration:
     """
     Create neural network integration with sensible defaults.
 
     Args:
         use_mlp: Enable MLP (fitness prediction)
-        use_lstm: Enable LSTM (early stopping)
+        use_lstm: Enable LSTM (early stopping, Phase 2)
         use_cnn: Enable CNN (visual quality)
+        use_lstm_controller: Enable LSTM dynamic schedule controller (Phase 3)
         **kwargs: Additional arguments for NeuralNetworkIntegration
 
     Returns:
@@ -491,6 +626,7 @@ def create_nn_integration(use_mlp: bool = False,
         use_mlp=use_mlp,
         use_lstm=use_lstm,
         use_cnn=use_cnn,
+        use_lstm_controller=use_lstm_controller,
         **kwargs
     )
 

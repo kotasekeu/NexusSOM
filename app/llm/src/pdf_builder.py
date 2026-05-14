@@ -612,8 +612,12 @@ def _add_key_maps(pdf: _SomPDF, vis_dir: str):
         'dead_neurons_map.png': 'Dead Neurons Map',
     }
 
+    row_h = img_size + 4 + 4   # image + caption + gap
     for i in range(0, len(available), 2):
         row = available[i:i + 2]
+        if pdf.get_y() + row_h > PAGE_H - MARGIN:
+            pdf.add_page()
+            pdf.section_title('SOM Maps (continued)')
         y_start = pdf.get_y()
         for j, fname in enumerate(row):
             x = MARGIN + j * (img_size + 4)
@@ -646,11 +650,16 @@ def _add_component_planes(pdf: _SomPDF, vis_dir: str, context: dict):
     cols     = 3
     gap      = 3
     img_size = (CONTENT_W - gap * (cols - 1)) / cols
+    row_h    = img_size + 3.5 + gap   # image + caption + spacing
 
     row_y = pdf.get_y()
     for i, fname in enumerate(comp_files):
         col = i % cols
         if col == 0:
+            # Start of a new row — check if it fits on the current page
+            if pdf.get_y() + row_h > PAGE_H - MARGIN:
+                pdf.add_page()
+                pdf.section_title('Component Planes (continued)')
             row_y = pdf.get_y()
 
         x = MARGIN + col * (img_size + gap)
@@ -664,7 +673,7 @@ def _add_component_planes(pdf: _SomPDF, vis_dir: str, context: dict):
         pdf.set_text_color(0)
 
         if col == cols - 1 or i == len(comp_files) - 1:
-            pdf.set_y(row_y + img_size + 3.5 + gap)
+            pdf.set_y(row_y + row_h)
 
 
 # ─── Pie maps ────────────────────────────────────────────────────────────────
@@ -690,11 +699,15 @@ def _add_pie_maps(pdf: _SomPDF, vis_dir: str, context: dict):
     cols     = 2
     gap      = 4
     img_size = (CONTENT_W - gap * (cols - 1)) / cols
-    row_y = pdf.get_y()
+    row_h    = img_size + 3.5 + gap
+    row_y    = pdf.get_y()
 
     for i, fname in enumerate(pie_files):
         col = i % cols
         if col == 0:
+            if pdf.get_y() + row_h > PAGE_H - MARGIN:
+                pdf.add_page()
+                pdf.section_title('Categorical Distribution Maps (continued)')
             row_y = pdf.get_y()
 
         x = MARGIN + col * (img_size + gap)

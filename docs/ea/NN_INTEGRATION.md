@@ -12,6 +12,7 @@ EA nyní obsahuje tři volitelné NN moduly:
 |---|---|---|
 | **MLP** | Pre-screen — přeskočí konfiguraci s předpovídanou nízkou kvalitou | ✅ Phase 2 hotovo |
 | **LSTM** | Early stopping — ukončí SOM trénink pokud predikce z prefixu ukáže špatný výsledek | ✅ Phase 2 hotovo |
+| **LSTM Controller** | Dynamické řízení — upravuje lr/radius faktory v každém MQE checkpointu | ✅ Phase 3 Část 1 hotovo |
 | **CNN** | Klasifikace mapy z U-Matrix vizualizace | ❌ Uzavřeno (viz CNN_REQUIREMENTS.md) |
 
 ---
@@ -74,16 +75,23 @@ Výchozí práh: `0.75` (kalibrováno na p75 distribuce quality_score z testovac
   "use_mlp": true,
   "use_lstm": true,
   "use_cnn": false,
+  "use_lstm_controller": false,
   "mlp_model_path": "app/mlp/models/mlp_latest.keras",
   "mlp_scaler_path": "app/mlp/models/mlp_scaler_latest.pkl",
   "lstm_model_path": "app/lstm/models/lstm_latest.keras",
   "lstm_scaler_path": "app/lstm/models/lstm_scaler_latest.pkl",
+  "lstm_controller_model_path": "app/lstm/models/lstm_controller_latest.keras",
+  "lstm_controller_scaler_path": "app/lstm/models/lstm_controller_scaler_latest.pkl",
   "mlp_filter_bad_configs": true,
   "mlp_bad_quality_threshold": 0.5,
   "lstm_quality_threshold": 0.75,
   "verbose": true
 }
 ```
+
+**`use_lstm_controller`**: aktivuje Phase 3 dynamický kontroler. Model se musí nejdřív natrénovat
+(`app/lstm/src/train_phase3.py`). Pro Část 1 (24 trajektorií) je model konzervativní — predikuje
+faktory blízko 1.0. Smysluplné výsledky přijdou po Části 2 (~200+ trajektorií).
 
 **Cesty** jsou relativní k pracovnímu adresáři při spuštění `run_ea.py` (= kořen projektu).
 
@@ -98,10 +106,15 @@ MLP pre-screen: encode_config_for_mlp(individual, dataset_meta)
     pred_mqe = mlp.predict(feature_vector)
     if pred_mqe < 0.5 → log "MLP pre-screen: skipping" → skip SOM → penalty
         ↓ (prošlo)
+LSTM Controller (use_lstm_controller=true):
+    dynamic_schedule_fn = nn.get_dynamic_schedule_fn(dataset_context)
+        ↓
 SOM training: trénování s checkpointy
-    lstm_checkpoints[] se plní při každém výpočtu MQE (bez ohledu na save_checkpoints)
-    po >= 60 checkpointech:
-        LSTM: sequence = lstm_checkpoints[-K:], context = dataset_context
+    při každém MQE checkpointu:
+      → dynamic_schedule_fn(cp) → (lr_factor, radius_factor)
+         current_lr *= cum_lr_factor, current_radius *= cum_radius_factor
+      → lstm_checkpoints[] se plní (LSTM early stopping)
+    po >= 60 checkpointech (use_lstm=true):
         quality_score = (1-pred_mqe) + te + dead*0.5
         if quality_score > 0.75 → log "LSTM early stop" → přerušit trénink
         ↓ (dokončeno nebo ukončeno)
@@ -167,12 +180,22 @@ Po každém novém setu EA výsledků:
 python3 app/mlp/prepare_dataset.py --results_root data/results
 cd app/mlp && python3 src/train.py
 
-# LSTM
+# LSTM Phase 2 (early stopping)
 python3 app/lstm/prepare_dataset.py --results_root data/results
 cd app/lstm && python3 src/train.py
+
+# LSTM Phase 3 (dynamic controller) — po generování nových perturbovaných dat
+python3 app/lstm/generate_phase3_data.py \
+    --seed_dir data/datasets/<DS>/results/<RUN>/seed_42 \
+    --dataset  data/datasets/<DS>/dataset.csv \
+    --n_pareto 5 --n_variants 8
+python3 app/lstm/prepare_phase3_dataset.py \
+    --trajectories app/lstm/data/phase3/trajectories.json \
+    --seed_dir data/datasets/<DS>/results/<RUN>/seed_42
+cd app/lstm && python3 src/train_phase3.py
 ```
 
-Stabilní cesty `mlp_latest.keras` / `lstm_latest.keras` se přepíší automaticky. Config-ea.json není potřeba měnit.
+Stabilní cesty (`*_latest.keras`) se přepíší automaticky. Config-ea.json není potřeba měnit.
 
 ---
 
@@ -192,10 +215,21 @@ Viz `docs/ea/ISSUES.md` položky #55–#59. Souhrn:
 
 ## Stav Phase 3 (dynamické řízení)
 
-LSTM Phase 3 = nahradit statické decay křivky LR/radius/batch dynamickým controllerem řízeným LSTM. Data pro fázi 3 zatím neexistují — plán generování:
+**Část 1 hotova (2026-05-13):** pipeline end-to-end funkční, model natrénován.
 
-- 4 datasety × 3 Pareto jedinci × 5 dynamických variant = ~60 SOM běhů
-- Varianta A: dynamický LR, B: dynamický radius, C: dynamický batch, D: vše najednou, E: baseline (static)
-- Viz `docs/lstm/LSTM_DYNAMIC_CONTROL.md` pro detailní plán
+| Co | Kde | Stav |
+|---|---|---|
+| `dynamic_schedule_fn` callback | `som.py` | ✅ |
+| Data generování | `app/lstm/generate_phase3_data.py` | ✅ 45 trajektorií |
+| Model architektura | `app/lstm/src/model_controller.py` | ✅ |
+| Dataset příprava | `app/lstm/prepare_phase3_dataset.py` | ✅ |
+| Trénink | `app/lstm/src/train_phase3.py` | ✅ MAE=0.041 |
+| EA integrace | `nn_integration.py` + `ea.py` | ✅ |
 
-FR-LSTM-2.6 (ověření v EA běhu) — otevřeno, čeká na test run.
+**Část 2 — čeká:** rozšíření na 4 datasety, 200–400 SOM běhů, elbow features.
+Viz `docs/lstm/LSTM_DYNAMIC_CONTROL.md` pro detailní plán.
+
+**Pro aktivaci Phase 3 v EA:** nastav `"use_lstm_controller": true` v config.
+Současný model je konzervativní (trénován na 24 trajektoriích) — výsledky se zlepší po Části 2.
+
+FR-LSTM-2.6 (ověření LSTM early stopping v EA běhu) — otevřeno, čeká na test run.

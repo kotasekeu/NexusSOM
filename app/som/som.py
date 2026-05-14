@@ -281,7 +281,8 @@ class KohonenSOM:
 
         return neuron_error_map, total_qe
 
-    def train(self, data: np.ndarray, ignore_mask: np.ndarray = None, working_dir: str = '.', lstm_early_stop_fn=None) -> dict:
+    def train(self, data: np.ndarray, ignore_mask: np.ndarray = None, working_dir: str = '.',
+              lstm_early_stop_fn=None, dynamic_schedule_fn=None) -> dict:
         # Main training loop for SOM
         start_time = time.monotonic()
 
@@ -321,13 +322,19 @@ class KohonenSOM:
         lstm_stopped = False
         lstm_stop_progress = None
 
+        # Phase 3 dynamic controller: cumulative multipliers applied on top of static schedule
+        _cum_lr_factor = 1.0
+        _cum_radius_factor = 1.0
+        _ctrl_cp_count = 0
+        _ctrl_log_every = max(1, self.mqe_evaluations_per_run // 10)
+
         pbar = tqdm(range(total_iterations), desc="SOM Training", unit="iter")
         iteration = 0  # Initialize iteration variable to avoid scope issues
         for iteration in pbar:
             current_lr = self.get_decay_value(iteration, total_iterations, self.start_learning_rate,
-                                              self.end_learning_rate, self.lr_decay_type)
+                                              self.end_learning_rate, self.lr_decay_type) * _cum_lr_factor
             current_radius = self.get_decay_value(iteration, total_iterations, self.start_radius, self.end_radius,
-                                                  self.radius_decay_type)
+                                                  self.radius_decay_type) * _cum_radius_factor
 
             self.history['learning_rate'].append((iteration, current_lr))
             self.history['radius'].append((iteration, current_radius))
@@ -382,8 +389,38 @@ class KohonenSOM:
                         'topographic_error': topo_error,
                         'dead_neuron_ratio': dead_ratio,
                         'learning_rate': current_lr,
-                        'radius': current_radius
+                        'radius': current_radius,
+                        'lr_factor': 1.0,
+                        'radius_factor': 1.0,
                     }
+
+                    # Phase 3 dynamic controller: apply factor, update cumulative multipliers
+                    if dynamic_schedule_fn is not None:
+                        lr_f, rad_f = dynamic_schedule_fn(cp)
+                        lr_f = float(np.clip(lr_f, 0.5, 2.0))
+                        rad_f = float(np.clip(rad_f, 0.5, 2.0))
+                        _cum_lr_factor = float(np.clip(_cum_lr_factor * lr_f, 0.05, 5.0))
+                        _cum_radius_factor = float(np.clip(_cum_radius_factor * rad_f, 0.05, 5.0))
+                        cp['lr_factor'] = lr_f
+                        cp['radius_factor'] = rad_f
+                        _ctrl_cp_count += 1
+                        # Periodic milestone log (every ~10% of training)
+                        if _ctrl_cp_count % _ctrl_log_every == 0:
+                            log_message(working_dir, "SYSTEM",
+                                        f"LSTM ctrl @ {progress:.0%}: "
+                                        f"step lr_f={lr_f:.4f} rad_f={rad_f:.4f} | "
+                                        f"cum_lr={_cum_lr_factor:.4f} cum_rad={_cum_radius_factor:.4f}")
+                        # Intervention log: fired when controller deviates >1% from neutral
+                        _lr_dev = abs(lr_f - 1.0)
+                        _rad_dev = abs(rad_f - 1.0)
+                        if _lr_dev > 0.01 or _rad_dev > 0.01:
+                            log_message(working_dir, "SYSTEM",
+                                        f"LSTM ctrl INTERVENTION @ {progress:.1%}: "
+                                        f"lr_f={lr_f:.4f} (Δ{lr_f - 1.0:+.4f}) "
+                                        f"rad_f={rad_f:.4f} (Δ{rad_f - 1.0:+.4f}) | "
+                                        f"effective lr={current_lr:.5f} R={current_radius:.4f} | "
+                                        f"cum_lr={_cum_lr_factor:.4f} cum_rad={_cum_radius_factor:.4f}")
+
                     if self.save_checkpoints and iteration % checkpoint_interval == 0:
                         checkpoints.append(cp)
                     if lstm_early_stop_fn is not None:

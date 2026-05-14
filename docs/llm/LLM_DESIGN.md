@@ -1,169 +1,272 @@
 # LLM Module — The Voice — Design
 
----
-
-## 1. How It Works
-
-The Voice is not an AI that analyses raw data. It is a translation layer — it takes structured SOM analysis results and converts them into natural language that a domain expert can understand without knowing SOM internals.
-
-### 1.1 Two-Context Architecture
-
-The LLM receives two separate context documents:
-
-**Context A — Dataset Description** (user-provided, static per dataset)
-```
-This is the Breast Cancer Wisconsin Diagnostic Dataset.
-Each row is one tumor biopsy sample.
-
-Columns:
-- id: unique patient identifier
-- diagnosis: B = Benign, M = Malignant
-- radius_mean: mean distance from center to perimeter of the cell nucleus
-- texture_mean: standard deviation of gray-scale values in the cell image
-- ...
-
-Domain knowledge:
-- Malignant tumors tend to have larger radius, irregular shape (higher concavity)
-- Benign tumors cluster together with lower metric values
-```
-
-**Context B — SOM Analysis Summary** (auto-generated from SOM outputs)
-```
-MAP OVERVIEW:
-- Size: 5x5 hexagonal, 569 samples, 25 neurons
-- Quality: MQE 0.569, topographic error 0.12, 5 dead neurons (20%)
-
-CLUSTERS:
-- Neuron 1_0: 242 samples (largest), 100% Benign, QE 0.45
-  Avg radius_mean: 12.1, avg area_mean: 420, avg smoothness: 0.09
-- Neuron 0_4: 47 samples, 100% Malignant, QE 0.66
-  Avg radius_mean: 18.5, avg area_mean: 1050, avg smoothness: 0.11
-- ...
-
-ANOMALIES:
-- Sample 911296202: area_mean=2501 (global max, 2.5σ above mean)
-  radius_worst=36.04 (global max), perimeter_worst=251.20 (global max)
-  Located in neuron 0_4 (Malignant cluster) — extreme case
-- ...
-```
-
-### 1.2 System Prompt
-
-The system prompt constrains the LLM to:
-1. Only discuss the provided dataset and SOM analysis
-2. Ground every claim in specific data from Context B
-3. Use terminology from Context A (domain language, not SOM jargon)
-4. When asked about something not in the data, say "This information is not available in the current analysis"
-
-### 1.3 Processing Pipeline
-
-```
-Step 1: Load SOM outputs (JSON/CSV)
-Step 2: Load dataset context file (user-provided TXT)
-Step 3: Build Context B — summarize clusters, anomalies, distributions
-Step 4: Compose full prompt = System Prompt + Context A + Context B + User Query
-Step 5: Send to LLM → receive response
-Step 6: Save response (+ prompt for traceability)
-```
+**Verze**: 2.0
+**Aktualizováno**: 2026-05-13
 
 ---
 
-## 2. Technology Choices
+## 1. Princip
 
-### 2.1 LLM Provider
+The Voice je **translation layer** — neprovádí analýzu surových dat. Přebírá strukturované
+výstupy z `app/analysis/` a převádí je do přirozeného jazyka srozumitelného doménovému expertovi.
 
-| Option | Pros | Cons | Verdict |
-|--------|------|------|---------|
-| **OpenAI API (GPT-4)** | Best reasoning, large context (128k) | Paid, data leaves local machine | Good for production |
-| **Anthropic API (Claude)** | Strong reasoning, 200k context | Paid, data leaves local machine | Good for production |
-| **Local model (Ollama/llama.cpp)** | Free, data stays local, offline | Weaker reasoning, slower, smaller context | Good for development/privacy |
-| **Configurable** | Support all via adapter pattern | More code | **Chosen approach** |
-
-**Decision**: Configurable provider with adapter pattern. Default to local model for development, cloud API for production/thesis evaluation.
-
-### 2.2 Context Strategy
-
-For a 5×5 map (25 neurons, ~500 samples): full per-neuron summary fits easily in any context window (~2-3k tokens).
-
-For a 30×30 map (900 neurons, ~10k+ samples): per-neuron detail would exceed useful context. Strategy:
-- **Group neurons into regions** (e.g., quadrants or U-matrix-based clusters)
-- **Report only non-empty neurons** (skip dead neurons)
-- **Top-N anomalies** instead of full extremes list
-- **Summarize dimension stats** instead of per-neuron-per-dimension tables
-
-### 2.3 Prompt Engineering vs Fine-Tuning
-
-| Approach | Effort | Quality | Flexibility |
-|----------|--------|---------|-------------|
-| **Prompt engineering** | Low | Good enough | High — works with any LLM |
-| Fine-tuning | High | Potentially better | Low — locked to one model |
-| RAG | Medium | Good for large datasets | Medium |
-
-**Decision**: Prompt engineering only. The SOM summary is structured enough that a well-crafted system prompt + context is sufficient. Fine-tuning would require many example reports we don't have. RAG adds complexity without clear benefit when the full context fits in the window.
+Klíčové omezení: LLM nikdy nevidí raw CSV. Dostane `llm_context.json` (~450 KB, ~7 400 tokenů)
+předpřipravený statistickým pipelinem. Každý claim musí být podložen konkrétním neuronem,
+sample_id nebo číselnou hodnotou.
 
 ---
 
-## 3. Context Builder — What Must Be Computed
+## 2. Architektura
 
-The SOM module currently outputs raw JSON files. The Context Builder transforms these into LLM-ready summaries.
+### 2.1 Two-Context Model
 
-### 3.1 From `clusters.json` + `original_input.csv`
-- Per-neuron sample count
-- Per-neuron dimension averages (mean of original values, not normalized)
-- Cluster size distribution (largest, smallest, empty)
+**Context A — Dataset Description** (user-provided, statický per dataset)
 
-### 3.2 From `quantization_errors.json`
-- Total map quality (MQE)
-- Worst neurons (highest QE) — potential problem areas
-- Dead neurons (QE = 0 with no samples)
+```
+data/datasets/<Dataset>/dataset_context.txt
+```
 
-### 3.3 From `extremes.json`
-- Group extremes by type: global outliers vs neuron-local outliers
-- Summarize: "5 samples are global outliers, 12 samples are local outliers"
-- Top-N most extreme samples with full detail
+Obsahuje:
+- Popis datasetu a domény
+- Popis každého sloupce (název, jednotky, rozsah hodnot)
+- Dekódování kategorií (`1 = symptom absent, 2 = symptom present`)
+- Doménové znalosti (`SMOKING a YELLOW_FINGERS jsou korelovány s vyšším rizikem`)
 
-### 3.4 From `pie_data_{col}.json`
-- Per-neuron dominant category
-- Purity: is each neuron 100% one category or mixed?
-- Map regions: which part of the map is Benign vs Malignant?
+Fallback: pokud `dataset_context.txt` neexistuje, `context_builder.py` hledá `ABOUT.MD` nebo
+`ABOUT.md` až 4 úrovně adresáře nahoru (typicky Kaggle datasety).
 
-### 3.5 From `preprocessing_info.json`
-- Which columns were used, which were ignored (and why)
-- Column types (numeric vs categorical)
-- Missing value information
+**Context B — SOM Analysis Summary** (auto-generated z `llm_context.json`)
 
-### 3.6 Computed (new)
-- Inter-neuron distances from `weights_readable.csv` — cluster separation
-- Overall map interpretation: "Left side = Benign, Right side = Malignant"
+Assemblováno `context_builder.py::_format_context()`:
+- Map overview: size, topology, MQE, topographic error, dead ratio, Gini
+- Per-cluster: dominant category, purity, dimension mean/std/Z-score
+- Anomaly records: top-20 vzorků s plnými hodnotami řádku + delta anotace
+- Global dimension statistics: min, max, mean, std, median, p25–p95
+- Global category distributions
+
+### 2.2 Prompt Architektura
+
+```
+System Prompt (constraints)
+    ↓
+Context A (dataset_context.txt)
+    ↓
+Context B (_format_context(llm_context.json))
+    ↓
+User Query / Report Instruction
+```
+
+System prompt zajišťuje:
+1. LLM odpovídá pouze k poskytnutému datasetu a SOM analýze
+2. Každé tvrzení musí odkazovat na konkrétní data z Context B
+3. Při nejistotě LLM explicitně uvede "This information is not available in the current analysis"
+4. Používá terminologii z Context A (doménový jazyk, ne SOM žargon)
+
+### 2.3 Processing Pipeline
+
+```
+Step 1: run_som.py → SOM training → results/<timestamp>/
+Step 2: app/analysis/ → compute llm_context.json  (automaticky po tréninku)
+Step 3: run_llm.py → context_builder.py → načte llm_context.json + dataset_context.txt
+Step 4: _format_context() → sestaví strukturovaný text prompt (~Context B)
+Step 5: compose full prompt = system_prompt + Context A + Context B + user_query
+Step 6: llm_client.py → Ollama HTTP API → streaming response
+Step 7: uložit report.md + prompt_log.json (+ volitelně report.pdf)
+```
 
 ---
 
-## 4. Example Output
+## 3. Komponenty
 
-Given the BreastCancer dataset, the generated report should read something like:
+### 3.1 `app/analysis/` — Statistical Pre-processor
 
-> **Dataset Summary**
->
-> The analysis covers 569 breast cancer biopsy samples mapped onto a 5×5 hexagonal SOM.
-> The map achieved an MQE of 0.569 with 5 dead neurons (20%).
->
-> **Key Findings**
->
-> The map shows clear separation between benign and malignant tumors.
-> Neuron 1_0 contains 242 samples (43% of all data), all benign, forming the
-> largest cluster. Malignant samples concentrate in neurons 0_3, 0_4, 1_3, 1_4,
-> 2_3, 2_4 (upper-right region).
->
-> **Anomalies**
->
-> Sample 911296202 is the most extreme case — it holds the global maximum for
-> area_mean (2501), radius_worst (36.04), perimeter_worst (251.20), and
-> area_worst (4254). This sample is located in the malignant cluster (neuron 0_4)
-> and represents an unusually large tumor.
->
-> **Cluster Characteristics**
->
-> Benign clusters (neurons 1_0, 2_1, 3_0): lower radius (avg 12.1), smaller area
-> (avg 420), smoother boundaries (smoothness avg 0.09).
-> Malignant clusters (neurons 0_3, 0_4, 1_4): higher radius (avg 18.5), larger
-> area (avg 1050), more irregular shape (higher concavity).
+Samostatný modul, nezávislý na `app/som/`. Čte pouze soubory z results adresáře.
+
+```
+app/analysis/src/
+├── loader.py     → IO — načítá clusters.json, quantization_errors.json,
+│                   extremes.json, pie_data_*.json, original_input.csv, weights.npy
+├── stats.py      → globální statistiky, cluster statistiky, topologie mapy
+├── anomalies.py  → detekce outlierů (numeric, multi-dim, 1-of-N)
+└── context.py    → assembly llm_context.json + anomaly_records s delta anotacemi
+```
+
+Výstup: `results/<timestamp>/json/llm_context.json`
+
+Podrobná dokumentace: `docs/llm/RESULT_ANALYZER.md`
+
+### 3.2 `app/llm/src/context_builder.py`
+
+`build_context(dataset_path)`:
+1. Hledá `llm_context.json` → pokud existuje, načte přímo
+2. Fallback: volá `analysis.src.context.build_llm_context()` (live výpočet)
+3. Hledá `dataset_context.txt` (nebo `ABOUT.MD`) jako Context A
+4. `_format_context()` → sestaví pipe-separated text prompt
+
+Anomaly records formát v Context B:
+```
+AGE=30.0 [-25.17 / -45.6%] [GLOBAL_MIN] | SMOKING=2 [cluster_dom=1] | CHEST_PAIN=2 [+0.42 / +26.3%]
+```
+
+### 3.3 `app/llm/src/llm_client.py`
+
+Ollama HTTP adapter. Volá `POST /api/chat` s `stream=True`.
+
+Konfigurace:
+- `base_url`: výchozí `http://localhost:11434`
+- `model`: výchozí `llama3.1:8b`
+- `num_ctx`: výchozí `16384` (pokrývá ~7 400 tokenů kontextu + odpověď)
+- `temperature`: `0` pro deterministické výstupy
+
+### 3.4 `app/llm/src/report_generator.py`
+
+Orchestruje výstupní mód. Po dokončení reportu automaticky spustí `pdf_builder.py`.
+
+Uložené soubory:
+```
+results/<timestamp>/llm/
+├── report.md          ← výsledná zpráva
+├── prompt_log.json    ← použitý prompt + model + timestamp (traceability)
+└── report.pdf         ← volitelně, pokud spuštěno s -m pdf nebo po report módu
+```
+
+### 3.5 `app/llm/src/pdf_builder.py`
+
+Generuje PDF z `report.md` + všech SOM vizualizací pomocí `fpdf2`.
+
+Struktura PDF (25 stran):
+1. Cover page
+2. Report text (z report.md, sekce jako nadpisy)
+3. Dimension statistics table
+4. Cluster summary table
+5. Anomaly list s barevnými bloky (červená = global_min/max, oranžová = high_deviation)
+6. Key maps: U-Matrix, distance map, hit map, dead neurons
+7. Component planes (grid, auto page break)
+8. Category pie maps
+9. Training plots (MQE + topographic error progression)
+
+Optimalizace: obrázky downscalované přes PIL na max 700 px před vložením (3 240 px → 7.6 MB PDF).
+
+---
+
+## 4. LLM Provider
+
+### Aktuální implementace
+
+Ollama HTTP API. Jediný adaptér — `llm_client.py`.
+
+| Model | VRAM | Inference | Kvalita |
+|---|---|---|---|
+| `llama3.1:8b` | 5 GB | lokálně / CPU | ⭐⭐⭐ |
+| `nexusom-analyst` | 5 GB | lokálně | ⭐⭐⭐ + baked system prompt |
+| `qwen2.5:32b` | 19 GB | vzdálený GPU | ⭐⭐⭐⭐⭐ |
+| `llama3.1:70b` | 41 GB | vzdálený GPU | ⭐⭐⭐⭐⭐ |
+
+Vzdálený GPU: `--url http://<ip>:11434` (Ollama spuštěno s `OLLAMA_HOST=0.0.0.0`).
+
+### `nexusom-analyst` custom model
+
+```
+app/llm/Modelfile
+```
+
+- Base: `llama3.1:8b`
+- Baked-in system prompt (eliminuje overhead per-request)
+- `temperature 0`, `num_ctx 16384`
+
+Rebuild po změně Modelfile:
+```bash
+ollama create nexusom-analyst -f app/llm/Modelfile
+```
+
+### Budoucí providery (neimlementováno)
+
+Anthropic API a OpenAI API nejsou zatím přidány. Adapter pattern je záměr do budoucna —
+aktuálně `llm_client.py` je Ollama-only.
+
+---
+
+## 5. Output Modes
+
+### Report Mode
+```bash
+python3 app/run_llm.py -i results/<timestamp> -m report [--model llama3.1:8b] [--url ...]
+```
+One-shot: celá analýza streamována do terminálu → uložena jako `report.md` + `report.pdf`.
+
+### Chat Mode
+```bash
+python3 app/run_llm.py -i results/<timestamp> -m chat
+```
+Interaktivní Q&A. Celý kontext načten jednorázově, follow-up dotazy ve stejné session.
+Ukončení: `exit` / `quit` / `q`.
+
+### PDF Mode
+```bash
+python3 app/run_llm.py -i results/<timestamp> -m pdf
+```
+Přeskočí LLM inferenci, jen sestaví PDF z existujícího `report.md` + vizualizací.
+
+---
+
+## 6. Rozhodnutí
+
+### Prompt Engineering vs. Fine-tuning
+
+Zvoleno: **prompt engineering only**.
+
+- Kontext B je dostatečně strukturovaný — 7 400 tokenů pokryje celou mapu 18×18
+- Fine-tuning by vyžadoval stovky příkladových reportů
+- Výsledky jsou přenositelné na jakýkoliv Ollama model nebo cloud API
+
+### Context Window Strategy
+
+Pro mapy ≤ 20×20 (≤ 400 neuronů): full per-neuron detail bez omezení.
+
+Pro mapy > 30×30 (> 900 neuronů): context by překročil 16k tokenů. Nutné:
+- Agregace neuronů do regionů (D5 — zatím neimplementováno)
+- Top-N neuronů místo všech
+- Chunked processing (neimplementováno)
+
+Aktuálně testováno na 18×18 (324 neuronů) = ~6 650 tokenů — v limitu.
+
+### Determinismus
+
+`temperature=0` v `Modelfile` a `llm_client.py`. Stejný vstup → konzistentní struktura reportu.
+Plná reprodukovatelnost závisí na modelu — lokální modely jsou deterministické při `temperature=0`.
+
+---
+
+## 7. Kontext — Token Budget (18×18, 3 000 vzorků)
+
+| Sekce | Tokeny (est.) |
+|---|---|
+| Map overview | ~50 |
+| Clusters (324 neuronů) | ~4 200 |
+| Anomaly records (top-20) | ~2 100 |
+| Global dimension stats | ~200 |
+| Category distributions | ~100 |
+| Dataset context (Context A) | ~300 |
+| **Celkem** | **~6 950** |
+
+`num_ctx 16384` → ~9 400 tokenů volného prostoru pro odpověď.
+
+Optimalizace provedené pro zmenšení `llm_context.json`:
+- Odstraněno `category_counts` per neuron (→ pouze `purity` + `dominant_category`)
+- Odstraněno `cluster_local_outliers` (→ pouze `top_anomalies` summary)
+- Výsledek: 1 181 KB → 454 KB
+
+---
+
+## 8. Chybějící / Budoucí
+
+| Funkce | Priorita | Poznámka |
+|---|---|---|
+| Anthropic / OpenAI API adapter | Střední | Adapter pattern připraven v designu |
+| Skewness + kurtosis (A3) | Vysoká | Lepší popis distribucí pro LLM |
+| Feature correlations (A4) | Vysoká | Kauzální vztahy v reportu |
+| Spatial map regions (D5) | Vysoká | "Levá polovina = NO cancer" |
+| Boundary samples (C8) | Střední | Vzorky na hranici dvou clusterů |
+| Cluster health score (E1–E3) | Střední | Kompaktnost × separace |
+| Chunked processing pro velké mapy | Nízká | Pro mapy > 30×30 |
+| JSON structured output | Nízká | Strojově čitelné výsledky vedle MD reportu |

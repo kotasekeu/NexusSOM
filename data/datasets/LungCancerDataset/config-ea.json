@@ -3,7 +3,7 @@
   "EA_SETTINGS": {
     "population_size": 50,
     "generations": 6,
-    "seeds": [42, 101, 2026]
+    "seeds": [42, 1337, 7, 101, 2026]
   },
   "SEARCH_SPACE": {
     "map_size": {
@@ -91,17 +91,21 @@
     "checkpoint_count": 25,
     "early_stopping_window": 50,
     "max_epochs_without_improvement": 500,
-    "normalize_weights_flag": false
+    "normalize_weights_flag": false,
+    "generate_individual_maps": false
   },
   "NEURAL_NETWORKS": {
     "use_mlp": true,
     "use_lstm": true,
     "use_cnn": false,
+    "use_lstm_controller": false,
     "mlp_model_path": "app/mlp/models/mlp_latest.keras",
     "mlp_scaler_path": "app/mlp/models/mlp_scaler_latest.pkl",
     "lstm_model_path": "app/lstm/models/lstm_latest.keras",
     "lstm_scaler_path": "app/lstm/models/lstm_scaler_latest.pkl",
     "cnn_model_path": null,
+    "lstm_controller_model_path": "app/lstm/models/lstm_controller_latest.keras",
+    "lstm_controller_scaler_path": "app/lstm/models/lstm_controller_scaler_latest.pkl",
     "lstm_quality_threshold": 0.75,
     "mlp_filter_bad_configs": true,
     "mlp_bad_quality_threshold": 0.5,

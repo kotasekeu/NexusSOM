@@ -1,0 +1,42 @@
+DATASET: Lung Cancer Symptom Dataset
+DOMAIN: Medical / Oncology
+SOURCE: Kaggle — JIS College of Engineering
+DESCRIPTION: Symptom-based lung cancer risk dataset with 3 000 anonymized patient records. Each patient has 15 binary symptom indicators plus age, gender and a lung cancer diagnosis label.
+SAMPLE: Each row represents one patient observation with recorded symptoms and diagnosis outcome.
+
+COLUMNS:
+- id: Unique patient identifier. Not a clinical measurement.
+- GENDER: Patient sex. M = Male, F = Female.
+- AGE: Patient age at time of recording. Unit: years. Range: approximately 30–80.
+- SMOKING: History of smoking.
+- YELLOW_FINGERS: Yellowing of finger tips (nicotine staining, associated with heavy smoking).
+- ANXIETY: Patient reports anxiety.
+- PEER_PRESSURE: Patient reports peer pressure (social smoking context).
+- CHRONIC_DISEASE: Patient has a chronic disease (e.g. COPD).
+- FATIGUE: Patient reports chronic fatigue.
+- ALLERGY: Patient has known allergies.
+- WHEEZING: Patient reports wheezing (audible breathing difficulty).
+- ALCOHOL_CONSUMING: Patient consumes alcohol.
+- COUGHING: Patient reports persistent coughing.
+- SHORTNESS_OF_BREATH: Patient reports shortness of breath.
+- SWALLOWING_DIFFICULTY: Patient reports difficulty swallowing (dysphagia).
+- CHEST_PAIN: Patient reports chest pain.
+- LUNG_CANCER: Diagnosis outcome. YES = lung cancer confirmed, NO = not confirmed.
+
+CATEGORIES:
+- GENDER: M = Male, F = Female
+- LUNG_CANCER: YES = cancer confirmed, NO = not confirmed
+- All binary symptom columns (SMOKING, YELLOW_FINGERS, ANXIETY, PEER_PRESSURE,
+  CHRONIC_DISEASE, FATIGUE, ALLERGY, WHEEZING, ALCOHOL_CONSUMING, COUGHING,
+  SHORTNESS_OF_BREATH, SWALLOWING_DIFFICULTY, CHEST_PAIN):
+  1 = symptom absent / not reported, 2 = symptom present / reported
+
+DOMAIN KNOWLEDGE:
+- SMOKING and YELLOW_FINGERS are directly associated with tobacco use and elevated lung cancer risk
+- WHEEZING, COUGHING, SHORTNESS_OF_BREATH, and CHEST_PAIN are the primary respiratory symptoms of lung cancer
+- SWALLOWING_DIFFICULTY (dysphagia) can indicate tumor pressure on the esophagus — a later-stage symptom
+- CHRONIC_DISEASE (especially COPD) is a known comorbidity and risk amplifier for lung cancer
+- ANXIETY and PEER_PRESSURE reflect behavioral/social risk context
+- Clusters with LUNG_CANCER purity above 85 % are high-risk patient profiles
+- Clusters without cancer (LUNG_CANCER=NO, high purity) with multiple active symptoms may represent misdiagnosed or pre-diagnostic cases worth attention
+- AGE is the only continuous variable; higher age generally correlates with higher cancer incidence

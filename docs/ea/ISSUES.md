@@ -152,6 +152,20 @@
 
 ---
 
+## Phase 3 — LSTM dynamický kontrolér
+
+60. **Lambda vrstvy v `model_controller.py` nebyly serializovatelné** — první architektura používala `layers.Lambda(lambda ctx, seq: tf.repeat(...))` pro tiling kontextu a `layers.Lambda(lambda x: x * 1.0 + 0.5)` pro škálování výstupu; Keras odmítl deserializovat takový model z `.keras` souboru s chybou `Lambda whose function is a Python lambda cannot be saved` nebo `NotImplementedError: output shape`; pokus o `keras.config.enable_unsafe_deserialization()` obešel první chybu, ale narazil na druhou (Keras nedokáže odvodit výstupní tvar Lambda vrstvy při načítání); opraveno náhradou obou Lambda vrstev za správné `layers.Layer` podtřídy `_TileContext` a `_ScaleSigmoid` s implementací `compute_output_shape()` a `get_config()`; model byl po opravě přetrénován (108 epoch, MAE=0.036).
+
+61. **`sample_weight` shape mismatch při seq2seq tréninku Phase 3** — při `model.fit()` s `return_sequences=True` produkuje Keras interní loss tvar `(batch, time)` před redukcí; předání `sample_weight=(N,)` způsobilo `ValueError: Dimensions must be equal, but are 307 and 8`; opraveno tílováním advantage array: `adv_tiled = np.tile(adv[:, np.newaxis], (1, T)).astype(np.float32)` — tvar se změní na `(N, T)` a broadcasting projde; toto platí jak pro `model.fit()` tak `model.evaluate()`.
+
+62. **`_load_lstm_controller` chyběly `custom_objects` — model by selhal při načítání** — `nn_integration.py` volal `_keras.models.load_model(model_path)` bez předání `custom_objects`; po přetrénování modelu s `_TileContext` a `_ScaleSigmoid` vrstvami by EA při `use_lstm_controller: true` selhala s `Unknown layer: _TileContext`; opraveno přidáním importu `from model_controller import _TileContext, _ScaleSigmoid` a předáním `custom_objects={'_TileContext': _TileContext, '_ScaleSigmoid': _ScaleSigmoid}` do `load_model()`.
+
+63. **Phase 3 model kolaboval na konstantní výstup ≈ 0.997** — analýza modelu natrénovaného na 24 trajektoriích (45 s baseline) odhalila: predikovaný `lr_f` std=0.005 vs target std=0.079; Pearsonovo r ≈ −0.10; model MAE=0.038 horší než naivní baseline 1.0 (MAE=0.036); kořenová příčina: 70–75 % timestepů má target=1.0 (PERTURB_PROB=0.4 → 60 % checkpointů bez perturbace, zbytek baseline trajektorie); advantage-weighted loss nedokázal překonat tuto nevyváženost; slabý pozitivní signál existuje (Pearson advantage vs mean_pred_rad = +0.576); výsledek: controller funguje end-to-end technicky, ale reálný efekt je ≈ 8–11 % kumulativní odchylka v jednom směru pro všechny trajektorie bez adaptivity; oprava vyžaduje víc dat a/nebo přepracování tréninkového schématu (viz FR-LSTM-3.6, LSTM_DYNAMIC_CONTROL.md).
+
+64. **Chybělo logování Phase 3 faktoru v `som.py` — nebylo vidět co controller dělá** — `som.py` aplikoval `lr_f` a `rad_f` na cumulative faktory, ale nic nelogoval; nebylo možné ověřit, zda controller funguje bez debuggeru; přidán log každých `max(1, mqe_evaluations_per_run // 10)` checkpointů: `LSTM ctrl @ XX%: step lr_f=... rad_f=... | cum_lr=... cum_rad=...`; přidán čítač `_ctrl_cp_count` a konstanta `_ctrl_log_every` k inicializaci před tréninkovou smyčkou.
+
+---
+
 ## Checkpointy a LSTM data
 
 23. **Řídké checkpointy při dlouhém tréninku SOM** — 15 000 iterací a 25 checkpointů = 1 checkpoint na 600 iterací; příliš málo dat pro LSTM trénink; přidán flag `checkpoint_every_mqe` pro uložení při každém výpočtu MQE (~500 checkpointů na běh).

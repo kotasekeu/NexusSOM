@@ -36,9 +36,30 @@ Binární turnajový výběr
 ### What's Missing ❌
 
 1. **Oracle/LLM Integration** for intelligent initialization (Phase 2)
-2. **CNN Integration** for quality score calculation (Phase 2)
-3. **Augmented Fitness Function** combining SOM metrics + CNN quality score (Phase 2)
-4. **Adaptive Search Space** based on CNN feedback (Phase 2, optional/future)
+2. ~~CNN Integration~~ → **Spatial Quality Score** — CNN nahrazen matematickou analýzou váhové matice (viz `docs/cnn/CNN_REQUIREMENTS.md`)
+3. **Spatial Fitness Augmentation** — 4. Pareto cíl `spatial_quality_score` kombinující prostorové gradienty, regionální purity a Moran's I (viz níže)
+4. **Adaptive Search Space** based on spatial feedback (Phase 2, optional/future)
+
+### Plánovaný 4. Pareto cíl: `spatial_quality_score`
+
+Aktuální Pareto cíle: MQE ↓, topographic_error ↓, dead_neuron_ratio ↓
+
+Přidat: **`spatial_quality_score` ↑** — kompozitní skóre z prostorové analýzy váhové matice.
+
+```python
+# ea.py — po som.train(), vedle MQE výpočtu:
+from analysis.src.stats import compute_spatial_quality
+spatial_score = compute_spatial_quality(som.weights, clusters, dominant_category_map)
+# spatial_score = α·moran_i + β·regional_purity + γ·gradient_mean + δ·(1 − boundary_blur)
+
+objectives = [mqe, topographic_error, dead_ratio, -spatial_score]  # − protože maximalizujeme
+```
+
+**Přínos:** EA přestane optimalizovat jen MQE a začne hledat mapy s ostrými prostorově
+smysluplnými hranicemi a čistými regiony — to je to, co chceme pro interpretovatelné výstupy.
+**Cena:** ~50 ms na individuum navíc (čisté NumPy operace na 20×20 matrici).
+
+**Implementační závislost:** Vyžaduje `compute_spatial_quality()` v `app/analysis/src/stats.py` (D4–D8).
 
 ### Implementation Statistics
 

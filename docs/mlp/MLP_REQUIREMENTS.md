@@ -1,7 +1,7 @@
 # The Oracle (MLP) - Hyperparameter Recommendation Requirements
 
-**Document Version**: 1.0
-**Last Updated**: 2026-01-11
+**Document Version**: 1.1
+**Last Updated**: 2026-05-13
 **Component**: MLP - "The Oracle"
 **Purpose**: Initial hyperparameter recommendation based on dataset characteristics
 
@@ -18,23 +18,29 @@
 - ✅ Results CSV with all parameters and metrics
 - ✅ UID-based tracking
 
-### What's Missing ❌
+### Aktuální stav (2026-05-13)
 
-**Meta-Dataset Generation**:
-- ❌ Dataset meta-feature extraction
-- ❌ Meta-dataset aggregation across EA runs
-- ❌ Feature engineering for dataset characteristics
+MLP je plně implementován a funkční. Tento dokument (v1.0) popisoval stav před implementací.
 
-**Oracle Model**:
-- ❌ MLP architecture definition
-- ❌ Multi-output regression setup
-- ❌ Training pipeline
-- ❌ Hyperparameter recommendation interface
+**Implementováno:**
+- ✅ MLP model (`app/mlp/models/mlp_latest.keras`) — MAE≈0.048 pro MQE target
+- ✅ Trénink na ~5 853 EA individuích
+- ✅ Integrace v EA jako pre-screen filtr (`mlp_filter_bad_configs=true`)
+- ✅ 3 výstupy: `raw_mqe_improvement_ratio`, `raw_topographic_error`, `dead_neuron_ratio`
 
-**Integration**:
-- ❌ OracleRecommender class
-- ❌ EA initialization integration
-- ❌ LSTM initialization (future)
+### Plánované rozšíření: 4. výstup `spatial_quality_score`
+
+Po implementaci `compute_spatial_quality()` v `app/analysis/src/stats.py`:
+
+1. **Batch výpočet** `spatial_quality_score` pro všech 5 853 existujících individuí
+   (jednorázový skript, ~minuty)
+2. Přidat jako 4. sloupec do tréninkových dat
+3. **Přetrénovat MLP** se 4-dim výstupem
+
+**Přínos:** MLP pre-screen filtr v EA začne vylučovat konfigurace, které historicky
+produkovaly prostorově chaotické mapy — i když jejich MQE bylo technicky OK.
+
+**Závislost:** Vyžaduje D4–D8 v `app/analysis/src/stats.py` (viz `docs/cnn/CNN_REQUIREMENTS.md`).
 
 ### Phase Roadmap
 

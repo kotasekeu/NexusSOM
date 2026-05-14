@@ -64,19 +64,24 @@ def _get_nn_integration(nn_config: dict) -> NeuralNetworkIntegration:
     global _NN_INTEGRATION_CACHE
     cache_key = (
         nn_config.get('use_mlp'), nn_config.get('use_lstm'), nn_config.get('use_cnn'),
+        nn_config.get('use_lstm_controller'),
         nn_config.get('mlp_model_path'), nn_config.get('lstm_model_path'),
-        nn_config.get('lstm_scaler_path'), nn_config.get('cnn_model_path')
+        nn_config.get('lstm_scaler_path'), nn_config.get('cnn_model_path'),
+        nn_config.get('lstm_controller_model_path'),
     )
     if cache_key not in _NN_INTEGRATION_CACHE:
         _NN_INTEGRATION_CACHE[cache_key] = NeuralNetworkIntegration(
             use_mlp=nn_config.get('use_mlp', False),
             use_lstm=nn_config.get('use_lstm', False),
             use_cnn=nn_config.get('use_cnn', False),
+            use_lstm_controller=nn_config.get('use_lstm_controller', False),
             mlp_model_path=nn_config.get('mlp_model_path'),
             mlp_scaler_path=nn_config.get('mlp_scaler_path'),
             lstm_model_path=nn_config.get('lstm_model_path'),
             lstm_scaler_path=nn_config.get('lstm_scaler_path'),
             cnn_model_path=nn_config.get('cnn_model_path'),
+            lstm_controller_model_path=nn_config.get('lstm_controller_model_path'),
+            lstm_controller_scaler_path=nn_config.get('lstm_controller_scaler_path'),
             verbose=nn_config.get('verbose', False),
         )
     return _NN_INTEGRATION_CACHE[cache_key]
@@ -666,25 +671,31 @@ def run_evolution(ea_config: dict, data: np.ndarray, ignore_mask: np.ndarray) ->
     use_nn = ea_config.get("use_nn", False)
     nn_cfg = ea_config.get("NEURAL_NETWORKS", {})
     use_cnn_objective = False
-    if use_nn and (nn_cfg.get("use_mlp") or nn_cfg.get("use_lstm") or nn_cfg.get("use_cnn")):
+    _any_nn = (nn_cfg.get("use_mlp") or nn_cfg.get("use_lstm") or
+               nn_cfg.get("use_cnn") or nn_cfg.get("use_lstm_controller"))
+    if use_nn and _any_nn:
         fixed_params = dict(fixed_params)  # don't mutate the original
         fixed_params['nn_config'] = {
-            'use_mlp': nn_cfg.get('use_mlp', False),
-            'use_lstm': nn_cfg.get('use_lstm', False),
-            'use_cnn': nn_cfg.get('use_cnn', False),
-            'mlp_model_path': nn_cfg.get('mlp_model_path'),
-            'mlp_scaler_path': nn_cfg.get('mlp_scaler_path'),
-            'lstm_model_path': nn_cfg.get('lstm_model_path'),
-            'lstm_scaler_path': nn_cfg.get('lstm_scaler_path'),
-            'cnn_model_path': nn_cfg.get('cnn_model_path'),
-            'lstm_quality_threshold': nn_cfg.get('lstm_quality_threshold', 1.0),
-            'mlp_filter_bad_configs': nn_cfg.get('mlp_filter_bad_configs', False),
+            'use_mlp':              nn_cfg.get('use_mlp', False),
+            'use_lstm':             nn_cfg.get('use_lstm', False),
+            'use_cnn':              nn_cfg.get('use_cnn', False),
+            'use_lstm_controller':  nn_cfg.get('use_lstm_controller', False),
+            'mlp_model_path':       nn_cfg.get('mlp_model_path'),
+            'mlp_scaler_path':      nn_cfg.get('mlp_scaler_path'),
+            'lstm_model_path':      nn_cfg.get('lstm_model_path'),
+            'lstm_scaler_path':     nn_cfg.get('lstm_scaler_path'),
+            'cnn_model_path':       nn_cfg.get('cnn_model_path'),
+            'lstm_controller_model_path':  nn_cfg.get('lstm_controller_model_path'),
+            'lstm_controller_scaler_path': nn_cfg.get('lstm_controller_scaler_path'),
+            'lstm_quality_threshold':    nn_cfg.get('lstm_quality_threshold', 1.0),
+            'mlp_filter_bad_configs':    nn_cfg.get('mlp_filter_bad_configs', False),
             'mlp_bad_quality_threshold': nn_cfg.get('mlp_bad_quality_threshold', 0.5),
-            'verbose': nn_cfg.get('verbose', False),
+            'verbose':              nn_cfg.get('verbose', False),
         }
         use_cnn_objective = nn_cfg.get('use_cnn', False)
         print(f"INFO: NN integration enabled — MLP={nn_cfg.get('use_mlp')}, "
-              f"LSTM={nn_cfg.get('use_lstm')}, CNN={nn_cfg.get('use_cnn')}")
+              f"LSTM={nn_cfg.get('use_lstm')}, CNN={nn_cfg.get('use_cnn')}, "
+              f"LSTM-Controller={nn_cfg.get('use_lstm_controller')}")
     else:
         print("INFO: NN integration disabled — running EA without neural networks")
 
@@ -1180,10 +1191,22 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
                 }
                 return nn.should_stop_early(history, lstm_threshold, dataset_context=_ds_context)
 
+        # Build Phase 3 dynamic schedule callback
+        dynamic_schedule_fn = None
+        if nn is not None and nn.can_use_dynamic_schedule():
+            _ds_context_ctrl = [
+                fixed_params.get('ds_n_samples', 0),
+                fixed_params.get('ds_n_active_dimensions', 0),
+                fixed_params.get('ds_n_numeric', 0),
+                fixed_params.get('ds_n_categorical', 0),
+            ]
+            dynamic_schedule_fn = nn.get_dynamic_schedule_fn(_ds_context_ctrl)
+
         som = KohonenSOM(dim=data.shape[1], **som_params)
 
         training_results = som.train(data, ignore_mask=ignore_mask, working_dir=individual_dir,
-                                     lstm_early_stop_fn=lstm_early_stop_fn)
+                                     lstm_early_stop_fn=lstm_early_stop_fn,
+                                     dynamic_schedule_fn=dynamic_schedule_fn)
 
         training_results['uid'] = uid
 
@@ -1261,11 +1284,16 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
 
         generate_training_plots(training_results, individual_dir)
 
-        generate_individual_maps(som, data, ignore_mask, individual_dir)
+        # generate_individual_maps: controlled by FIXED_PARAMS.generate_individual_maps
+        # Set to false when CNN visual quality assessment is not needed (spatial analysis
+        # works directly on som.weights — no PNG files required).
+        _gen_maps = fixed_params.get('generate_individual_maps', True)
+        if _gen_maps:
+            generate_individual_maps(som, data, ignore_mask, individual_dir)
 
         # CNN visual quality assessment (combine individual maps → RGB → CNN score)
         training_results['cnn_quality_score'] = None
-        if nn is not None and nn.can_assess_visual_quality():
+        if _gen_maps and nn is not None and nn.can_assess_visual_quality():
             try:
                 from PIL import Image as _PIL_Image
                 vis_dir = os.path.join(individual_dir, "visualizations")
@@ -1296,7 +1324,8 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
                          end_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"), working_dir=working_dir)
 
         # Copy maps to centralized dataset for CNN training
-        copy_maps_to_dataset(uid, individual_dir, working_dir)
+        if _gen_maps:
+            copy_maps_to_dataset(uid, individual_dir, working_dir)
 
         # Cache the results to avoid re-evaluation of duplicate configurations
         result = (training_results, copy.deepcopy(ind))

@@ -142,12 +142,8 @@ def generate_u_matrix(som: KohonenSOM, output_file: str, show_title: bool = True
             if neighbor_distances:
                 u_matrix[i, j] = np.mean(neighbor_distances)
 
-    # Use viridis colormap with fixed [0, 1.0] normalization
-    # Good SOMs should have U-Matrix values in [0, 1] range
-    # Values > 1.0 indicate poor organization and trigger EA penalty
     _create_map(som, u_matrix, "U-Matrix", output_file, cmap='viridis',
-                cbar_label="Average distance to neighbors", show_title=show_title,
-                fixed_norm=True, vmax=1.0)
+                cbar_label="Average distance to neighbors", show_title=show_title)
 
 
 def generate_hit_map(som: KohonenSOM, normalized_data: np.ndarray, output_file: str):
@@ -339,12 +335,8 @@ def generate_distance_map(som: KohonenSOM, normalized_data: np.ndarray,
     neuron_error_map, _ = som.compute_quantization_error(normalized_data, mask=mask)
 
     if neuron_error_map is not None:
-        # Use magma colormap with fixed [0, 1.0] normalization
-        # Good SOMs should have distance map values in [0, 1] range
-        # Values > 1.0 indicate poor organization and trigger EA penalty
         _create_map(som, neuron_error_map, "Distance Map (Neuron QE)", output_file,
-                    cmap='magma', cbar_label="Quantization Error", show_title=show_title,
-                    fixed_norm=True, vmax=1.0)        
+                    cmap='magma', cbar_label="Quantization Error", show_title=show_title)
 
 
 def generate_dead_neurons_map(som: KohonenSOM, normalized_data: np.ndarray, output_file: str, show_title: bool = True):

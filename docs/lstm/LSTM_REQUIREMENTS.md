@@ -1,7 +1,7 @@
 # LSTM — Požadavky a roadmapa
 
-**Verze**: 3.2  
-**Aktualizováno**: 2026-05-07  
+**Verze**: 3.4  
+**Aktualizováno**: 2026-05-13  
 **Komponenta**: LSTM
 
 ---
@@ -29,23 +29,36 @@
 - ✅ Rozšíření `lstm_early_stop_fn` o progress/lr/radius (`ea.py:1163`)
 - ✅ Rozšíření `should_stop_early` na 6-dim vstup + hybrid model interface (`nn_integration.py`)
 
+### Hotovo (Phase 3, Část 1) ✅
+
+- ✅ FR-LSTM-3.1: `dynamic_schedule_fn` callback v `som.py` (faktory, kumulativní drift, clipping)
+- ✅ FR-LSTM-3.2: `app/lstm/generate_phase3_data.py` — 45 trajektorií, 14 013 checkpointů (LungCancer)
+- ✅ FR-LSTM-3.3: `app/lstm/src/model_controller.py` — stateful (inference) + trainable verze
+- ✅ FR-LSTM-3.4: `app/lstm/prepare_phase3_dataset.py` — advantage-weighted tréninkový dataset
+- ✅ FR-LSTM-3.5: `app/lstm/src/train_phase3.py` — trénink, stable cesty, test MAE=0.041
+- ✅ EA integrace: `nn_integration.py::get_dynamic_schedule_fn()` + `ea.py` wiring
+- ✅ Config: `use_lstm_controller` flag v `config-ea.json` (default: false)
+
 ### Chybí ❌
 
 - ❌ FR-LSTM-2.6: Ověření early stopping v EA běhu
-- ❌ `lstm_scaler_path` expozice v `config-ea.json` (volitelné — auto-detect funguje)
+- ❌ FR-LSTM-3.6: Rozšíření dat na 4 datasety, 200–400 SOM běhů (Část 2)
+- ❌ FR-LSTM-3.7: Elbow features (d1, d2 MQE) jako extra dimenze sekvence
+- ❌ FR-LSTM-3.8: Srovnávací EA validace: statický schedule vs. LSTM kontroler
 
 ---
 
 ## Přehled dvou fází a jejich přínos
 
 ```
-Phase 2 (nyní)          Phase 3 (budoucnost)
-──────────────────────  ──────────────────────────────────
-Vstup: checkpoints[0..K]  Vstup: checkpoint[t] (streamově)
-Výstup: quality_score     Výstup: lr_factor, radius_factor, stop
-Účel: early stopping      Účel: dynamická úprava decay curves
-Trénink: supervised       Trénink: RL nebo behavioral cloning
-Data: existují ✅          Data: CHYBÍ ❌ (viz sekce níže)
+Phase 2 ✅ hotovo                Phase 3 Část 1 ✅ hotovo
+──────────────────────────────   ──────────────────────────────────
+Vstup: checkpoints[0..K]         Vstup: checkpoint[t] (streamově)
+Výstup: quality_score            Výstup: lr_factor, radius_factor
+Účel: early stopping             Účel: dynamická úprava decay curves
+Trénink: supervised              Trénink: advantage-weighted imitation
+Data: existují ✅                 Data: 45 trajektorií ✅ (Část 2: ❌)
+Test MAE ≈ 0.023                 Test MAE = 0.041
 ```
 
 ### Kde každá fáze přináší hodnotu
@@ -192,100 +205,84 @@ Stabilní výstupní cesty (konzistentní s MLP):
 
 ### Co Phase 3 dělá jinak
 
-Phase 2 čte **celý prefix** (batch), Phase 3 musí fungovat **online** — dostává jeden checkpoint za druhým a udržuje skrytý stav (paměť). Výstupem není quality score ale **akce**: faktory pro úpravu LR a radius pro příštích ~N/300 iterací.
+Phase 2 čte **celý prefix** (batch), Phase 3 musí fungovat **online** — dostává jeden checkpoint za druhým a udržuje skrytý stav (paměť). Výstupem není quality score ale **akce**: faktory pro úpravu LR a radius.
 
 ```
-Checkpoint t  →  LSTM(hidden_t-1)  →  hidden_t + (lr_factor, radius_factor, stop)
-                                          ↓
-                              SOM aplikuje: lr = schedule_lr × lr_factor
-                                            radius = schedule_radius × radius_factor
+Checkpoint t  →  LSTM(hidden_t-1, stateful)  →  hidden_t + (lr_factor, radius_factor)
+                                                         ↓
+                                         SOM aplikuje: lr     *= lr_factor
+                                                       radius *= radius_factor
 ```
+
+Klíčový rozdíl od Phase 2: **`stateful=True`** — model si pamatuje celý průběh tréninku.
 
 ---
 
-### Změny v SOM pro Phase 3
+### Datová mezera — proč jsou potřeba nová data
 
-**`som.py` — training loop** (aktuálně `som.py:362`):
+Všechny existující checkpointy (5 853 individuí) mají `lr_factor=1.0, radius_factor=1.0`
+vždy. LSTM kontroler se nemá z čeho naučit vztah "v tomto stavu konvergence → tato
+úprava → tento výsledek". Bez perturbovaných trajektorií nelze Phase 3 natrénovat.
 
-```python
-# Aktuální (Phase 2):
-if lstm_early_stop_fn is not None and len(checkpoints) >= 2:
-    should_stop, lstm_score = lstm_early_stop_fn(checkpoints)
+**Zvolen přístup: advantage-weighted imitation learning** (behavioral cloning s quality signálem)
 
-# Phase 3 — rozšíření callback interface:
-if lstm_controller_fn is not None and len(checkpoints) >= 2:
-    should_stop, lstm_score, lr_factor, radius_factor = lstm_controller_fn(checkpoints[-1])
-    current_lr    *= lr_factor     # modifikace pro příštích mqe_compute_interval iterací
-    current_radius *= radius_factor
+```
+Pro každý perturbed run R:
+  advantage = mqe_baseline − mqe_R    # kladné = R je lepší než bez perturbace
+
+Pro každý checkpoint t v R:
+  X[t] = stav konvergence (6 features)
+  y[t] = (lr_factor_t, radius_factor_t)
+
+loss = advantage × MSE(predicted, actual)
 ```
 
-Zpětná kompatibilita: pokud `lstm_controller_fn is None`, chování beze změny.
-
-**Nový parametr `som.train()`:**
-```python
-def train(self, data, ignore_mask=None, working_dir='.', 
-          lstm_early_stop_fn=None,      # Phase 2 — zůstává
-          lstm_controller_fn=None):     # Phase 3 — nový
-```
+Kladný advantage → tlak k replikaci těchto faktorů.
+Záporný advantage → tlak pryč od těchto faktorů.
+Nepotřebuje RL infrastrukturu — čistý supervised trénink.
 
 ---
 
-### Změny v `ea.py` pro Phase 3
+### Implementační plán — Část 1 (smoke test)
 
-```python
-# Phase 2 callback (zůstává):
-lstm_early_stop_fn = None
-if nn.can_check_early_stopping():
-    def lstm_early_stop_fn(checkpoints): ...
+~15 SOM běhů, 1 dataset (LungCancer), 3 Pareto individua × 5 variant.
 
-# Phase 3 callback (nový):
-lstm_controller_fn = None
-if nn.can_control_training():  # nová metoda v nn_integration.py
-    def lstm_controller_fn(checkpoint): ...
-```
+| Soubor | Co dělá | Stav |
+|---|---|---|
+| `som.py` | `dynamic_schedule_fn` callback hook, kumulativní faktory, clipping | ✅ |
+| `app/lstm/generate_phase3_data.py` | 45 SOM běhů (5 Pareto × 9), 14 013 checkpointů | ✅ |
+| `app/lstm/src/model_controller.py` | Stateful (inference) + trainable LSTM architektura | ✅ |
+| `app/lstm/prepare_phase3_dataset.py` | Advantage-weighted dataset, split na uid úrovni | ✅ |
+| `app/lstm/src/train_phase3.py` | Trénink, stable cesty, test MAE=0.041 | ✅ |
+| `app/ea/nn_integration.py` | `get_dynamic_schedule_fn()`, controller load | ✅ |
+| `app/ea/ea.py` | Wiring do `som.train(dynamic_schedule_fn=...)` | ✅ |
+| `config-ea.json` | `use_lstm_controller` flag (default: false) | ✅ |
 
----
+Ověření: ztráta klesla (MAE 0.048→0.041), predikce rozlišují trajektorie ✅
 
-### Fundamentální datová mezera Phase 3
+### Implementační plán — Část 2 (pořádný trénink)
 
-**Problém**: Všechny existující běhy EA používají statický decay schedule. LR a radius se mění deterministicky podle konfigurace — nikdy nebyly adjustovány mid-training. Neexistují tedy trénovací příklady "v bodě X jsem upravil LR, výsledek byl lepší/horší."
+~200–400 SOM běhů, 4 datasety, 5–10 Pareto individuí × 10 variant.
 
-Pro trénink Phase 3 kontroleru jsou potřeba nová data. Dvě schůdné cesty:
-
-#### Cesta A — Behavioral cloning z variabilních schedule běhů
-
-Spustit novou sadu EA běhů kde se Pareto individuím záměrně variují decay křivky (různé growth_g, různé decay typy). LSTM se pak naučí: "při tomto stavu konvergence dosáhl rychlejší/pomalejší decay takového výsledku."
-
-Výhoda: jednoduchý supervised training, nepotřebuje RL infrastrukturu.  
-Nevýhoda: vyžaduje ~500–1000 extra EA runs s cílenou variací.
-
-#### Cesta B — Reinforcement Learning (online)
-
-RL trénink kde agent (LSTM) přímo spouští SOM epizody, dostává reward = `raw_mqe_improvement_ratio` po skončení tréninku, a učí se politiku která maximalizuje reward.
-
-```
-Agent → akce (lr_factor, radius_factor) → SOM trénuje N iterací → reward
-```
-
-Výhoda: nepotřebuje žádná extra data, naučí se obecnou politiku.  
-Nevýhoda: každá epizoda = jeden SOM trénink (~minuty), trénink agenta vyžaduje tisíce epizod → dny výpočtu.
-
-#### Doporučení
-
-Cesta A — behavioral cloning — je realistická jako první krok a staví na existující EA infrastruktuře. Stačí přidat `growth_g` a `lr_decay_type` variace do nové EA kampaně na 2–3 datasetech a sesbírat ~2 000 individuí s variabilními křivkami.
+| Rozšíření | Popis |
+|---|---|
+| Všechny 4 datasety | BreastCancer, IndianLiver, LungCancer, Pima |
+| Elbow features | Přidat d1, d2 MQE jako extra dimenze sekvence |
+| Více variant | 10 perturbačních semen na individuum |
+| Validace | Srovnávací EA běh: statický schedule vs. LSTM kontroler |
 
 ---
 
-### Souhrn závislostí Phase 3
+### Závislosti Phase 3
 
 | Co je potřeba | Kde | Složitost |
 |---|---|---|
-| Rozšíření callback rozhraní `(stop, score, lr_f, radius_f)` | `som.py`, `ea.py`, `nn_integration.py` | Nízká |
-| Stateful LSTM model (online, jeden checkpoint za druhým) | `app/lstm/src/model_controller.py` | Střední |
-| Nová trénovací data s variabilními schedules | EA kampaň | Střední (čas) |
-| RL trénink loop | `app/lstm/src/train_rl.py` | Vysoká |
-
-Phase 3 je realisticky 2–3 iterace EA kampaní po Phase 2 — až bude prediktor funkční a model prokáže, že rozumí dynamice konvergence.
+| `dynamic_schedule_fn` callback | `som.py` | Nízká |
+| Data generation script | `generate_phase3_data.py` | Nízká |
+| Stateful LSTM model | `model_controller.py` | Střední |
+| Training pipeline | `prepare_phase3_dataset.py` + `train_phase3.py` | Střední |
+| Rozšíření na všechny datasety (Část 2) | `generate_phase3_data.py` + čas | Střední (čas) |
+| RL trénink (alternativa, pokud imitation selže) | `train_rl.py` | Vysoká |
 
 ---
 
@@ -299,10 +296,14 @@ Phase 3 je realisticky 2–3 iterace EA kampaní po Phase 2 — až bude predikt
 | FR-LSTM-2.4 | Hybridní LSTM model (sekvenční + statický vstup) | 2 | ✅ |
 | FR-LSTM-2.5 | `train.py` — trénink, stabilní výstupní cesty | 2 | ✅ |
 | FR-LSTM-2.6 | Ověření early stopping v EA běhu | 2 | ❌ |
-| FR-LSTM-3.1 | Rozšíření callback na `(stop, score, lr_f, radius_f)` | 3 | ❌ |
-| FR-LSTM-3.2 | `lstm_controller_fn` v `ea.py` a `som.py` | 3 | ❌ |
-| FR-LSTM-3.3 | Stateful LSTM kontroler (online inference) | 3 | ❌ |
-| FR-LSTM-3.4 | Trénovací data s variabilními schedules (EA kampaň) | 3 | ❌ |
-| FR-LSTM-3.5 | Trénink kontroleru (behavioral cloning nebo RL) | 3 | ❌ |
+| FR-LSTM-3.1 | `dynamic_schedule_fn` callback v `som.py` | 3 | ✅ |
+| FR-LSTM-3.2 | `generate_phase3_data.py` — 45 perturbovaných SOM běhů (LungCancer) | 3 | ✅ |
+| FR-LSTM-3.3 | `model_controller.py` — stateful + trainable LSTM, výstup `(lr_f, radius_f)` | 3 | ✅ |
+| FR-LSTM-3.4 | `prepare_phase3_dataset.py` — advantage-weighted tréninkový dataset | 3 | ✅ |
+| FR-LSTM-3.5 | `train_phase3.py` — trénink, test MAE=0.041, stable cesty | 3 | ✅ |
+| FR-LSTM-3.6 | Rozšíření dat na 4 datasety, 200–400 běhů (Část 2) | 3 | ❌ |
+| FR-LSTM-3.7 | Elbow features (d1, d2 MQE) jako extra dimenze sekvence | 3 | ❌ |
+| FR-LSTM-3.8 | Srovnávací EA validace: statický schedule vs. LSTM kontroler | 3 | ❌ |
 
-**Blokery Phase 3 odstraněny po Phase 2** — `should_stop_early` rozhraní + funkční prediktor jsou předpokladem pro kontroler.
+**Předpoklady Phase 3:** FR-LSTM-2.1–2.5 jsou splněny. FR-LSTM-2.6 (ověření v EA)
+je nezávislé — Phase 3 implementace může probíhat paralelně.

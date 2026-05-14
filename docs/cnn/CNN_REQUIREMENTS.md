@@ -1,12 +1,58 @@
-# CNN — Vizuální hodnocení kvality SOM map
+# Map Spatial Analysis — Matematická analýza SOM map
 
-**Verze dokumentu**: 3.0  
-**Aktualizováno**: 2026-05-06  
-**Stav**: ⛔ UZAVŘENO — přístup opuštěn, viz sekce Rozhodnutí níže
+**Verze dokumentu**: 4.0  
+**Aktualizováno**: 2026-05-13  
+**Stav**: 🔄 NOVÝ PŘÍSTUP — CNN nahrazen matematickou analýzou váhové matice
 
 ---
 
-## Rozhodnutí: CNN track uzavřen
+## Nový přístup: Matematická analýza místo CNN
+
+### Proč CNN selhal (shrnutí)
+
+SOM mapa je malá pravidelná mřížka (typicky 18×18 = 324 hodnot). CNN na obrázcích
+z takových map má tři strukturální problémy:
+- Konverze float32 → 8-bit barva → CNN degraduje numerickou přesnost
+- Příliš málo dat pro smysluplný trénink (potřeba tisíce map, ne stovky)
+- CNN detekuje vizuální artefakty renderingu (osy, colorbar), ne topologické vzory
+
+### Nový přístup: pevné matematické operátory na `weights[m, n, dim]`
+
+Žádný trénink, žádné obrázky. Vstup: číselná váhová matice přímo z `som.weights`.
+
+| Metrika | Matematický základ | Implementace |
+|---|---|---|
+| **Prostorové gradienty (D4)** | `np.gradient(weights[:,:,d])` per feature | `stats.py` |
+| **Regionální shrnutí (D5)** | Flood-fill sousedů se stejnou dominant_category | `stats.py` |
+| **Lokální extrémy** | `scipy.ndimage.maximum_filter` + `minimum_filter` | `stats.py` |
+| **Moran's I** | Prostorová autokorelace per feature | `stats.py` |
+| **Hranice clusterů** | Sobel filter na dominant_category matici | `stats.py` |
+
+### Kde výsledky putují
+
+```
+compute_spatial_quality(weights, clusters, dominant_category_map)
+    ↓
+1. app/analysis/ → llm_context.json  (D4, D5 — interpretace pro LLM)
+2. ea.py          → 4. Pareto cíl: spatial_quality_score ↑
+3. MLP target     → 4. output dimenze: predict spatial quality from config
+4. LSTM Phase 3   → enriched reward = MQE + spatial_quality_score
+```
+
+### Plán implementace
+
+| Krok | Co | Kde | Stav |
+|---|---|---|---|
+| 1 | `compute_spatial_quality()` — gradienty + Moran's I + lokální extrémy | `app/analysis/src/stats.py` | ❌ |
+| 2 | `compute_regions()` — flood-fill regionální shrnutí (D5) | `app/analysis/src/stats.py` | ❌ |
+| 3 | Přidat `spatial_quality_score` do `ea.py` jako 4. Pareto cíl | `app/ea/ea.py` | ❌ |
+| 4 | Batch výpočet pro 5 853 existujících individuí | jednorázový skript | ❌ |
+| 5 | Přetrénovat MLP se 4. targetem (`spatial_quality_score`) | `app/mlp/` | ❌ |
+| 6 | Rozšířit LSTM Phase 3 reward o spatial signal | `app/lstm/train_phase3.py` | ❌ |
+
+---
+
+## Archiv: Rozhodnutí o uzavření CNN tracku (2026-05-06)
 
 ### Závěr
 
