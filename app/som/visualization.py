@@ -1,5 +1,7 @@
 # visualization.py
 import os
+import matplotlib
+matplotlib.use('Agg')  # non-interactive backend — required for multiprocessing on Windows
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
