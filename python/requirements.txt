@@ -11,6 +11,7 @@ psutil
 tqdm
 fpdf2
 pymoo
+psutil>=5.9.0
 
 # Optional: Neural Network Dependencies
 # Install separately with: pip install -r requirements_nn.txt

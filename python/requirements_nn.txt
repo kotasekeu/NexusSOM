@@ -19,7 +19,7 @@
 # ============================================================================
 tensorflow==2.18.0   # Latest stable TensorFlow (no Python 3.14 support yet)
 keras>=3.6.0         # Keras 3.x (bundled with TensorFlow 2.18+)
-tensorflow-metal
+tensorflow-metal; sys_platform == 'darwin'
 
 # ============================================================================
 # CORE ML & SCIENTIFIC COMPUTING
@@ -44,3 +44,5 @@ joblib>=1.3.0            # Saving/loading StandardScaler objects
 # ============================================================================
 matplotlib>=3.7.0        # Plotting training curves and visualizations
 tensorboard>=2.18.0      # TensorBoard monitoring during training
+
+tqdm>=4.65.0
