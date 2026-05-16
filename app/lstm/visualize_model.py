@@ -73,7 +73,16 @@ def load_test_data(data_dir=DATA_DIR):
 
 def load_model_and_scaler(model_path, scaler_path):
     import tensorflow as tf
-    model  = tf.keras.models.load_model(model_path)
+    # Phase 3 controller uses custom layers — must provide custom_objects
+    if 'controller' in model_path:
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+        from model_controller import _TileContext, _ScaleSigmoid
+        model = tf.keras.models.load_model(
+            model_path,
+            custom_objects={'_TileContext': _TileContext, '_ScaleSigmoid': _ScaleSigmoid}
+        )
+    else:
+        model = tf.keras.models.load_model(model_path)
     scaler = joblib.load(scaler_path)
     return model, scaler
 
