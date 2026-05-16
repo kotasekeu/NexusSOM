@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
 """
-LSTM Model Visualization — Phase 2 Early Stopping Predictor
+LSTM Model Visualization — Phase 2 (early stopping) or Phase 3 (controller)
 
-Generates diagnostic plots for a trained LSTM model:
+Phase 2 plots:
   - scatter.png         Actual vs. predicted per target
-  - residuals.png       Residual (error) distribution per target
+  - residuals.png       Residual error distribution per target
   - prefix_accuracy.png MAE at each prefix length K (20–70%)
   - early_stopping.png  Quality score distribution + threshold confusion matrix
 
-Saves plots to visualizations/<run_label>/.
-Optionally compares two models side-by-side.
+Phase 3 plots:
+  - scatter_p3.png      Predicted vs. actual lr_factor and radius_factor
+  - residuals_p3.png    Residual error distribution for each action
+  - advantage_p3.png    MAE broken down by advantage quartile
 
 Usage:
     cd app/lstm
-    python3 visualize_model.py
-    python3 visualize_model.py --model models/lstm_latest.keras --label v2
-    python3 visualize_model.py --label v2 --compare models/lstm_standard_20260329.keras --label_b v1
+    python3 visualize_model.py                    # Phase 2
+    python3 visualize_model.py --phase 3          # Phase 3 controller
+    python3 visualize_model.py --phase 2 --label v2 --compare models/lstm_standard.keras
 """
 
 import argparse
@@ -32,9 +34,20 @@ import matplotlib.gridspec as gridspec
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
-DEFAULT_MODEL  = 'models/lstm_latest.keras'
-DEFAULT_SCALER = 'models/lstm_scaler_latest.pkl'
-DATA_DIR       = 'data'
+# Phase 2 defaults
+DEFAULT_MODEL_P2  = 'models/lstm_latest.keras'
+DEFAULT_SCALER_P2 = 'models/lstm_scaler_latest.pkl'
+DATA_DIR_P2       = 'data'
+
+# Phase 3 defaults
+DEFAULT_MODEL_P3  = 'models/lstm_controller_latest.keras'
+DEFAULT_SCALER_P3 = 'models/lstm_controller_scaler_latest.pkl'
+DATA_DIR_P3       = 'data/phase3'
+
+# Keep backward-compat names
+DEFAULT_MODEL  = DEFAULT_MODEL_P2
+DEFAULT_SCALER = DEFAULT_SCALER_P2
+DATA_DIR       = DATA_DIR_P2
 
 TARGET_LABELS = {
     'raw_mqe_improvement_ratio': 'MQE improvement ratio',
@@ -326,6 +339,147 @@ def plot_comparison(results_a, results_b, label_a, label_b, out_dir):
           f'{sign}{abs(delta_qs):>9.4f}')
 
 
+# ── Phase 3 data + plots ──────────────────────────────────────────────────────
+
+def load_test_data_p3(data_dir=DATA_DIR_P3):
+    X_test   = np.load(os.path.join(data_dir, 'X_test.npy'),   allow_pickle=True)
+    y_test   = np.load(os.path.join(data_dir, 'y_test.npy'),   allow_pickle=True)
+    ctx_test = np.load(os.path.join(data_dir, 'ctx_test.npy'), allow_pickle=True)
+    adv_test = np.load(os.path.join(data_dir, 'adv_test.npy'), allow_pickle=True)
+    with open(os.path.join(data_dir, 'metadata_p3.json'), encoding='utf-8') as f:
+        meta = json.load(f)
+    return X_test, y_test, ctx_test, adv_test, meta
+
+
+def run_predictions_p3(model, scaler, X_test, ctx_test):
+    """Run inference for Phase 3 controller (seq2seq: output shape = (T, 2) per sample)."""
+    preds = []
+    for i in range(len(X_test)):
+        seq = np.expand_dims(X_test[i].astype(np.float32), 0)   # (1, T, 6)
+        ctx = scaler.transform(ctx_test[i:i+1])                  # (1, 4)
+        pred = model.predict({'sequence': seq, 'context': ctx}, verbose=0)[0]  # (T, 2)
+        preds.append(pred)
+    return preds   # list of (T, 2)
+
+
+def plot_scatter_p3(y_test, y_pred_list, out_dir, label):
+    """Scatter: predicted vs actual lr_factor and radius_factor (flattened across all timesteps)."""
+    action_names = ['lr_factor', 'radius_factor']
+    colors_p3    = ['#2196F3', '#FF5722']
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    for i, (name, color) in enumerate(zip(action_names, colors_p3)):
+        actual = np.concatenate([y_test[j][:, i] for j in range(len(y_test))])
+        pred   = np.concatenate([y_pred_list[j][:, i] for j in range(len(y_pred_list))])
+        ax = axes[i]
+        lo, hi = min(actual.min(), pred.min()), max(actual.max(), pred.max())
+        m = (hi - lo) * 0.05
+        ax.scatter(actual, pred, alpha=0.3, s=8, color=color)
+        ax.plot([lo - m, hi + m], [lo - m, hi + m], 'k--', linewidth=1, alpha=0.5)
+        mae  = np.abs(actual - pred).mean()
+        rmse = np.sqrt(((actual - pred) ** 2).mean())
+        r    = np.corrcoef(actual, pred)[0, 1] if len(actual) > 1 else float('nan')
+        ax.set_title(f'{name}\nMAE={mae:.4f}  RMSE={rmse:.4f}  r={r:.3f}')
+        ax.set_xlabel('Actual')
+        ax.set_ylabel('Predicted')
+        ax.set_xlim(lo - m, hi + m)
+        ax.set_ylim(lo - m, hi + m)
+        ax.set_aspect('equal')
+
+    fig.suptitle(f'Controller Predictions — {label}', fontsize=13, y=1.01)
+    fig.tight_layout()
+    path = os.path.join(out_dir, 'scatter_p3.png')
+    fig.savefig(path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f'  Saved: {path}')
+
+
+def plot_residuals_p3(y_test, y_pred_list, out_dir, label):
+    action_names = ['lr_factor', 'radius_factor']
+    colors_p3    = ['#2196F3', '#FF5722']
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+    for i, (name, color) in enumerate(zip(action_names, colors_p3)):
+        actual = np.concatenate([y_test[j][:, i] for j in range(len(y_test))])
+        pred   = np.concatenate([y_pred_list[j][:, i] for j in range(len(y_pred_list))])
+        res    = pred - actual
+        ax = axes[i]
+        ax.hist(res, bins=40, color=color, alpha=0.7, edgecolor='white')
+        ax.axvline(0, color='black', linewidth=1, linestyle='--')
+        ax.axvline(res.mean(), color='red', linewidth=1, label=f'mean={res.mean():.4f}')
+        ax.set_xlabel('Residual (pred − actual)')
+        ax.set_ylabel('Count')
+        ax.set_title(f'{name}\nstd={res.std():.4f}')
+        ax.legend(fontsize=8)
+
+    fig.suptitle(f'Residual Distribution — {label}', fontsize=13, y=1.01)
+    fig.tight_layout()
+    path = os.path.join(out_dir, 'residuals_p3.png')
+    fig.savefig(path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f'  Saved: {path}')
+
+
+def plot_advantage_p3(y_test, y_pred_list, adv_test, out_dir, label):
+    """MAE per action broken down by advantage quartile."""
+    action_names = ['lr_factor', 'radius_factor']
+    colors_p3    = ['#2196F3', '#FF5722']
+
+    # Compute per-trajectory MAE
+    traj_mae = np.array([
+        np.abs(y_test[j] - y_pred_list[j]).mean(axis=0)   # (2,)
+        for j in range(len(y_test))
+    ])   # (N, 2)
+
+    quartiles   = np.percentile(adv_test, [0, 25, 50, 75, 100])
+    q_labels    = ['Q1\n(0–25%)', 'Q2\n(25–50%)', 'Q3\n(50–75%)', 'Q4\n(75–100%)']
+    q_masks     = [
+        (adv_test >= quartiles[0]) & (adv_test < quartiles[1]),
+        (adv_test >= quartiles[1]) & (adv_test < quartiles[2]),
+        (adv_test >= quartiles[2]) & (adv_test < quartiles[3]),
+        (adv_test >= quartiles[3]),
+    ]
+
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+    x     = np.arange(len(q_labels))
+    width = 0.35
+
+    for ai, (name, color) in enumerate(zip(action_names, colors_p3)):
+        ax = axes[ai]
+        means  = [traj_mae[m, ai].mean() if m.sum() > 0 else 0 for m in q_masks]
+        counts = [m.sum() for m in q_masks]
+        bars   = ax.bar(x, means, width=0.5, color=color, alpha=0.8)
+        ax.bar_label(bars, fmt='%.4f', padding=2, fontsize=8)
+        ax.set_xticks(x)
+        ax.set_xticklabels([f'{q}\n(n={c})' for q, c in zip(q_labels, counts)], fontsize=9)
+        ax.set_xlabel('Advantage quartile')
+        ax.set_ylabel('MAE')
+        ax.set_title(f'{name}\nMAE by advantage quartile')
+
+    fig.suptitle(f'Controller MAE vs Advantage — {label}', fontsize=13, y=1.01)
+    fig.tight_layout()
+    path = os.path.join(out_dir, 'advantage_p3.png')
+    fig.savefig(path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f'  Saved: {path}')
+
+
+def run_single_p3(model_path, scaler_path, label, out_dir):
+    print(f'\nLoading Phase 3 controller: {model_path}')
+    model, scaler = load_model_and_scaler(model_path, scaler_path)
+    X_test, y_test, ctx_test, adv_test, meta = load_test_data_p3()
+
+    print(f'Running predictions on {len(X_test)} test trajectories...')
+    y_pred_list = run_predictions_p3(model, scaler, X_test, ctx_test)
+
+    os.makedirs(out_dir, exist_ok=True)
+    print(f'Generating plots → {out_dir}/')
+
+    plot_scatter_p3(y_test, y_pred_list, out_dir, label)
+    plot_residuals_p3(y_test, y_pred_list, out_dir, label)
+    plot_advantage_p3(y_test, y_pred_list, adv_test, out_dir, label)
+
+
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def run_single(model_path, scaler_path, label, out_dir):
@@ -349,26 +503,37 @@ def run_single(model_path, scaler_path, label, out_dir):
 
 def main():
     parser = argparse.ArgumentParser(description='Visualize trained LSTM model')
-    parser.add_argument('--model',   default=DEFAULT_MODEL,  help='Model A .keras path')
-    parser.add_argument('--scaler',  default=DEFAULT_SCALER, help='Scaler A .pkl path')
-    parser.add_argument('--label',   default='latest',       help='Label for model A')
-    parser.add_argument('--compare', default=None,           help='Model B .keras path')
-    parser.add_argument('--scaler_b',default=None,           help='Scaler B .pkl path')
-    parser.add_argument('--label_b', default='prev',         help='Label for model B')
+    parser.add_argument('--phase',   type=int, default=2, choices=[2, 3],
+                        help='Which model to visualize: 2=early stopping, 3=controller (default: 2)')
+    parser.add_argument('--model',   default=None,  help='Model .keras path (overrides phase default)')
+    parser.add_argument('--scaler',  default=None,  help='Scaler .pkl path (overrides phase default)')
+    parser.add_argument('--label',   default=None,  help='Label for the run (default: phase2/phase3)')
+    parser.add_argument('--compare', default=None,  help='Model B .keras path (Phase 2 only)')
+    parser.add_argument('--scaler_b',default=None,  help='Scaler B .pkl path')
+    parser.add_argument('--label_b', default='prev',help='Label for model B')
     args = parser.parse_args()
 
-    out_a    = os.path.join('visualizations', args.label)
-    results_a = run_single(args.model, args.scaler, args.label, out_a)
+    if args.phase == 3:
+        model_path  = args.model  or DEFAULT_MODEL_P3
+        scaler_path = args.scaler or DEFAULT_SCALER_P3
+        label       = args.label  or 'phase3'
+        out_dir     = os.path.join('visualizations', label)
+        run_single_p3(model_path, scaler_path, label, out_dir)
+    else:
+        model_path  = args.model  or DEFAULT_MODEL_P2
+        scaler_path = args.scaler or DEFAULT_SCALER_P2
+        label       = args.label  or 'phase2'
+        out_a       = os.path.join('visualizations', label)
+        results_a   = run_single(model_path, scaler_path, label, out_a)
 
-    if args.compare:
-        scaler_b = args.scaler_b or args.compare.replace('.keras', '_scaler.pkl')
-        out_b    = os.path.join('visualizations', args.label_b)
-        results_b = run_single(args.compare, scaler_b, args.label_b, out_b)
-
-        out_cmp = os.path.join('visualizations', f'{args.label}_vs_{args.label_b}')
-        os.makedirs(out_cmp, exist_ok=True)
-        print(f'\nComparison → {out_cmp}/')
-        plot_comparison(results_a, results_b, args.label, args.label_b, out_cmp)
+        if args.compare:
+            scaler_b  = args.scaler_b or args.compare.replace('.keras', '_scaler.pkl')
+            out_b     = os.path.join('visualizations', args.label_b)
+            results_b = run_single(args.compare, scaler_b, args.label_b, out_b)
+            out_cmp   = os.path.join('visualizations', f'{label}_vs_{args.label_b}')
+            os.makedirs(out_cmp, exist_ok=True)
+            print(f'\nComparison → {out_cmp}/')
+            plot_comparison(results_a, results_b, label, args.label_b, out_cmp)
 
     print('\nDone.')
 
