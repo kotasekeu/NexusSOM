@@ -89,18 +89,42 @@ def pad_ragged(arrays: list, pad_value: float = 0.0) -> np.ndarray:
 
 # ── data loading ──────────────────────────────────────────────────────────────
 
-def load_context_from_results(seed_dir: str) -> dict:
-    """Build uid → context_array mapping from results.csv."""
-    df = pd.read_csv(Path(seed_dir) / 'results.csv')
+def load_context_from_results(seed_dirs: list) -> dict:
+    """Build uid → context_array mapping from results.csv across all given seed dirs."""
     ctx_map = {}
-    for _, row in df.iterrows():
-        ctx_map[row['uid']] = np.array([
-            row.get('ds_n_samples',           0),
-            row.get('ds_n_active_dimensions', 0),
-            row.get('ds_n_numeric',           0),
-            row.get('ds_n_categorical',       0),
-        ], dtype=np.float32)
+    for sd in seed_dirs:
+        csv_path = Path(sd) / 'results.csv'
+        if not csv_path.exists():
+            continue
+        df = pd.read_csv(csv_path)
+        for _, row in df.iterrows():
+            ctx_map[row['uid']] = np.array([
+                row.get('ds_n_samples',           0),
+                row.get('ds_n_active_dimensions', 0),
+                row.get('ds_n_numeric',           0),
+                row.get('ds_n_categorical',       0),
+            ], dtype=np.float32)
     return ctx_map
+
+
+def _find_seed_dirs(results_root: str) -> list:
+    """Scan results_root for all seed_* dirs that contain results.csv."""
+    root = Path(results_root)
+    dirs = []
+    for ds_dir in sorted(root.iterdir()):
+        if not ds_dir.is_dir():
+            continue
+        results_dir = ds_dir / 'results'
+        if not results_dir.exists():
+            continue
+        for ts_dir in sorted(results_dir.iterdir()):
+            if not ts_dir.is_dir():
+                continue
+            for seed_dir in sorted(ts_dir.iterdir()):
+                if seed_dir.is_dir() and seed_dir.name.startswith('seed_'):
+                    if (seed_dir / 'results.csv').exists():
+                        dirs.append(seed_dir)
+    return dirs
 
 
 def build_records(trajectories: list, ctx_map: dict) -> list:
@@ -166,17 +190,17 @@ def split_records(records: list, train_frac=0.70, val_frac=0.15, seed=42):
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
-def prepare(trajectories_path: str, seed_dir: str, output_dir: str):
+def prepare(trajectories_path: str, seed_dirs: list, output_dir: str):
     print('=' * 60)
     print('PHASE 3 DATASET PREPARATION')
     print('=' * 60)
 
-    with open(trajectories_path) as f:
+    with open(trajectories_path, encoding='utf-8') as f:
         trajectories = json.load(f)
     print(f'Loaded {len(trajectories)} trajectories from {trajectories_path}')
 
-    ctx_map = load_context_from_results(seed_dir)
-    print(f'Context map: {len(ctx_map)} individuals from results.csv')
+    ctx_map = load_context_from_results(seed_dirs)
+    print(f'Context map: {len(ctx_map)} individuals from {len(seed_dirs)} seed dir(s)')
 
     records = build_records(trajectories, ctx_map)
     n_pert  = len(records)
@@ -231,7 +255,7 @@ def prepare(trajectories_path: str, seed_dir: str, output_dir: str):
         'n_better_than_baseline': n_better,
         'n_perturbed_total':      n_pert,
     }
-    with open(os.path.join(output_dir, 'metadata_p3.json'), 'w') as f:
+    with open(os.path.join(output_dir, 'metadata_p3.json'), 'w', encoding='utf-8') as f:
         json.dump(meta, f, indent=2)
 
     print(f'\nSaved to: {output_dir}/')
@@ -239,16 +263,37 @@ def prepare(trajectories_path: str, seed_dir: str, output_dir: str):
 
 
 def main():
+    default_traj = os.path.join(OUTPUT_DIR, 'trajectories.json')
+
     parser = argparse.ArgumentParser(description='Prepare LSTM Phase 3 dataset')
-    parser.add_argument('--trajectories', required=True,
-                        help='Path to trajectories.json from generate_phase3_data.py')
-    parser.add_argument('--seed_dir', required=True,
-                        help='EA seed directory (for results.csv context lookup)')
+    parser.add_argument('--trajectories', default=default_traj,
+                        help=f'Path to trajectories.json (default: {default_traj})')
+    parser.add_argument('--results_root', default=None,
+                        help='Root of datasets dir — auto-discovers all seed dirs for context')
+    parser.add_argument('--seed_dir', default=None,
+                        help='Single EA seed directory for context (use with single-seed trajectories)')
     parser.add_argument('--output', default=OUTPUT_DIR,
                         help=f'Output directory (default: {OUTPUT_DIR})')
     args = parser.parse_args()
 
-    prepare(args.trajectories, args.seed_dir, args.output)
+    if args.results_root:
+        seed_dirs = _find_seed_dirs(args.results_root)
+        if not seed_dirs:
+            print(f'ERROR: No seed dirs found under {args.results_root}')
+            sys.exit(1)
+        print(f'Found {len(seed_dirs)} seed dir(s) under {args.results_root}')
+    elif args.seed_dir:
+        seed_dirs = [args.seed_dir]
+    else:
+        # Try to auto-detect from default results_root
+        default_root = 'data/datasets'
+        seed_dirs = _find_seed_dirs(default_root)
+        if not seed_dirs:
+            print('ERROR: No seed dirs found. Provide --results_root or --seed_dir.')
+            sys.exit(1)
+        print(f'Auto-detected {len(seed_dirs)} seed dir(s) from {default_root}')
+
+    prepare(args.trajectories, seed_dirs, args.output)
 
 
 if __name__ == '__main__':
