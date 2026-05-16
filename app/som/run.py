@@ -16,6 +16,43 @@ from som.utils import load_configuration, log_message, \
 from som.som import KohonenSOM
 
 
+def _build_lstm_controller_fn(nn_cfg: dict, dataset_stats: dict):
+    """
+    Load LSTM Phase 3 controller and return a dynamic_schedule_fn for som.train(), or None.
+    nn_cfg must have use_lstm_controller=true and lstm_controller_model_path set.
+    """
+    if not nn_cfg.get('use_lstm_controller', False):
+        return None
+    try:
+        import sys as _sys
+        _app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if _app_dir not in _sys.path:
+            _sys.path.insert(0, _app_dir)
+        from ea.nn_integration import NeuralNetworkIntegration
+        nn = NeuralNetworkIntegration(
+            use_mlp=False,
+            use_lstm=False,
+            use_cnn=False,
+            use_lstm_controller=True,
+            lstm_controller_model_path=nn_cfg.get('lstm_controller_model_path'),
+            lstm_controller_scaler_path=nn_cfg.get('lstm_controller_scaler_path'),
+        )
+        if not nn.can_use_dynamic_schedule():
+            print("WARNING: LSTM controller could not be loaded — running without dynamic control")
+            return None
+        ds_context = [
+            dataset_stats.get('ds_n_samples', 0),
+            dataset_stats.get('ds_n_active_dimensions', 0),
+            dataset_stats.get('ds_n_numeric', 0),
+            dataset_stats.get('ds_n_categorical', 0),
+        ]
+        print("INFO: LSTM Phase 3 controller enabled (dynamic LR + radius adjustment)")
+        return nn.get_dynamic_schedule_fn(dataset_context=ds_context)
+    except Exception as e:
+        print(f"WARNING: LSTM controller init failed ({e}) — running without dynamic control")
+        return None
+
+
 def _build_lstm_early_stop_fn(nn_cfg: dict, dataset_stats: dict):
     """
     Load LSTM model and return an early-stop callback for som.train(), or None.
@@ -117,9 +154,10 @@ def main():
         log_message(working_dir, "SYSTEM",
                     f"Training data loaded from '{training_data_path}'. Shape: {training_data.shape}")
 
-        # LSTM early stopping — loaded from NEURAL_NETWORKS section if present
+        # NN models — loaded from NEURAL_NETWORKS section if present
         nn_cfg = config.get('NEURAL_NETWORKS', {})
-        lstm_early_stop_fn = _build_lstm_early_stop_fn(nn_cfg, dataset_stats)
+        lstm_early_stop_fn  = _build_lstm_early_stop_fn(nn_cfg, dataset_stats)
+        dynamic_schedule_fn = _build_lstm_controller_fn(nn_cfg, dataset_stats)
 
         # SOM initialization and training
         log_message(working_dir, "SYSTEM", "Initializing and training SOM...")
@@ -133,7 +171,8 @@ def main():
         # Train SOM
         log_message(working_dir, "SYSTEM", "Starting SOM training...")
         training_results = som.train(training_data, ignore_mask=ignore_mask, working_dir=working_dir,
-                                     lstm_early_stop_fn=lstm_early_stop_fn)
+                                     lstm_early_stop_fn=lstm_early_stop_fn,
+                                     dynamic_schedule_fn=dynamic_schedule_fn)
 
         lstm_stopped = training_results.get('lstm_stopped', False)
         log_message(working_dir, "SYSTEM",

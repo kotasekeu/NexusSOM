@@ -1,4 +1,6 @@
 {
+    "_comment": "Final SOM config with all NN active. Phase 2 LSTM stops bad runs early. Phase 3 LSTM controller adjusts LR + radius dynamically. MLP not used in standalone SOM (no config search space to filter).",
+
     "map_size": [20, 20],
     "start_learning_rate": 0.90,
     "end_learning_rate": 0.01,
@@ -34,6 +36,10 @@
         "use_lstm": true,
         "lstm_model_path": "app/lstm/models/lstm_latest.keras",
         "lstm_scaler_path": "app/lstm/models/lstm_scaler_latest.pkl",
-        "lstm_quality_threshold": 0.75
+        "lstm_quality_threshold": 0.75,
+
+        "use_lstm_controller": true,
+        "lstm_controller_model_path": "app/lstm/models/lstm_controller_latest.keras",
+        "lstm_controller_scaler_path": "app/lstm/models/lstm_controller_scaler_latest.pkl"
     }
 }

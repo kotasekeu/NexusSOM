@@ -9,10 +9,15 @@ For each Pareto individual from an EA run:
 
 Output: app/lstm/data/phase3/trajectories.json
 
-Usage:
+Usage (single seed):
     python3 app/lstm/generate_phase3_data.py \\
         --seed_dir data/datasets/LungCancerDataset/results/20260513_181811/seed_42 \\
         --dataset  data/datasets/LungCancerDataset/dataset.csv \\
+        --n_pareto 5 --n_variants 8 --output app/lstm/data/phase3
+
+Usage (all datasets + all seeds — dataset.csv auto-detected):
+    python3 app/lstm/generate_phase3_data.py \\
+        --results_root data/datasets \\
         --n_pareto 5 --n_variants 8 --output app/lstm/data/phase3
 """
 
@@ -21,6 +26,7 @@ import json
 import os
 import sys
 import time
+from multiprocessing import Pool, cpu_count
 from pathlib import Path
 
 import numpy as np
@@ -137,10 +143,41 @@ def run_som(row: pd.Series, data: np.ndarray, ignore_mask: np.ndarray,
     }
 
 
+# ── parallel worker ───────────────────────────────────────────────────────────
+
+def _worker(task: dict) -> dict:
+    """
+    Picklable worker for Pool. Reconstructs dynamic_fn from perturb_config dict.
+    task keys: row_dict, data, ignore_mask, perturb_config, som_seed
+    perturb_config: None (baseline) | {'type': str, 'seed': int}
+    """
+    row   = pd.Series(task['row_dict'])
+    data  = task['data']
+    mask  = task['ignore_mask']
+    pc    = task['perturb_config']
+    seed  = task['som_seed']
+
+    if pc is None:
+        dynamic_fn = None
+    else:
+        rng = np.random.default_rng(pc['seed'])
+        ptype = pc['type']
+        if ptype == 'lr+radius':
+            dynamic_fn = make_random_perturb_fn(rng)
+        elif ptype == 'lr_only':
+            dynamic_fn = make_lr_only_fn(rng)
+        else:
+            dynamic_fn = make_radius_only_fn(rng)
+
+    result = run_som(row, data, mask, dynamic_fn=dynamic_fn, seed=seed)
+    return {**result, 'uid': task['uid'], 'variant': task['variant'],
+            'variant_seed': task['variant_seed'], 'perturb_type': pc['type'] if pc else 'baseline'}
+
+
 # ── main pipeline ─────────────────────────────────────────────────────────────
 
 def generate(seed_dir: str, dataset_path: str, n_pareto: int, n_variants: int,
-             output_dir: str):
+             output_dir: str, n_workers: int = 0, _return_trajectories: bool = False):
     seed_dir = Path(seed_dir)
     results_csv = seed_dir / 'results.csv'
     pareto_csv  = seed_dir / 'pareto_front.csv'
@@ -152,8 +189,7 @@ def generate(seed_dir: str, dataset_path: str, n_pareto: int, n_variants: int,
     results = pd.read_csv(results_csv)
     pareto  = pd.read_csv(pareto_csv) if pareto_csv.exists() else results.head(n_pareto)
 
-    # Pick top N Pareto individuals (non-penalized)
-    valid   = results[~results.get('is_penalized', pd.Series(False, index=results.index))]
+    valid       = results[~results.get('is_penalized', pd.Series(False, index=results.index))]
     pareto_uids = set(pareto['uid'].values)
     pareto_rows = valid[valid['uid'].isin(pareto_uids)].head(n_pareto)
 
@@ -163,7 +199,7 @@ def generate(seed_dir: str, dataset_path: str, n_pareto: int, n_variants: int,
 
     print(f'Found {len(pareto_rows)} Pareto individuals (requested {n_pareto})')
 
-    # Preprocess dataset
+    # Preprocess dataset once — shared (read-only) across all workers
     print(f'Preprocessing dataset: {dataset_path}')
     import tempfile
     preprocess_config = {
@@ -180,69 +216,78 @@ def generate(seed_dir: str, dataset_path: str, n_pareto: int, n_variants: int,
         data = np.load(npy_path)
     print(f'Dataset shape: {data.shape}')
 
-    os.makedirs(output_dir, exist_ok=True)
-    trajectories = []
-    rng_master   = np.random.default_rng(42)
-
-    total_runs = len(pareto_rows) * (1 + n_variants)
-    run_idx = 0
-
+    # Build task list for all individuals × variants
+    rng_master = np.random.default_rng(42)
+    tasks = []
     for _, row in pareto_rows.iterrows():
-        uid = row['uid']
-        print(f'\n── Individual {uid[:8]} ──')
+        uid           = row['uid']
+        row_dict      = row.to_dict()
+        variant_seeds = rng_master.integers(0, 100_000, size=n_variants)
 
-        # Variant 0: baseline (no perturbation)
-        print(f'  [0/{n_variants}] baseline ...', end=' ', flush=True)
-        t0 = time.time()
-        baseline = run_som(row, data, ignore_mask, dynamic_fn=None, seed=42)
-        print(f'MQE={baseline["final_mqe"]:.4f}  ({time.time()-t0:.1f}s)')
-        run_idx += 1
+        tasks.append({'uid': uid, 'row_dict': row_dict, 'data': data,
+                      'ignore_mask': ignore_mask, 'perturb_config': None,
+                      'som_seed': 42, 'variant': 'baseline', 'variant_seed': 42})
 
+        for v_idx, v_seed in enumerate(variant_seeds):
+            ptype = ['lr+radius', 'lr_only', 'radius_only'][v_idx % 3]
+            tasks.append({'uid': uid, 'row_dict': row_dict, 'data': data,
+                          'ignore_mask': ignore_mask,
+                          'perturb_config': {'type': ptype, 'seed': int(v_seed)},
+                          'som_seed': int(v_seed) % 10000,
+                          'variant': ptype, 'variant_seed': int(v_seed)})
+
+    total = len(tasks)
+    workers = n_workers if n_workers > 0 else max(1, cpu_count() - 1)
+    print(f'Running {total} SOM trains across {workers} workers...')
+
+    t_start = time.time()
+    with Pool(processes=workers) as pool:
+        raw_results = pool.map(_worker, tasks)
+    elapsed = time.time() - t_start
+    print(f'All runs done in {elapsed:.1f}s  ({elapsed/total:.1f}s/run avg)')
+
+    # Build trajectories — compute delta_mqe relative to each uid's baseline
+    baselines = {r['uid']: r['final_mqe'] for r in raw_results if r['variant'] == 'baseline'}
+    trajectories = []
+    for r in raw_results:
+        uid          = r['uid']
+        baseline_mqe = baselines[uid]
+        delta        = baseline_mqe - r['final_mqe']  # positive = perturbed is BETTER
         trajectories.append({
-            'uid':          uid,
-            'variant':      'baseline',
-            'variant_seed': 42,
-            'final_mqe':    baseline['final_mqe'],
-            'delta_mqe':    0.0,
-            'better_than_baseline': False,
-            'checkpoints':  baseline['checkpoints'],
+            'uid':                  uid,
+            'variant':              r['variant'],
+            'variant_seed':         r['variant_seed'],
+            'final_mqe':            r['final_mqe'],
+            'delta_mqe':            float(delta),
+            'better_than_baseline': delta > 0,
+            'checkpoints':          r['checkpoints'],
         })
 
-        # Variants 1-N: random perturbations
-        variant_seeds = rng_master.integers(0, 100_000, size=n_variants)
-        for v_idx, v_seed in enumerate(variant_seeds):
-            v_rng = np.random.default_rng(int(v_seed))
+    # Per-individual summary (printed after pool completes — clean, no interleaving)
+    from collections import defaultdict
+    by_uid = defaultdict(list)
+    for t in trajectories:
+        by_uid[t['uid']].append(t)
+    for uid, group in by_uid.items():
+        base  = next((t for t in group if t['variant'] == 'baseline'), None)
+        varts = [t for t in group if t['variant'] != 'baseline']
+        if base is None:
+            continue
+        best_delta = max((t['delta_mqe'] for t in varts), default=0.0)
+        n_pos      = sum(1 for t in varts if t['better_than_baseline'])
+        print(f'  ── Individual {uid[:8]} ── baseline MQE={base["final_mqe"]:.4f}  '
+              f'best Δ={best_delta:+.4f}  better: {n_pos}/{len(varts)}')
 
-            # Alternate perturbation types for variety
-            if v_idx % 3 == 0:
-                fn = make_random_perturb_fn(v_rng)
-                vtype = 'lr+radius'
-            elif v_idx % 3 == 1:
-                fn = make_lr_only_fn(v_rng)
-                vtype = 'lr_only'
-            else:
-                fn = make_radius_only_fn(v_rng)
-                vtype = 'radius_only'
+    n_better    = sum(1 for t in trajectories if t['better_than_baseline'])
+    n_perturbed = sum(1 for t in trajectories if t['variant'] != 'baseline')
+    print(f'  → {len(trajectories)} trajectories, '
+          f'{n_better}/{n_perturbed} perturbed better than baseline '
+          f'({n_better/max(1,n_perturbed)*100:.0f}%)')
 
-            print(f'  [{v_idx+1}/{n_variants}] {vtype} (seed={v_seed}) ...', end=' ', flush=True)
-            t0 = time.time()
-            result = run_som(row, data, ignore_mask, dynamic_fn=fn,
-                             seed=int(v_seed) % 10000)
-            delta = baseline['final_mqe'] - result['final_mqe']  # positive = perturbed is BETTER
-            print(f'MQE={result["final_mqe"]:.4f}  Δ={delta:+.4f}  ({time.time()-t0:.1f}s)')
-            run_idx += 1
+    if _return_trajectories:
+        return trajectories
 
-            trajectories.append({
-                'uid':          uid,
-                'variant':      vtype,
-                'variant_seed': int(v_seed),
-                'final_mqe':    result['final_mqe'],
-                'delta_mqe':    float(delta),
-                'better_than_baseline': delta > 0,
-                'checkpoints':  result['checkpoints'],
-            })
-
-    # Save — custom encoder for numpy scalars
+    # Single-seed direct write
     class _NpEncoder(json.JSONEncoder):
         def default(self, o):
             if isinstance(o, np.integer): return int(o)
@@ -250,45 +295,128 @@ def generate(seed_dir: str, dataset_path: str, n_pareto: int, n_variants: int,
             if isinstance(o, np.bool_): return bool(o)
             return super().default(o)
 
+    os.makedirs(output_dir, exist_ok=True)
     out_path = os.path.join(output_dir, 'trajectories.json')
-    with open(out_path, 'w') as f:
+    with open(out_path, 'w', encoding='utf-8') as f:
         json.dump(trajectories, f, cls=_NpEncoder)
-
-    # Summary
-    n_better = sum(1 for t in trajectories if t['better_than_baseline'])
-    n_perturbed = sum(1 for t in trajectories if t['variant'] != 'baseline')
-    print(f'\n{"="*60}')
-    print(f'Saved {len(trajectories)} trajectories → {out_path}')
-    print(f'Perturbed runs better than baseline: {n_better}/{n_perturbed} '
-          f'({n_better/max(1,n_perturbed)*100:.0f}%)')
+    print(f'\nSaved {len(trajectories)} trajectories → {out_path}')
     print(f'Total checkpoints: {sum(len(t["checkpoints"]) for t in trajectories):,}')
+
+
+def _find_seed_dirs(results_root: str):
+    """
+    Scan results_root for all seed_* directories and their dataset CSV paths.
+    Expected structure: <results_root>/<DS_NAME>/results/<TIMESTAMP>/seed_<N>/
+    Dataset CSV expected at: <results_root>/<DS_NAME>/dataset.csv
+    Returns list of (seed_dir_path, dataset_csv_path).
+    """
+    root = Path(results_root)
+    pairs = []
+    for ds_dir in sorted(root.iterdir()):
+        if not ds_dir.is_dir():
+            continue
+        dataset_csv = ds_dir / 'dataset.csv'
+        if not dataset_csv.exists():
+            print(f'  SKIP {ds_dir.name}: dataset.csv not found')
+            continue
+        results_dir = ds_dir / 'results'
+        if not results_dir.exists():
+            continue
+        for ts_dir in sorted(results_dir.iterdir()):
+            if not ts_dir.is_dir():
+                continue
+            for seed_dir in sorted(ts_dir.iterdir()):
+                if seed_dir.is_dir() and seed_dir.name.startswith('seed_'):
+                    if (seed_dir / 'results.csv').exists():
+                        pairs.append((seed_dir, dataset_csv))
+    return pairs
 
 
 def main():
     parser = argparse.ArgumentParser(description='Generate Phase 3 LSTM perturbation data')
-    parser.add_argument('--seed_dir',  required=True,
-                        help='Path to EA seed_* directory (contains results.csv + pareto_front.csv)')
-    parser.add_argument('--dataset',   required=True,
-                        help='Path to original dataset CSV')
-    parser.add_argument('--n_pareto',  type=int, default=5,
-                        help='Number of Pareto individuals to use (default: 5)')
-    parser.add_argument('--n_variants', type=int, default=8,
+    parser.add_argument('--seed_dir',     default=None,
+                        help='Path to one EA seed_* directory (use with --dataset)')
+    parser.add_argument('--dataset',      default=None,
+                        help='Path to original dataset CSV (required with --seed_dir)')
+    parser.add_argument('--results_root', default=None,
+                        help='Root of datasets dir — auto-discovers all seed dirs and dataset CSVs')
+    parser.add_argument('--n_pareto',     type=int, default=5,
+                        help='Number of Pareto individuals per seed (default: 5)')
+    parser.add_argument('--n_variants',   type=int, default=8,
                         help='Perturbed variants per individual (default: 8)')
-    parser.add_argument('--output',    default='app/lstm/data/phase3',
+    parser.add_argument('--output',       default='app/lstm/data/phase3',
                         help='Output directory (default: app/lstm/data/phase3)')
+    parser.add_argument('--n_workers',    type=int, default=0,
+                        help='Parallel workers (default: cpu_count-1)')
     args = parser.parse_args()
+
+    if args.results_root is None and args.seed_dir is None:
+        parser.error('Provide either --results_root or --seed_dir + --dataset')
+    if args.seed_dir and args.dataset is None:
+        parser.error('--seed_dir requires --dataset')
 
     print('=' * 60)
     print('PHASE 3 DATA GENERATION')
     print('=' * 60)
-    print(f'Seed dir:   {args.seed_dir}')
-    print(f'Dataset:    {args.dataset}')
+
+    if args.results_root:
+        pairs = _find_seed_dirs(args.results_root)
+        if not pairs:
+            print(f'ERROR: No seed directories found under {args.results_root}')
+            sys.exit(1)
+        print(f'Results root: {args.results_root}')
+        print(f'Seed dirs found: {len(pairs)}')
+        for sd, ds in pairs:
+            print(f'  {sd.relative_to(Path(args.results_root).parent)}  ←  {ds.name}')
+    else:
+        pairs = [(Path(args.seed_dir), Path(args.dataset))]
+        print(f'Seed dir: {args.seed_dir}')
+        print(f'Dataset:  {args.dataset}')
+
+    workers_label = args.n_workers if args.n_workers > 0 else f'auto ({max(1, cpu_count()-1)})'
     print(f'Pareto:     {args.n_pareto} individuals × {args.n_variants} variants')
-    print(f'Total runs: {args.n_pareto * (1 + args.n_variants)}')
+    print(f'Runs/seed:  {args.n_pareto * (1 + args.n_variants)}')
+    print(f'Total runs: {len(pairs) * args.n_pareto * (1 + args.n_variants)}')
+    print(f'Workers:    {workers_label}')
     print(f'Output:     {args.output}')
     print()
 
-    generate(args.seed_dir, args.dataset, args.n_pareto, args.n_variants, args.output)
+    # Accumulate trajectories from all seeds, then write once
+    os.makedirs(args.output, exist_ok=True)
+    all_trajectories = []
+
+    for seed_dir, dataset_csv in pairs:
+        print(f'\n{"─"*60}')
+        print(f'Processing: {seed_dir}')
+        print(f'Dataset:    {dataset_csv}')
+        print(f'{"─"*60}')
+        trajectories = generate(str(seed_dir), str(dataset_csv),
+                                args.n_pareto, args.n_variants, args.output,
+                                n_workers=args.n_workers, _return_trajectories=True)
+        all_trajectories.extend(trajectories)
+        print(f'Accumulated: {len(all_trajectories)} trajectories total')
+
+    class _NpEncoder(json.JSONEncoder):
+        def default(self, o):
+            if isinstance(o, np.integer): return int(o)
+            if isinstance(o, np.floating): return float(o)
+            if isinstance(o, np.bool_): return bool(o)
+            return super().default(o)
+
+    out_path = os.path.join(args.output, 'trajectories.json')
+    with open(out_path, 'w', encoding='utf-8') as f:
+        json.dump(all_trajectories, f, cls=_NpEncoder)
+
+    n_better   = sum(1 for t in all_trajectories if t['better_than_baseline'])
+    n_perturbed = sum(1 for t in all_trajectories if t['variant'] != 'baseline')
+    total_ckpts = sum(len(t['checkpoints']) for t in all_trajectories)
+
+    print(f'\n{"="*60}')
+    print(f'DONE — {len(pairs)} seed(s) processed')
+    print(f'Saved {len(all_trajectories)} trajectories → {out_path}')
+    print(f'Perturbed better than baseline: {n_better}/{n_perturbed} '
+          f'({n_better/max(1,n_perturbed)*100:.0f}%)')
+    print(f'Total checkpoints: {total_ckpts:,}')
 
 
 if __name__ == '__main__':

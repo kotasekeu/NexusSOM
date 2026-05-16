@@ -1,5 +1,5 @@
 {
-  "_comment": "Phase 3 LSTM training data collection run. LSTM early stopping DISABLED — full trajectories required for advantage-weighted training (truncated runs cannot serve as baseline reference). MLP filter ON to avoid wasting time on clearly bad configs.",
+  "_comment": "Phase 1 data collection run. All NN disabled — full 300-checkpoint trajectories required for LSTM training. MLP and LSTM not yet trained. After all seeds complete: run prepare_dataset.py + train MLP + LSTM.",
 
   "use_nn": true,
   "EA_SETTINGS": {
@@ -67,12 +67,6 @@
       "min": 10,
       "max": 40,
       "comment": "Growth parameter for exp/log curves"
-    },
-    "num_batches": {
-      "type": "int",
-      "min": 1,
-      "max": 10,
-      "comment": "Number of data sections for hybrid mode"
     }
   },
   "GENETIC_OPERATORS": {
@@ -94,7 +88,8 @@
     "early_stopping_window": 50,
     "max_epochs_without_improvement": 500,
     "normalize_weights_flag": false,
-    "generate_individual_maps": false
+    "generate_individual_maps": false,
+    "num_batches": 8
   },
   "NEURAL_NETWORKS": {
     "use_mlp": false,
