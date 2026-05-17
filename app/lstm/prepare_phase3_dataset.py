@@ -80,7 +80,7 @@ def normalize_checkpoints(checkpoints: list) -> tuple:
 
     actions = np.stack([lr_f, radius_f], axis=1)
 
-    return seq_norm, actions
+    return seq_norm, actions, perturb_mask
 
 
 def pad_ragged(arrays: list, pad_value: float = 0.0) -> np.ndarray:
@@ -156,7 +156,7 @@ def build_records(trajectories: list, ctx_map: dict) -> list:
         if uid not in ctx_map:
             continue
 
-        seq_norm, actions = normalize_checkpoints(traj['checkpoints'])
+        seq_norm, actions, perturb_mask = normalize_checkpoints(traj['checkpoints'])
         if seq_norm is None:
             continue
 
@@ -164,15 +164,16 @@ def build_records(trajectories: list, ctx_map: dict) -> list:
         advantage = float(traj.get('advantage', traj.get('delta_mqe', 0.0)))
 
         records.append({
-            'uid':       uid,
-            'variant':   traj['variant'],
-            'seq_norm':  seq_norm,       # (T, 6)
-            'actions':   actions,        # (T, 2)
-            'delta_mqe': float(traj.get('delta_mqe', 0.0)),
-            'delta_te':  float(traj.get('delta_te',  0.0)),
-            'delta_dead':float(traj.get('delta_dead', 0.0)),
-            'advantage': advantage,
-            'context':   ctx_map[uid],   # (4,)
+            'uid':          uid,
+            'variant':      traj['variant'],
+            'seq_norm':     seq_norm,       # (T, 6)
+            'actions':      actions,        # (T, 2)
+            'perturb_mask': perturb_mask,   # (T,) — 1.0 where perturbation applied
+            'delta_mqe':    float(traj.get('delta_mqe', 0.0)),
+            'delta_te':     float(traj.get('delta_te',  0.0)),
+            'delta_dead':   float(traj.get('delta_dead', 0.0)),
+            'advantage':    advantage,
+            'context':      ctx_map[uid],   # (4,)
         })
 
     return records
@@ -270,16 +271,19 @@ def prepare(trajectories_path: str, seed_dirs: list, output_dir: str):
             continue
         adv = compute_advantages(split_recs)
 
-        X   = pad_ragged([r['seq_norm'] for r in split_recs])   # (N, T, 6)
-        y   = pad_ragged([r['actions']  for r in split_recs])   # (N, T, 2)
-        ctx = np.stack([r['context'] for r in split_recs])      # (N, 4)
+        X   = pad_ragged([r['seq_norm']     for r in split_recs])   # (N, T, 6)
+        y   = pad_ragged([r['actions']      for r in split_recs])   # (N, T, 2)
+        msk = pad_ragged_1d([r['perturb_mask'] for r in split_recs])  # (N, T)
+        ctx = np.stack([r['context'] for r in split_recs])            # (N, 4)
 
         np.save(os.path.join(output_dir, f'X_{split_name}.npy'),   X)
         np.save(os.path.join(output_dir, f'y_{split_name}.npy'),   y)
+        np.save(os.path.join(output_dir, f'msk_{split_name}.npy'), msk)
         np.save(os.path.join(output_dir, f'ctx_{split_name}.npy'), ctx)
         np.save(os.path.join(output_dir, f'adv_{split_name}.npy'), adv)
-        print(f'  {split_name}: X={X.shape}, y={y.shape}, ctx={ctx.shape}, '
-              f'adv mean={adv.mean():.3f}')
+        pct_active = msk.mean() * 100
+        print(f'  {split_name}: X={X.shape}, y={y.shape}, '
+              f'active timesteps={pct_active:.0f}%, adv mean={adv.mean():.3f}')
 
     meta = {
         'n_features':   6,

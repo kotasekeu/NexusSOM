@@ -44,17 +44,22 @@ def load_splits(data_dir: str):
         y   = np.load(os.path.join(data_dir, f'y_{split}.npy'))
         ctx = np.load(os.path.join(data_dir, f'ctx_{split}.npy'))
         adv = np.load(os.path.join(data_dir, f'adv_{split}.npy'))
-        return X, y, ctx, adv
+        msk_path = os.path.join(data_dir, f'msk_{split}.npy')
+        msk = np.load(msk_path) if os.path.exists(msk_path) else np.ones((len(X), X.shape[1]), np.float32)
+        return X, y, ctx, adv, msk
 
-    X_train, y_train, ctx_train, adv_train = _load('train')
-    X_val,   y_val,   ctx_val,   adv_val   = _load('val')
-    X_test,  y_test,  ctx_test,  adv_test  = _load('test')
+    X_train, y_train, ctx_train, adv_train, msk_train = _load('train')
+    X_val,   y_val,   ctx_val,   adv_val,   msk_val   = _load('val')
+    X_test,  y_test,  ctx_test,  adv_test,  msk_test  = _load('test')
 
     with open(os.path.join(data_dir, 'metadata_p3.json')) as f:
         meta = json.load(f)
 
+    pct_active = msk_train.mean() * 100
     print(f'  Train: {len(X_train)}  Val: {len(X_val)}  Test: {len(X_test)}')
     print(f'  Sequence shape (train): {X_train.shape}')
+    print(f'  Active timesteps (train): {pct_active:.0f}%  '
+          f'(non-perturbed timesteps get zero loss weight)')
     print(f'  Advantage mean (train): {adv_train.mean():.3f}  '
           f'nonzero: {(adv_train > 0).sum()}/{len(adv_train)}')
 
@@ -88,14 +93,15 @@ def train(data_dir: str, epochs: int, batch_size: int, learning_rate: float):
     context_dim = ctx_train.shape[1]
     model = create_controller_trainable(context_dim, learning_rate)
 
-    # Keras sequence-to-sequence loss produces (batch, time) before reduce,
-    # so sample_weight must be tiled to (batch, time).
-    def _tile_adv(adv, T):
-        return np.tile(adv[:, np.newaxis], (1, T)).astype(np.float32)
+    # Combined timestep weight: advantage (per-trajectory) × perturb_mask (per-timestep).
+    # Non-perturbed timesteps (target=1.0, ~60% of data) get zero weight so
+    # the model cannot collapse to predicting 1.0 for everything.
+    def _combined_weight(adv, msk):
+        return (adv[:, np.newaxis] * msk).astype(np.float32)  # (N, T)
 
-    adv_train_tiled = _tile_adv(adv_train, X_train.shape[1])
-    adv_val_tiled   = _tile_adv(adv_val,   X_val.shape[1])
-    adv_test_tiled  = _tile_adv(adv_test,  X_test.shape[1])
+    adv_train_tiled = _combined_weight(adv_train, msk_train)
+    adv_val_tiled   = _combined_weight(adv_val,   msk_val)
+    adv_test_tiled  = _combined_weight(adv_test,  msk_test)
     model.summary()
 
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
