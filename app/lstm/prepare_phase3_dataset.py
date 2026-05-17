@@ -181,17 +181,16 @@ def build_records(trajectories: list, ctx_map: dict) -> list:
 
 def compute_advantages(records: list) -> np.ndarray:
     """
-    Multi-objective advantage via Z-score normalization.
+    Multi-objective advantage via Z-score normalization + min-max scaling.
 
-    Each component (delta_mqe, delta_te, delta_dead) is divided by its
-    global standard deviation across ALL records before summing.  This
-    prevents one component from dominating purely because its values happen
-    to be on a larger scale on a given dataset.
+    Each component is divided by its global σ to prevent scale dominance,
+    then the composite is shifted so the minimum trajectory gets weight 0
+    and the best trajectory gets weight 1.  ALL trajectories contribute to
+    the loss — the worst ones with near-zero weight, the best ones with
+    weight 1.  This avoids the collapse caused by clipping 60 %+ of data
+    to zero weight.
 
-    advantage = (Δmqe / σ_mqe) + (Δte / σ_te) + (Δdead / σ_dead)
-
-    Negative advantages are clipped to 0 — model only imitates trajectories
-    that improved all-objectives on net.  Result is normalized to [0, 1].
+    advantage = min_max_normalize((Δmqe/σ_mqe) + (Δte/σ_te) + (Δdead/σ_dead))
     """
     delta_mqe  = np.array([r['delta_mqe']  for r in records], dtype=np.float64)
     delta_te   = np.array([r['delta_te']   for r in records], dtype=np.float64)
@@ -204,9 +203,15 @@ def compute_advantages(records: list) -> np.ndarray:
     print(f'  Advantage σ — mqe: {std_mqe:.5f}  te: {std_te:.5f}  dead: {std_dead:.5f}')
 
     raw = (delta_mqe / std_mqe) + (delta_te / std_te) + (delta_dead / std_dead)
-    raw = np.clip(raw, 0.0, None).astype(np.float32)
-    max_val = raw.max() if raw.max() > 0 else 1.0
-    return raw / max_val
+
+    # Min-max normalize to [0, 1]: worst trajectory → 0, best → 1
+    raw_min, raw_max = raw.min(), raw.max()
+    print(f'  Raw advantage range: [{raw_min:.4f}, {raw_max:.4f}]')
+    if raw_max > raw_min:
+        normalized = (raw - raw_min) / (raw_max - raw_min)
+    else:
+        normalized = np.ones_like(raw) * 0.5
+    return normalized.astype(np.float32)
 
 
 def split_records(records: list, train_frac=0.70, val_frac=0.15, seed=42):

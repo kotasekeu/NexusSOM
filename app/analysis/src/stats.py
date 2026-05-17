@@ -176,6 +176,155 @@ def _cluster_global_deviation(cluster_means: dict, dim_stats: dict) -> dict:
     return deviation
 
 
+# ─── Trustworthiness & Continuity ────────────────────────────────────────────
+
+def compute_tc(data: dict, k_values: tuple = (5, 10, 20)) -> dict:
+    """
+    Trustworthiness & Continuity (Venna & Kaski, 2001).
+    T(k): are map-space neighbors true data-space neighbors?
+    C(k): are data-space neighbors preserved in map space?
+    Both in [0, 1], 1 = perfect.
+
+    Returns {k: {trustworthiness, continuity}} for each k,
+    or {} if data is unavailable or too small.
+    """
+    X = data.get('training_data')
+    if X is None or X.ndim != 2:
+        return {}
+
+    n = X.shape[0]
+    if n < 10:
+        return {}
+
+    # Build row_idx → (bmu_i, bmu_j) using id_to_row + clusters
+    clusters  = data.get('clusters', {})
+    id_to_row = data.get('id_to_row', {})
+
+    bmu_coords = np.zeros((n, 2), dtype=np.float32)
+    found = 0
+    for neuron_key, sample_ids in clusters.items():
+        parts = neuron_key.split('_')
+        ni, nj = int(parts[0]), int(parts[1])
+        for sid in sample_ids:
+            row_idx = id_to_row.get(sid, id_to_row.get(str(sid)))
+            if row_idx is not None and 0 <= row_idx < n:
+                bmu_coords[row_idx] = [ni, nj]
+                found += 1
+
+    if found < n * 0.9:
+        return {}
+
+    # Cap at 2000 samples for O(N²) feasibility
+    if n > 2000:
+        rng = np.random.default_rng(42)
+        idx = rng.choice(n, 2000, replace=False)
+        X          = X[idx]
+        bmu_coords = bmu_coords[idx]
+        n = 2000
+
+    from scipy.spatial.distance import cdist as _cdist
+    data_dist = _cdist(X,          X,          'euclidean')  # (n, n)
+    map_dist  = _cdist(bmu_coords, bmu_coords, 'euclidean')  # (n, n)
+
+    # Rank matrices: rank 0 = self, rank 1 = nearest neighbor
+    data_rank = np.argsort(np.argsort(data_dist, axis=1), axis=1)
+    map_rank  = np.argsort(np.argsort(map_dist,  axis=1), axis=1)
+
+    results = {}
+    for k in k_values:
+        if k >= n:
+            continue
+        norm = 2.0 / (n * k * (2 * n - 3 * k - 1))
+
+        # T(k): map-k neighbors that are NOT data-k neighbors
+        in_map_k      = (map_rank  > 0) & (map_rank  <= k)
+        not_in_data_k = data_rank > k
+        t_sum = float(np.sum((data_rank - k) * (in_map_k & not_in_data_k)))
+
+        # C(k): data-k neighbors that are NOT map-k neighbors
+        in_data_k    = (data_rank > 0) & (data_rank <= k)
+        not_in_map_k = map_rank > k
+        c_sum = float(np.sum((map_rank - k) * (in_data_k & not_in_map_k)))
+
+        results[k] = {
+            'trustworthiness': round(1.0 - norm * t_sum, 4),
+            'continuity':      round(1.0 - norm * c_sum, 4),
+        }
+
+    return results
+
+
+# ─── Silhouette score ─────────────────────────────────────────────────────────
+
+def compute_silhouette(data: dict, n_max: int = 2000) -> dict:
+    """
+    Per-neuron and global mean silhouette score.
+    s(i) = (b - a) / max(a, b), range [-1, 1], 1 = perfectly separated.
+    Singleton neurons (1 sample) are excluded from global mean because
+    sklearn sets a(i)=0 for singletons, which inflates their score to 1.0.
+    Returns {'global': float, 'per_neuron': {neuron_key: float}} or {}.
+    """
+    X = data.get('training_data')
+    if X is None or X.ndim != 2:
+        return {}
+
+    clusters  = data.get('clusters', {})
+    id_to_row = data.get('id_to_row', {})
+    n         = X.shape[0]
+
+    neuron_keys = list(clusters.keys())
+    if len(neuron_keys) < 2:
+        return {}
+
+    key_to_label = {k: i for i, k in enumerate(neuron_keys)}
+
+    labels = np.full(n, -1, dtype=np.int32)
+    for neuron_key, sample_ids in clusters.items():
+        label = key_to_label[neuron_key]
+        for sid in sample_ids:
+            row_idx = id_to_row.get(sid, id_to_row.get(str(sid)))
+            if row_idx is not None and 0 <= row_idx < n:
+                labels[row_idx] = label
+
+    valid_mask = labels >= 0
+    X_v      = X[valid_mask]
+    labels_v = labels[valid_mask]
+
+    if len(X_v) < 4 or len(np.unique(labels_v)) < 2:
+        return {}
+
+    if len(X_v) > n_max:
+        rng = np.random.default_rng(42)
+        idx  = rng.choice(len(X_v), n_max, replace=False)
+        X_v      = X_v[idx]
+        labels_v = labels_v[idx]
+
+    try:
+        from sklearn.metrics import silhouette_samples
+        scores = silhouette_samples(X_v, labels_v)
+    except Exception:
+        return {}
+
+    # Labels with exactly 1 sample (after possible subsampling)
+    uniq, counts = np.unique(labels_v, return_counts=True)
+    singleton_labels = set(uniq[counts == 1].tolist())
+
+    per_neuron: dict = {}
+    non_singleton_scores: list = []
+    for neuron_key, label in key_to_label.items():
+        mask = labels_v == label
+        if not mask.any():
+            continue
+        neuron_scores = scores[mask]
+        per_neuron[neuron_key] = round(float(neuron_scores.mean()), 4)
+        if label not in singleton_labels:
+            non_singleton_scores.extend(neuron_scores.tolist())
+
+    global_mean = (round(float(np.mean(non_singleton_scores)), 4)
+                   if non_singleton_scores else None)
+    return {'global': global_mean, 'per_neuron': per_neuron}
+
+
 # ─── Map topology ─────────────────────────────────────────────────────────────
 
 def compute_topology(data: dict) -> dict:

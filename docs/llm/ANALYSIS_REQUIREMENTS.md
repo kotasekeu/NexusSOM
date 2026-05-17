@@ -1,8 +1,8 @@
 # Požadavky na analýzu výsledků SOM
 
-**Verze**: 2.1  
-**Aktualizováno**: 2026-05-13  
-**Komponenta**: `app/analysis/` (`loader.py`, `stats.py`, `anomalies.py`, `context.py`)
+**Verze**: 2.2  
+**Aktualizováno**: 2026-05-17  
+**Komponenta**: `app/analysis/` (`loader.py`, `stats.py`, `anomalies.py`, `context.py`), `app/som/analysis.py`
 
 Tento dokument popisuje všechny analytické výpočty, které je možné provést na výstupech
 SOM tréninku (clusterovaný dataset). Cílem je sestavit co nejbohatší `llm_context.json`
@@ -27,6 +27,9 @@ tak, aby LLM dokázal podat smysluplnou, statisticky podloženou analýzu dat.
 | Cluster — rozšířené | B6 | Entropie kategorií per neuron (homogenita) | ❌ |
 | Cluster — rozšířené | B7 | Počet vzorků s každou hodnotou per kategorický sloupec | ✅ |
 | Cluster — rozšířené | B8 | Odchylka clusteru od globálního průměru (Z-score) | ✅ |
+| Cluster — rozšířené | B9 | Feature importance rank — top 5 dimenzí per cluster dle \|Z-score\| | ✅ |
+| Cluster — zdraví | B10 | Silhouette score per cluster — separace od sousedních clusterů | ✅ |
+| Přiřazení vzorků | B11 | Sample assignment CSV — sample_id → neuron, QE, is_outlier | ✅ |
 | Anomálie — globální | C1 | Globální min/max (všechny výskyty) | ✅ |
 | Anomálie — globální | C2 | Globální outliers >k·σ od průměru | ✅ |
 | Anomálie — globální | C3 | IQR-based outliers (robustní vůči extrémům) | ❌ |
@@ -43,8 +46,9 @@ tak, aby LLM dokázal podat smysluplnou, statisticky podloženou analýzu dat.
 | Mapa — prostorová | D6 | Moran's I per feature — prostorová autokorelace | 🔄 plánováno |
 | Mapa — prostorová | D7 | Lokální extrémy per feature — vrcholy a údolí váhové matice | 🔄 plánováno |
 | Mapa — prostorová | D8 | Hranice clusterů — Sobel na dominant_category matici | 🔄 plánováno |
+| Mapa — kvalita projekce | D9 | Trustworthiness & Continuity (Venna & Kaski, 2001) | ✅ |
 | Cluster — zdraví | E1 | Kompaktnost clusteru (intra-cluster variance) | ❌ |
-| Cluster — zdraví | E2 | Separace clusterů (inter-cluster vzdálenosti) | ❌ |
+| Cluster — zdraví | E2 | Globální silhouette — celková separace clusterů | ✅ |
 | Cluster — zdraví | E3 | Cluster health score — kombinovaná metrika | ❌ |
 
 ---
@@ -148,6 +152,50 @@ tak, aby LLM dokázal podat smysluplnou, statisticky podloženou analýzu dat.
 
 ---
 
+### B9 ✅ Feature importance rank per cluster
+`context._serialize_clusters` — seřadí `global_deviation` dle `|Z-score|` sestupně, top 5.
+
+```json
+{
+  "top_features": [
+    { "feature": "AGE",     "z_score":  1.842, "direction": "high" },
+    { "feature": "SMOKING", "z_score": -1.210, "direction": "low"  }
+  ]
+}
+```
+
+LLM kontext: `Key features: AGE=62.6(z=+1.84), SMOKING=1.1(z=-1.21)`
+
+---
+
+### B10 ✅ Silhouette score per cluster
+`stats.compute_silhouette` → `context.build_llm_context` — průměr per-sample silhouette per neuron.
+
+```json
+{ "silhouette": 0.423 }
+```
+
+`s(i) = (b − a) / max(a, b)` kde `a` = průměrná intra-cluster vzdálenost, `b` = průměrná vzdálenost k nejbližšímu jinému clusteru.
+
+**Interpretace:** >0.5 = čistě separovaný, ~0 = na hranici, <0 = v nesprávném clusteru.
+Singletonové neurony jsou vynechány z globálního průměru (jejich `a=0` influje skóre).
+
+---
+
+### B11 ✅ Sample assignment CSV
+`analysis._save_sample_assignments` — per-vzorek CSV soubor uložený do `csv/sample_assignments.csv`.
+
+```
+sample_id, bmu_i, bmu_j, bmu_key, qe,       is_outlier
+P001,       3,     2,     3_2,    0.142531,   0
+P007,       1,     5,     1_5,    0.891203,   1
+```
+
+`qe` = euklidovská vzdálenost vzorku k váhovému vektoru jeho BMU (ne průměr neuronu).
+`is_outlier` = 1 pokud sample_id je v `extremes.json`.
+
+---
+
 ## C — Detekce anomálií
 
 ### C1 ✅ Globální extrémy
@@ -230,6 +278,7 @@ boundary_score = d1 / d2  # blízko 1.0 = hraniční
 
 ### D2 ✅ Hustota obsazení
 `stats.compute_topology`:
+
 - `coverage_ratio` — podíl aktivních neuronů
 - `density_gini` — Gini koeficient distribuce vzorků po neuronech
 - `max_cluster_size`, `min_cluster_size`, `median_cluster_size`
@@ -340,6 +389,25 @@ boundary_map = np.abs(convolve(cat_map_int, sobel_x)) + np.abs(convolve(cat_map_
 
 ---
 
+### D9 ✅ Trustworthiness & Continuity
+`stats.compute_tc` — standardní metriky kvality topologické projekce (Venna & Kaski, 2001).
+
+```json
+{
+  "trustworthiness_continuity": {
+    "5":  { "trustworthiness": 0.952, "continuity": 0.751 },
+    "10": { "trustworthiness": 0.940, "continuity": 0.719 },
+    "20": { "trustworthiness": 0.928, "continuity": 0.685 }
+  }
+}
+```
+
+**T(k):** Jsou sousedé v mapě skutečnými sousedy v datech? → detekuje falešné sousedy.
+**C(k):** Jsou sousedé v datech zachováni v mapě? → detekuje přetrhané sousedství.
+Typicky T > C pro SOM. Cap 2000 vzorků (O(N²) algoritmus).
+
+---
+
 ### D3 ❌ Konzistence sousedů
 
 **Co detekuje:** Průměrná vzdálenost váhových vektorů sousedních neuronů (základ U-matrix).
@@ -361,9 +429,14 @@ boundary_map = np.abs(convolve(cat_map_int, sobel_x)) + np.abs(convolve(cat_map_
 Průměrná vzdálenost vzorků od centroidu neuronu v původním prostoru. Odpovídá QE,
 ale v nenormalizovaném prostoru.
 
-### E2 ❌ Separace clusterů
+### E2 ✅ Globální silhouette — separace clusterů
+`stats.compute_silhouette` — globální průměr silhouette score (bez singletonů).
 
-Průměrná vzdálenost váhových vektorů sousedních neuronů.
+```json
+{ "map": { "silhouette": -0.049 } }
+```
+
+Výsledky per cluster viz B10. Globální hodnota jde do `map` klíče v `llm_context.json`.
 
 ### E3 ❌ Cluster health score
 
@@ -388,7 +461,17 @@ Tyto metriky nahrazují CNN a vstupují do tří modulů najednou: `app/analysis
 
 `spatial_quality_score = f(D4, D5, D6, D8)` — kompozitní skóre pro EA a LSTM.
 
-### Priorita 2 — klíčové pro lepší LLM report
+### Implementováno v 2.2 (2026-05-17)
+
+| ID | Co bylo přidáno | Modul |
+|---|---|---|
+| **B9** | Feature importance rank — top_features dle \|Z-score\| | `context.py` |
+| **B10** | Silhouette score per cluster | `stats.py`, `context.py` |
+| **B11** | Sample assignment CSV (sample_id → neuron, QE, is_outlier) | `analysis.py` (SOM) |
+| **D9** | Trustworthiness & Continuity (k=5,10,20) | `stats.py` |
+| **E2** | Globální silhouette (map-level, bez singletonů) | `stats.py`, `context.py` |
+
+### Priorita 1 — klíčové pro lepší LLM report
 
 | ID | Co přidat | Modul |
 |---|---|---|
@@ -397,12 +480,22 @@ Tyto metriky nahrazují CNN a vstupují do tří modulů najednou: `app/analysis
 | **B6** | Entropie kategorií per cluster | `stats.py` |
 | **C3** | IQR-based outliers (Tukey) | `anomalies.py` |
 
+### Priorita 2 — prostorové metriky (přínos pro EA + LLM + LSTM)
+
+| ID | Co přidat | Modul | Přínos |
+|---|---|---|---|
+| **D4** | Prostorové gradienty per feature (`np.gradient`) | `stats.py` | EA cíl + LLM |
+| **D5** | Regionální shrnutí flood-fill | `stats.py` | EA cíl + LLM (nejvyšší) |
+| **D6** | Moran's I per feature | `stats.py` | EA cíl + LSTM reward |
+| **D7** | Lokální extrémy per feature | `stats.py` | LLM interpretace |
+| **D8** | Hranice clusterů (Sobel) | `stats.py` | EA cíl |
+
 ### Priorita 3 — pokročilá topologická analýza
 
 | ID | Co přidat | Modul |
 |---|---|---|
 | **D3** | Konzistence sousedů (U-matrix numericky) | `stats.py` |
-| **E1–E3** | Cluster health score | `stats.py` |
+| **E1, E3** | Kompaktnost + cluster health score | `stats.py` |
 
 ### Priorita 4 — pokročilé vztahy
 

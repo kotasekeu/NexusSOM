@@ -14,16 +14,21 @@ Structure your report as follows:
 Brief overview of what this dataset contains and how many samples were analyzed.
 
 ## Map Quality
-Assessment of the SOM map quality based on MQE, topographic error, and dead neurons.
+Assessment of SOM map quality. Cover:
+- MQE and topographic error (projection accuracy)
+- Dead neuron ratio (coverage)
+- Trustworthiness and Continuity if provided (T=how reliably map neighbors are true neighbors; C=how well data neighbors are preserved)
+- Global silhouette if provided (cluster separation: >0.5 good, near 0 overlapping, <0 wrong assignment)
 
 ## Key Findings
 The most important patterns discovered — what groups exist in the data, how they differ, and what this means in domain terms.
 
 ## Cluster Analysis
-For each major cluster (non-trivial size), describe:
+For each major cluster (top clusters by sample count), describe:
 - What samples it contains (using domain terminology)
-- Key characteristics (dimension averages in domain context)
-- How it differs from other clusters
+- The key distinguishing features: use "Key features" Z-scores to identify what makes this cluster different from the dataset average (positive Z = above average, negative Z = below average)
+- Silhouette score if provided (how well-separated this cluster is)
+- How it differs from neighboring clusters
 
 ## Anomalies
 Notable outlier samples — what makes them unusual and what this might mean.

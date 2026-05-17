@@ -72,10 +72,26 @@ def _get_bmu_assignments(som: KohonenSOM, normalized_data: np.ndarray, original_
     df_assigned['bmu_i'] = bmu_coords_i
     df_assigned['bmu_j'] = bmu_coords_j
     df_assigned['bmu_key'] = [f"{i}_{j}" for i, j in zip(bmu_coords_i, bmu_coords_j)]
+    df_assigned['qe'] = dists[np.arange(len(dists)), bmu_flat_indices]
 
     clusters = df_assigned.groupby('bmu_key')[primary_id_col].apply(list).to_dict()
 
     return df_assigned, clusters
+
+
+def _save_sample_assignments(df_assigned: pd.DataFrame, extremes: dict,
+                              primary_id_col: str, working_dir: str):
+    csv_dir = os.path.join(working_dir, 'csv')
+    os.makedirs(csv_dir, exist_ok=True)
+
+    out = df_assigned[[primary_id_col, 'bmu_i', 'bmu_j', 'bmu_key', 'qe']].copy()
+    out['is_outlier'] = out[primary_id_col].isin(extremes).astype(int)
+    out = out.rename(columns={primary_id_col: 'sample_id'})
+    out = out.sort_values('sample_id').reset_index(drop=True)
+
+    path = os.path.join(csv_dir, 'sample_assignments.csv')
+    out.to_csv(path, index=False, float_format='%.6f')
+    print(f"INFO: Sample assignments saved to '{path}' ({len(out)} rows)")
 
 def _detect_extremes(df_assigned: pd.DataFrame, numerical_cols: list, primary_id_col: str,
                      std_threshold: float) -> dict:
@@ -169,6 +185,8 @@ def perform_analysis(som: KohonenSOM, original_df: pd.DataFrame, normalized_data
     with open(extremes_path, 'w', encoding='utf-8') as f:
         json.dump(extremes_data, f, indent=2, ensure_ascii=False)
     print(f"INFO: Extremes analysis saved to '{extremes_path}'")
+
+    _save_sample_assignments(df_assigned, extremes_data, primary_id_col, working_dir)
 
     categorical_cols = config.get('categorical_column', [])
     if categorical_cols:

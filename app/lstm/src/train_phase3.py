@@ -69,9 +69,9 @@ def load_splits(data_dir: str):
     ctx_val   = scaler.transform(ctx_val)
     ctx_test  = scaler.transform(ctx_test)
 
-    return (X_train, ctx_train, y_train, adv_train,
-            X_val,   ctx_val,   y_val,   adv_val,
-            X_test,  ctx_test,  y_test,  adv_test,
+    return (X_train, ctx_train, y_train, adv_train, msk_train,
+            X_val,   ctx_val,   y_val,   adv_val,   msk_val,
+            X_test,  ctx_test,  y_test,  adv_test,  msk_test,
             scaler, meta)
 
 
@@ -85,9 +85,9 @@ def train(data_dir: str, epochs: int, batch_size: int, learning_rate: float):
     np.random.seed(42)
     tf.random.set_seed(42)
 
-    (X_train, ctx_train, y_train, adv_train,
-     X_val,   ctx_val,   y_val,   adv_val,
-     X_test,  ctx_test,  y_test,  adv_test,
+    (X_train, ctx_train, y_train, adv_train, msk_train,
+     X_val,   ctx_val,   y_val,   adv_val,   msk_val,
+     X_test,  ctx_test,  y_test,  adv_test,  msk_test,
      scaler, meta) = load_splits(data_dir)
 
     context_dim = ctx_train.shape[1]
@@ -145,16 +145,17 @@ def train(data_dir: str, epochs: int, batch_size: int, learning_rate: float):
     for name, val in zip(history_keys, test_results):
         print(f'  {name}: {val:.6f}')
 
-    print('\nSample predictions (first 5 test sequences, last checkpoint):')
+    print('\nSample predictions (first 5 test sequences, last perturbed checkpoint):')
     y_pred = model.predict(
         {'sequence': X_test[:5], 'context': ctx_test[:5]}, verbose=0)
     for i in range(min(5, len(y_pred))):
-        last = -1  # last valid checkpoint
+        active = np.argwhere(msk_test[i] > 0.0)
+        last = int(active[-1, 0]) if len(active) > 0 else -1
         act = y_pred[i, last]
         tgt = y_test[i, last]
         print(f'  [{i}] predicted (lr_f={act[0]:.3f}, rad_f={act[1]:.3f})  '
               f'target ({tgt[0]:.3f}, {tgt[1]:.3f})  '
-              f'adv={adv_test[i]:.3f}')
+              f'adv={adv_test[i]:.3f}  t={last}')
 
     model.save(f'models/{run_name}_final.keras')
     joblib.dump(scaler, f'models/{run_name}_scaler.pkl')

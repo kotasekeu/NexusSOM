@@ -134,6 +134,18 @@ def _format_context(context_data, dataset_description, max_clusters, max_anomali
         sections.append(f"Mean Quantization Error (MQE): {m['mqe']:.4f}")
         te = m.get('topographic_error')
         sections.append(f"Topographic Error: {te:.4f}" if te is not None else "Topographic Error: N/A")
+        sil = m.get('silhouette')
+        if sil is not None:
+            sections.append(f"Silhouette (cluster separation): {sil:.4f}  [>0.5 good, ~0 overlapping, <0 misassigned]")
+        tc = m.get('trustworthiness_continuity', {})
+        if tc:
+            for k_str in ('5', '10', '20'):
+                kv = tc.get(k_str) or tc.get(int(k_str))
+                if kv:
+                    sections.append(
+                        f"T&C k={k_str}: Trustworthiness={kv['trustworthiness']:.4f}  "
+                        f"Continuity={kv['continuity']:.4f}"
+                    )
 
     # Section 3: Clusters
     if "clusters" in context_data:
@@ -147,9 +159,21 @@ def _format_context(context_data, dataset_description, max_clusters, max_anomali
             if "purity" in c:
                 purities = ", ".join(f"{k}={v:.0%}" for k, v in c["purity"].items())
                 line += f", purity: {purities}"
+            if "silhouette" in c:
+                line += f", sil={c['silhouette']:.3f}"
             sections.append(line)
 
-            if "dimension_means" in c:
+            if "top_features" in c and c["top_features"]:
+                dim_stats = c.get("dimension_stats", {})
+                parts = []
+                for f in c["top_features"]:
+                    feat = f["feature"]
+                    z    = f["z_score"]
+                    mean = (dim_stats.get(feat) or {}).get("mean")
+                    mean_str = f"={mean:.2f}" if mean is not None else ""
+                    parts.append(f"{feat}{mean_str}(z={z:+.2f})")
+                sections.append(f"  Key features: {', '.join(parts)}")
+            elif "dimension_means" in c:
                 dims = ", ".join(f"{k}={v:.2f}" for k, v in c["dimension_means"].items())
                 sections.append(f"  Averages: {dims}")
 

@@ -8,7 +8,8 @@ import os
 import pandas as pd
 
 from .loader import load_results
-from .stats import compute_global_stats, compute_cluster_stats, compute_topology
+from .stats import (compute_global_stats, compute_cluster_stats, compute_topology,
+                    compute_tc, compute_silhouette)
 from .anomalies import detect_anomalies
 
 
@@ -20,7 +21,17 @@ def build_llm_context(results_dir: str) -> dict:
     data         = load_results(results_dir)
     global_stats = compute_global_stats(data)
     topology     = compute_topology(data)
+    tc           = compute_tc(data)
+    if tc:
+        topology['trustworthiness_continuity'] = tc
+    silhouette   = compute_silhouette(data)
+    if silhouette.get('global') is not None:
+        topology['silhouette'] = silhouette['global']
     clusters     = compute_cluster_stats(data, global_stats)
+    sil_per_n    = silhouette.get('per_neuron', {})
+    for c in clusters:
+        if c['neuron'] in sil_per_n:
+            c['silhouette'] = sil_per_n[c['neuron']]
     anomalies    = detect_anomalies(data, global_stats, clusters)
     anomaly_records = _build_anomaly_records(
         data, anomalies.get('top_anomalies', []), global_stats)
@@ -176,6 +187,8 @@ def _serialize_clusters(clusters: list) -> list:
             entry['dominant_category'] = c['dominant_category']
         if 'purity' in c:
             entry['purity'] = c['purity']
+        if 'silhouette' in c:
+            entry['silhouette'] = c['silhouette']
         if 'dimension_stats' in c:
             entry['dimension_stats'] = c['dimension_stats']
             # Flat means alias for context_builder.py compatibility
@@ -184,6 +197,13 @@ def _serialize_clusters(clusters: list) -> list:
             }
         if 'global_deviation' in c:
             entry['global_deviation'] = c['global_deviation']
+            sorted_feats = sorted(c['global_deviation'].items(),
+                                  key=lambda x: abs(x[1]), reverse=True)
+            entry['top_features'] = [
+                {'feature': col, 'z_score': z,
+                 'direction': 'high' if z > 0 else 'low'}
+                for col, z in sorted_feats[:5]
+            ]
         result.append(entry)
     return result
 

@@ -355,9 +355,12 @@ def load_test_data_p3(data_dir=DATA_DIR_P3):
     y_test   = np.load(os.path.join(data_dir, 'y_test.npy'),   allow_pickle=True)
     ctx_test = np.load(os.path.join(data_dir, 'ctx_test.npy'), allow_pickle=True)
     adv_test = np.load(os.path.join(data_dir, 'adv_test.npy'), allow_pickle=True)
+    msk_path = os.path.join(data_dir, 'msk_test.npy')
+    msk_test = (np.load(msk_path) if os.path.exists(msk_path)
+                else np.ones((len(X_test), X_test.shape[1]), np.float32))
     with open(os.path.join(data_dir, 'metadata_p3.json'), encoding='utf-8') as f:
         meta = json.load(f)
-    return X_test, y_test, ctx_test, adv_test, meta
+    return X_test, y_test, ctx_test, adv_test, msk_test, meta
 
 
 def run_predictions_p3(model, scaler, X_test, ctx_test):
@@ -371,15 +374,29 @@ def run_predictions_p3(model, scaler, X_test, ctx_test):
     return preds   # list of (T, 2)
 
 
-def plot_scatter_p3(y_test, y_pred_list, out_dir, label):
-    """Scatter: predicted vs actual lr_factor and radius_factor (flattened across all timesteps)."""
+def _flatten_perturbed(y_test, y_pred_list, msk_test, action_idx):
+    """Flatten only perturbed (mask=1) timesteps across all trajectories."""
+    actual_parts, pred_parts = [], []
+    for j in range(len(y_test)):
+        m = msk_test[j].astype(bool)
+        actual_parts.append(y_test[j][m, action_idx])
+        pred_parts.append(y_pred_list[j][m, action_idx])
+    actual = np.concatenate(actual_parts) if actual_parts else np.array([])
+    pred   = np.concatenate(pred_parts)   if pred_parts   else np.array([])
+    return actual, pred
+
+
+def plot_scatter_p3(y_test, y_pred_list, msk_test, out_dir, label):
+    """Scatter: predicted vs actual lr_factor and radius_factor (perturbed timesteps only)."""
     action_names = ['lr_factor', 'radius_factor']
     colors_p3    = ['#2196F3', '#FF5722']
 
+    n_perturbed = sum(msk_test[j].sum() for j in range(len(msk_test)))
+    print(f'  Scatter: {n_perturbed:.0f} perturbed timesteps across {len(y_test)} trajectories')
+
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
     for i, (name, color) in enumerate(zip(action_names, colors_p3)):
-        actual = np.concatenate([y_test[j][:, i] for j in range(len(y_test))])
-        pred   = np.concatenate([y_pred_list[j][:, i] for j in range(len(y_pred_list))])
+        actual, pred = _flatten_perturbed(y_test, y_pred_list, msk_test, i)
         ax = axes[i]
         lo, hi = min(actual.min(), pred.min()), max(actual.max(), pred.max())
         m = (hi - lo) * 0.05
@@ -395,7 +412,8 @@ def plot_scatter_p3(y_test, y_pred_list, out_dir, label):
         ax.set_ylim(lo - m, hi + m)
         ax.set_aspect('equal')
 
-    fig.suptitle(f'Controller Predictions — {label}', fontsize=13, y=1.01)
+    fig.suptitle(f'Controller Predictions (perturbed timesteps only) — {label}',
+                 fontsize=13, y=1.01)
     fig.tight_layout()
     path = os.path.join(out_dir, 'scatter_p3.png')
     fig.savefig(path, dpi=150, bbox_inches='tight')
@@ -403,14 +421,13 @@ def plot_scatter_p3(y_test, y_pred_list, out_dir, label):
     print(f'  Saved: {path}')
 
 
-def plot_residuals_p3(y_test, y_pred_list, out_dir, label):
+def plot_residuals_p3(y_test, y_pred_list, msk_test, out_dir, label):
     action_names = ['lr_factor', 'radius_factor']
     colors_p3    = ['#2196F3', '#FF5722']
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 4))
     for i, (name, color) in enumerate(zip(action_names, colors_p3)):
-        actual = np.concatenate([y_test[j][:, i] for j in range(len(y_test))])
-        pred   = np.concatenate([y_pred_list[j][:, i] for j in range(len(y_pred_list))])
+        actual, pred = _flatten_perturbed(y_test, y_pred_list, msk_test, i)
         res    = pred - actual
         ax = axes[i]
         ax.hist(res, bins=40, color=color, alpha=0.7, edgecolor='white')
@@ -421,7 +438,8 @@ def plot_residuals_p3(y_test, y_pred_list, out_dir, label):
         ax.set_title(f'{name}\nstd={res.std():.4f}')
         ax.legend(fontsize=8)
 
-    fig.suptitle(f'Residual Distribution — {label}', fontsize=13, y=1.01)
+    fig.suptitle(f'Residual Distribution (perturbed timesteps only) — {label}',
+                 fontsize=13, y=1.01)
     fig.tight_layout()
     path = os.path.join(out_dir, 'residuals_p3.png')
     fig.savefig(path, dpi=150, bbox_inches='tight')
@@ -429,16 +447,20 @@ def plot_residuals_p3(y_test, y_pred_list, out_dir, label):
     print(f'  Saved: {path}')
 
 
-def plot_advantage_p3(y_test, y_pred_list, adv_test, out_dir, label):
+def plot_advantage_p3(y_test, y_pred_list, msk_test, adv_test, out_dir, label):
     """MAE per action broken down by advantage quartile."""
     action_names = ['lr_factor', 'radius_factor']
     colors_p3    = ['#2196F3', '#FF5722']
 
-    # Compute per-trajectory MAE
-    traj_mae = np.array([
-        np.abs(y_test[j] - y_pred_list[j]).mean(axis=0)   # (2,)
-        for j in range(len(y_test))
-    ])   # (N, 2)
+    # Compute per-trajectory MAE on perturbed timesteps only
+    traj_mae = []
+    for j in range(len(y_test)):
+        m = msk_test[j].astype(bool)
+        if m.sum() > 0:
+            traj_mae.append(np.abs(y_test[j][m] - y_pred_list[j][m]).mean(axis=0))
+        else:
+            traj_mae.append(np.zeros(2, dtype=np.float32))
+    traj_mae = np.array(traj_mae)   # (N, 2)
 
     quartiles   = np.percentile(adv_test, [0, 25, 50, 75, 100])
     q_labels    = ['Q1\n(0–25%)', 'Q2\n(25–50%)', 'Q3\n(50–75%)', 'Q4\n(75–100%)']
@@ -476,7 +498,12 @@ def plot_advantage_p3(y_test, y_pred_list, adv_test, out_dir, label):
 def run_single_p3(model_path, scaler_path, label, out_dir):
     print(f'\nLoading Phase 3 controller: {model_path}')
     model, scaler = load_model_and_scaler(model_path, scaler_path)
-    X_test, y_test, ctx_test, adv_test, meta = load_test_data_p3()
+    X_test, y_test, ctx_test, adv_test, msk_test, meta = load_test_data_p3()
+
+    n_perturbed = int(msk_test.sum())
+    n_total     = msk_test.size
+    print(f'Test set: {len(X_test)} trajectories, '
+          f'{n_perturbed}/{n_total} perturbed timesteps ({n_perturbed/n_total*100:.0f}%)')
 
     print(f'Running predictions on {len(X_test)} test trajectories...')
     y_pred_list = run_predictions_p3(model, scaler, X_test, ctx_test)
@@ -484,9 +511,9 @@ def run_single_p3(model_path, scaler_path, label, out_dir):
     os.makedirs(out_dir, exist_ok=True)
     print(f'Generating plots → {out_dir}/')
 
-    plot_scatter_p3(y_test, y_pred_list, out_dir, label)
-    plot_residuals_p3(y_test, y_pred_list, out_dir, label)
-    plot_advantage_p3(y_test, y_pred_list, adv_test, out_dir, label)
+    plot_scatter_p3(y_test, y_pred_list, msk_test, out_dir, label)
+    plot_residuals_p3(y_test, y_pred_list, msk_test, out_dir, label)
+    plot_advantage_p3(y_test, y_pred_list, msk_test, adv_test, out_dir, label)
 
 
 # ── main ──────────────────────────────────────────────────────────────────────

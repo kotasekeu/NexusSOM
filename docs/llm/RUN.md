@@ -36,12 +36,22 @@ ollama pull llama3.1:8b
 ### 3. Hotový SOM běh
 
 LLM čte z výstupního adresáře SOM (`json/llm_context.json`). Ten se generuje
-automaticky po každém `run_som.py` běhu od verze 1.0.
+automaticky po každém `run_som.py` nebo EA běhu.
 
-Pro starší výsledky bez `llm_context.json` — vygenerovat ručně:
+Pro regeneraci `llm_context.json` (např. po aktualizaci analytického modulu):
 ```bash
-python3 app/som/result_analyzer.py data/datasets/<Dataset>/results/<timestamp>
+.venv/bin/python3 -c "
+from app.analysis.src.context import save_llm_context
+save_llm_context('data/datasets/<Dataset>/results/<timestamp>')
+"
 ```
+
+`llm_context.json` obsahuje (od verze 2.2):
+- MQE, topographic error, dead neurons, Gini koeficient hustoty
+- Silhouette score (globální + per cluster)
+- Trustworthiness & Continuity pro k=5, 10, 20
+- Per-cluster: dominantní kategorie, purity, feature importance (top 5 dle |Z-score|)
+- Anomálie s plnými hodnotami dimenzí a delta anotacemi
 
 ---
 
@@ -184,7 +194,9 @@ Zdrojový text z `ABOUT.MD` datasetu slouží jako základ pro tento soubor.
 ```
 data/datasets/LungCancerDataset/results/<timestamp>/
 ├── json/
-│   └── llm_context.json          ← vstup pro LLM (generuje result_analyzer)
+│   └── llm_context.json          ← vstup pro LLM (generuje analysis/context.py)
+├── csv/
+│   └── sample_assignments.csv    ← sample_id → neuron, QE, is_outlier (per vzorek)
 └── llm/
     ├── report.md                  ← výsledná zpráva (report mode)
     └── prompt_log.json            ← použitý prompt + metadata
