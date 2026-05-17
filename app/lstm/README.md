@@ -1,414 +1,305 @@
-# LSTM - "The Oracle"
+# LSTM — Early Stopping + Dynamic Schedule Controller
 
-**Training Progress Predictor**
+Dva oddělené LSTM modely pro optimalizaci SOM tréninku:
 
-LSTM network that predicts final SOM quality from early training progress, enabling intelligent early stopping.
+| Model | Fáze | Účel | Soubor |
+|---|---|---|---|
+| **Early stopping** | Phase 2 | Z prefixu sekvence predikuje finální kvalitu SOM → zastaví špatné běhy | `lstm_latest.keras` |
+| **Controller** | Phase 3 | Per-checkpoint predikuje `(lr_factor, radius_factor)` → dynamicky ohýbá decay křivky | `lstm_controller_latest.keras` |
 
-## Overview
-
-The Oracle analyzes time-series training metrics and predicts final quality:
-- **MQE trajectory** → Final MQE
-- **Topographic error progression** → Final topology quality
-- **Dead neuron evolution** → Final dead neuron ratio
-
-This enables terminating bad training runs early, saving 50-90% of training time.
+Detailní teorie: [docs/lstm/LSTM_DYNAMIC_CONTROL.md](../../docs/lstm/LSTM_DYNAMIC_CONTROL.md)  
+Analýza vizualizací a známé problémy: [docs/lstm/LSTM_MODEL_ANALYSIS.md](../../docs/lstm/LSTM_MODEL_ANALYSIS.md)  
+Phase 3 data generation: [docs/lstm/PHASE3_DATA_GENERATION.md](../../docs/lstm/PHASE3_DATA_GENERATION.md)
 
 ---
 
-## Quick Start
-
-### 1. Collect Training Data
-
-**NOTE:** This proof-of-concept uses simulated data. For production, modify SOM training code to log intermediate metrics.
-
-```bash
-cd /Users/tomas/OSU/Python/NexusSom/app
-
-# Collect from single EA run
-python3 lstm/collect_training_data.py --results_dir ./test/results/20260112_140511
-
-# Custom checkpoints
-python3 lstm/collect_training_data.py \
-    --results_dir ./test/results/20260112_140511 \
-    --output ./lstm/data/dataset.csv \
-    --checkpoints 20
-```
-
-### 2. Train Model
-
-```bash
-cd lstm
-
-# Standard LSTM
-python3 src/train.py --dataset data/dataset.csv --epochs 100
-
-# Bidirectional LSTM (better accuracy)
-python3 src/train.py --dataset data/dataset.csv --model bidirectional --epochs 100
-
-# Lightweight LSTM (faster inference)
-python3 src/train.py --dataset data/dataset.csv --model lite --epochs 100
-```
-
-### 3. Evaluate Model
-
-```bash
-# Evaluate on test sequences
-python3 evaluate_model.py \
-    --model models/lstm_oracle_standard_20260112_220000_best.keras \
-    --dataset data/dataset.csv
-
-# Predict from partial sequence (early stopping)
-python3 evaluate_model.py \
-    --model models/lstm_oracle_standard_20260112_220000_best.keras \
-    --sequence path/to/partial_sequence.json
-```
-
----
-
-## Architecture
-
-### Standard LSTM
-```
-Input (sequence_length, 3)
-    ↓
-LSTM(128, return_sequences=True) + Dropout(0.3)
-    ↓
-LSTM(64, return_sequences=True) + Dropout(0.3)
-    ↓
-LSTM(32, return_sequences=False) + Dropout(0.2)
-    ↓
-Dense(32) + Dropout(0.2)
-    ↓
-Dense(16)
-    ↓
-Output (3: final_mqe, final_topo_error, final_dead_ratio)
-```
-
-**Total Parameters:** ~150K
-
-### Bidirectional LSTM
-```
-Input (sequence_length, 3)
-    ↓
-Bidirectional LSTM(64) + Dropout(0.3)
-    ↓
-Bidirectional LSTM(32) + Dropout(0.2)
-    ↓
-Dense(32) + Dropout(0.2)
-    ↓
-Output (3)
-```
-
-**Total Parameters:** ~80K
-**Advantage:** Processes sequences forward and backward for better context
-
-### Lightweight LSTM
-```
-Input (sequence_length, 3)
-    ↓
-LSTM(64, return_sequences=True) + Dropout(0.2)
-    ↓
-LSTM(32, return_sequences=False)
-    ↓
-Dense(16)
-    ↓
-Output (3)
-```
-
-**Total Parameters:** ~40K
-
----
-
-## Input Format
-
-Time-series sequences of training metrics at checkpoints:
-
-```json
-{
-  "epochs": [10, 50, 100, 200, 500, 1000],
-  "mqe": [0.5, 0.3, 0.2, 0.15, 0.12, 0.10],
-  "topographic_error": [0.1, 0.08, 0.06, 0.05, 0.04, 0.04],
-  "dead_neuron_ratio": [0.15, 0.12, 0.10, 0.08, 0.06, 0.05]
-}
-```
-
-**Shape:** `(sequence_length, 3)`
-- Sequence length = number of checkpoints
-- 3 features per checkpoint: mqe, topo_error, dead_ratio
-
----
-
-## Output Targets
-
-3 final quality metrics (what the training will achieve):
-
-1. **final_mqe** - Predicted final MQE
-2. **final_topographic_error** - Predicted final topology quality
-3. **final_dead_neuron_ratio** - Predicted final dead neurons
-
----
-
-## Files Structure
+## Adresářová struktura
 
 ```
-lstm/
-├── README.md                   # This file
-├── collect_training_data.py    # Data collection script
-├── evaluate_model.py           # Model evaluation script
+app/lstm/
+├── README.md                       # tento soubor
+├── prepare_dataset.py              # Phase 2: příprava trénovacích dat z EA výsledků
+├── prepare_phase3_dataset.py       # Phase 3: příprava dat z perturbačních trajektorií
+├── generate_phase3_data.py         # Phase 3: generování perturbačních běhů SOM
+├── visualize_model.py              # vizualizace obou modelů (--phase 2 / --phase 3)
+├── evaluate_model.py               # detailní evaluace Phase 2
+├── collect_training_data.py        # legacy — nepoužívat
 ├── src/
-│   ├── model.py               # Model architectures
-│   └── train.py               # Training script
-├── data/                      # Training data (generated)
-│   ├── dataset.csv
-│   └── dataset_metadata.json
-├── models/                    # Trained models (generated)
-│   ├── lstm_oracle_*_best.keras
-│   ├── lstm_oracle_*_final.keras
-│   └── lstm_oracle_*_metadata.json
-└── logs/                      # Training logs (generated)
-    └── lstm_oracle_*/
+│   ├── model.py                    # Phase 2 architektura (hybrid LSTM + context)
+│   ├── model_controller.py         # Phase 3 architektura (_TileContext, _ScaleSigmoid)
+│   ├── train.py                    # Phase 2 trénink
+│   └── train_phase3.py             # Phase 3 trénink
+├── data/
+│   ├── X_train.npy  y_train.npy    # Phase 2 trénovací data
+│   ├── ctx_train.npy               # Phase 2 dataset kontext
+│   ├── metadata.json               # Phase 2 metadata
+│   └── phase3/
+│       ├── trajectories.json       # surové perturbační trajektorie
+│       ├── X_train.npy  y_train.npy
+│       ├── ctx_train.npy  adv_train.npy
+│       └── metadata_p3.json
+└── models/
+    ├── lstm_latest.keras           # Phase 2 model
+    ├── lstm_scaler_latest.pkl      # Phase 2 scaler
+    ├── lstm_controller_latest.keras
+    └── lstm_controller_scaler_latest.pkl
 ```
 
 ---
 
-## Data Collection
+## Phase 2 — Early Stopping Predictor
 
-### Current: Simulated Data (Proof-of-Concept)
+### Co dělá
 
-The `collect_training_data.py` script simulates training histories based on final results.
+Dostane prvních K % MQE checkpointů SOM tréninku (K ∈ 20–70 %) a predikuje finální hodnoty:
+- `raw_mqe_improvement_ratio` — jak moc SOM zlepší MQE oproti počátku
+- `raw_topographic_error` — výsledná topologická chyba
+- `dead_neuron_ratio` — podíl neaktivních neuronů
 
-**Simulation approach:**
-- Start with high MQE, exponentially decay to final value
-- Add noise to topographic error progression
-- Model typical dead neuron evolution patterns
+Z predikcí se spočítá `quality_score = (1 − mqe_ratio) + te + dead×0.5`. Pokud překročí threshold → trénink se zastaví.
 
-**Limitations:**
-- Not real training dynamics
-- May not capture all failure modes
-- Good for testing, not production
+### Vstup / výstup modelu
 
-### Production: Real Training Logs
+```
+Vstup:
+  sequence:  (K, 6)   — progress, mqe_rel, topo_error, dead_ratio, lr_rel, radius_rel
+  context:   (1, 4)   — ds_n_samples, ds_n_active_dimensions, ds_n_numeric, ds_n_categorical
 
-To collect real data, modify SOM training code:
-
-```python
-# In som_trainer.py or equivalent
-def train_som(data, config):
-    som = SOM(config)
-
-    # Checkpoints to log
-    checkpoints = [10, 50, 100, 200, 500, 1000]
-    training_history = {'epochs': [], 'mqe': [], 'topo_error': [], 'dead_ratio': []}
-
-    for epoch in range(config['max_epochs']):
-        som.train_epoch(data)
-
-        if epoch in checkpoints:
-            # Log intermediate metrics
-            training_history['epochs'].append(epoch)
-            training_history['mqe'].append(calculate_mqe(som))
-            training_history['topo_error'].append(calculate_topo_error(som))
-            training_history['dead_ratio'].append(calculate_dead_ratio(som))
-
-    # Save training history to JSON
-    with open(f'training_logs/{uid}_history.json', 'w') as f:
-        json.dump(training_history, f)
-
-    return som
+Výstup:
+  (3,)  — predikce [mqe_improvement_ratio, topographic_error, dead_neuron_ratio]
 ```
 
----
-
-## Training
-
-The training script:
-
-1. Loads dataset with training sequences
-2. Parses JSON histories into numpy arrays
-3. Splits into train/val/test (70/15/15)
-4. Creates LSTM model
-5. Trains with callbacks:
-   - ModelCheckpoint (saves best)
-   - EarlyStopping (patience=20)
-   - ReduceLROnPlateau (patience=10)
-   - TensorBoard logging
-6. Evaluates on test sequences
-7. Saves model and metadata
-
-**Outputs:**
-- `models/lstm_oracle_*_best.keras` - Best model
-- `models/lstm_oracle_*_final.keras` - Final model
-- `models/lstm_oracle_*_metadata.json` - Model info
-- `logs/lstm_oracle_*/` - Training logs
-
----
-
-## Evaluation
-
-### Full Sequence Evaluation
-
-Tests on complete training sequences:
+### Pipeline přípravy dat
 
 ```bash
-python3 evaluate_model.py --model models/lstm_oracle_standard_*_best.keras --dataset data/dataset.csv
+# 1. Připrav trénovací data ze všech EA seedů a datasetů
+.venv/bin/python3 app/lstm/prepare_dataset.py \
+    --results_root data/datasets \
+    --output app/lstm/data
+
+# Výstup: data/X_train.npy, y_train.npy, ctx_train.npy (+ val, test), metadata.json
 ```
 
-**Metrics:**
-- MAE per target (mqe, topo_error, dead_ratio)
-- RMSE per target
-- Overall MAE/RMSE
+**Co skript dělá:**
+- Prochází `data/datasets/<DS>/results/<TS>/seed_*/` a sbírá `training_checkpoints.json`
+- Z každého běhu vytvoří K-prefix okna (K ∈ 20, 30, 40, 50, 60, 70 % délky sekvence)
+- Normalizuje sekvence (MQE/initial MQE, LR/initial LR, radius/initial radius)
+- Split 70/15/15 na úrovni UID (žádný leak mezi variantami stejného jedince)
 
-### Early Prediction (Real Use Case)
-
-Predicts final quality from partial sequence:
+### Trénink
 
 ```bash
-python3 evaluate_model.py --model models/lstm_oracle_standard_*_best.keras --sequence partial.json
+cd app/lstm
+../.venv/bin/python3 src/train.py
+# Model se uloží jako: models/lstm_latest.keras + models/lstm_scaler_latest.pkl
 ```
 
-**Example partial sequence (after 100 epochs):**
+### Vizualizace
+
+```bash
+cd app/lstm
+../.venv/bin/python3 visualize_model.py --phase 2
+# Výstup: visualizations/phase2/{scatter,residuals,prefix_accuracy,early_stopping}.png
+```
+
+**Interpretace grafů:**
+- `scatter.png` — `r ≈ 0.97` pro MQE (dobrý), `r ≈ 0.50` pro TE (strukturálně slabší)
+- `early_stopping.png` — confusion matrix; pokud jsou všechny body jen v jedné třídě, threshold `lstm_quality_threshold` potřebuje kalibraci
+
+### Konfigurace a aktivace
+
+V `config-ea.json` (NEURAL_NETWORKS sekce):
 ```json
 {
-  "epochs": [10, 50, 100],
-  "mqe": [0.5, 0.3, 0.25],
-  "topographic_error": [0.1, 0.09, 0.08],
-  "dead_neuron_ratio": [0.2, 0.15, 0.12]
+  "use_lstm": true,
+  "lstm_model_path": "app/lstm/models/lstm_latest.keras",
+  "lstm_scaler_path": "app/lstm/models/lstm_scaler_latest.pkl",
+  "lstm_quality_threshold": 0.75
 }
 ```
 
-**Output:**
-- Predicted final quality
-- Early stopping recommendation
+> **Poznámka k thresholdu**: hodnota 0.75 není kalibrovaná na skutečnou distribuci quality score.
+> Doporučeno: spočítat 60.–70. percentil quality score na trénovací sadě a použít ho jako threshold.
+> Viz issue #68 v [docs/ea/ISSUES.md](../../docs/ea/ISSUES.md).
+
+### Kdy se early stopping aktivuje
+
+- Nejdříve po `lstm_min_checkpoints = max(2, mqe_evaluations_per_run // 5)` checkpointech (= 20 % tréninku)
+- Volá se každý checkpoint od tohoto prahu
+- Pokud `quality_score > lstm_quality_threshold` → SOM trénink se zastaví
 
 ---
 
-## Integration with SOM Training
+## Phase 3 — Dynamic Schedule Controller
 
-### Use Case: Intelligent Early Stopping
+### Co dělá
 
-```python
-def train_som_with_oracle(data, config, oracle_model):
-    som = SOM(config)
-    training_history = {'epochs': [], 'mqe': [], 'topo_error': [], 'dead_ratio': []}
+Při každém MQE checkpointu vrátí `(lr_factor, radius_factor)` ∈ [0.5, 1.5]. Faktory se aplikují multiplikativně na statický schedule:
 
-    checkpoints = [10, 50, 100, 200]
-
-    for epoch in range(config['max_epochs']):
-        som.train_epoch(data)
-
-        if epoch in checkpoints:
-            # Log metrics
-            training_history['epochs'].append(epoch)
-            training_history['mqe'].append(calculate_mqe(som))
-            training_history['topo_error'].append(calculate_topo_error(som))
-            training_history['dead_ratio'].append(calculate_dead_ratio(som))
-
-            # After 100 epochs, check if we should stop early
-            if epoch == 100:
-                # Prepare sequence for Oracle
-                sequence = np.array([
-                    training_history['mqe'],
-                    training_history['topo_error'],
-                    training_history['dead_ratio']
-                ]).T
-
-                # Predict final quality
-                prediction = oracle_model.predict(np.expand_dims(sequence, axis=0))[0]
-                final_mqe, final_topo, final_dead = prediction
-
-                # Quality score (lower is better)
-                quality_score = final_mqe * 1.0 + final_topo * 1.0 + final_dead * 0.5
-
-                if quality_score > 1.0:
-                    print(f"Early stopping at epoch {epoch}: predicted quality {quality_score:.4f}")
-                    return None  # Terminate training
-
-    return som
+```
+actual_lr     = static_schedule_lr(t)     × cumulative_lr_factor
+actual_radius = static_schedule_radius(t) × cumulative_radius_factor
 ```
 
-### Benefits:
-- **Save 50-90% training time** on bad configurations
-- **More EA generations** in same time
-- **Better resource utilization**
+Controller nenahrazuje decay křivku — ohýbá ji. Statický schedule zůstává jako fallback.
 
----
+### Vstup / výstup modelu
 
-## Performance Expectations
+```
+Vstup (per checkpoint):
+  sequence:  (1, 1, 6) — progress, mqe_rel, topo_error, dead_ratio, lr_rel, radius_rel
+  context:   (1, 4)    — ds_n_samples, ds_n_active_dimensions, ds_n_numeric, ds_n_categorical
 
-**Expected Metrics:**
-- MAE: 0.02 - 0.06 (depending on sequence length)
-- RMSE: 0.03 - 0.10
+Výstup:
+  (1, 2)  — (lr_factor, radius_factor), oba ∈ [0.5, 1.5]
+```
 
-**Good Performance Indicators:**
-- MAE < 0.05 for MQE prediction after 100 epochs
-- Early stopping accuracy > 80%
+### Pipeline přípravy dat — Phase 3
 
-**Factors Affecting Accuracy:**
-- **Sequence length**: More checkpoints = better predictions
-- **Checkpoint placement**: Logarithmically spaced works well
-- **Data diversity**: Train on varied configurations
-- **Real vs simulated**: Real data will perform better
-
----
-
-## Troubleshooting
-
-### "Sequence length mismatch"
-All sequences must have the same number of checkpoints.
-Use padding or interpolation if sequences vary.
-
-### "Poor early predictions"
-- **Collect more early checkpoints**: Add checkpoints at epochs 5, 10, 20
-- **Use bidirectional LSTM**: Captures patterns better
-- **More training data**: Collect from multiple EA runs
-
-### "Overfitting"
-- **Increase dropout**: Try 0.4-0.5
-- **Reduce model size**: Use lightweight version
-- **Early stopping**: Reduce patience
-- **More data**: Collect diverse training sequences
-
----
-
-## Next Steps
-
-1. **Collect Real Data**: Modify SOM training to log checkpoints
-2. **Optimize Checkpoints**: Find minimal set for accurate predictions
-3. **Multi-Step Prediction**: Predict quality at multiple future points
-4. **Attention Mechanism**: Focus on critical training phases
-5. **Integration**: Deploy in EA for real-time early stopping
-
----
-
-## Production Deployment
-
-### Step 1: Modify SOM Training
-
-Add checkpoint logging to your SOM trainer (see Data Collection section).
-
-### Step 2: Collect Training Data
-
-Run EA experiments and collect training histories:
+#### Krok 1: Generování perturbačních trajektorií
 
 ```bash
-python3 lstm/collect_training_data.py --results_dir ./test/results/*
+# Všechny datasety + všechny seedy (doporučeno)
+.venv/bin/python3 app/lstm/generate_phase3_data.py \
+    --results_root data/datasets \
+    --n_pareto 5 --n_variants 8 \
+    --n_workers 0 \
+    --output app/lstm/data/phase3
+
+# Jeden seed (debug)
+.venv/bin/python3 app/lstm/generate_phase3_data.py \
+    --seed_dir data/datasets/LungCancerDataset/results/20260515_111812/seed_42 \
+    --dataset  data/datasets/LungCancerDataset/dataset.csv \
+    --n_pareto 5 --n_variants 8
 ```
 
-### Step 3: Train Oracle
+**Co skript dělá:**
+- Vezme top N Pareto individuí z každého EA seedu
+- Každé individuum spustí 1× jako baseline + 8× s náhodnou perturbací
+- Perturbace: `lr_factor, radius_factor = U(0.75, 1.25)` s `prob=0.4` per checkpoint
+- **Fyzikální meze** jsou vynuceny: `lr ∈ [1e-4, start_lr]`, `radius ∈ [1.0, max(m,n)]`
+- Výstup: `advantage = (Δmqe/σ_mqe) + (Δte/σ_te) + (Δdead/σ_dead)` (multi-objektová)
+- Paralelizace přes `Pool(cpu_count - 1)` — výstup je jeden `trajectories.json`
+
+**Typy perturbace** (střídají se cyklicky):
+
+| Typ | Co se mění |
+|---|---|
+| `lr+radius` | oba parametry současně |
+| `lr_only` | pouze learning rate |
+| `radius_only` | pouze radius |
+
+#### Krok 2: Příprava trénovacích dat
 
 ```bash
-cd lstm
-python3 src/train.py --dataset data/real_training_data.csv --epochs 200 --model bidirectional
+# Auto-detekce seed dirs ze všech datasetů (doporučeno)
+.venv/bin/python3 app/lstm/prepare_phase3_dataset.py
+
+# Explicitně
+.venv/bin/python3 app/lstm/prepare_phase3_dataset.py \
+    --results_root data/datasets \
+    --trajectories app/lstm/data/phase3/trajectories.json \
+    --output app/lstm/data/phase3
 ```
 
-### Step 4: Deploy
+**Co skript dělá:**
+- Načte `trajectories.json`, přeskočí baseline varianty (ty nemají perturbační signál)
+- Normalizuje sekvence checkpointů (stejný postup jako Phase 2)
+- Advantage-weighted training: `adv = max(0, advantage) / max_advantage` → [0, 1]
+- Z-score normalizace advantage: každá složka Δ se dělí svým globálním σ přes všechny záznamy — zabraňuje dominanci jedné metriky napříč datasety různých měřítek
+- Výstup: `X, y, ctx, adv` pro train/val/test, `metadata_p3.json`
 
-Integrate trained model into EA or SOM training pipeline.
+> **Důležité**: Před tréninkem filtrovat timestepy kde `|lr_factor − 1.0| < ε AND |radius_factor − 1.0| < ε`
+> (60 % timestepů nemá perturbaci → model kolabuje na predikci 1.0).
+> Viz issue #71 v [docs/ea/ISSUES.md](../../docs/ea/ISSUES.md).
+
+#### Krok 3: Trénink
+
+```bash
+cd app/lstm
+../.venv/bin/python3 src/train_phase3.py
+# Model: models/lstm_controller_latest.keras + models/lstm_controller_scaler_latest.pkl
+```
+
+### Vizualizace
+
+```bash
+cd app/lstm
+../.venv/bin/python3 visualize_model.py --phase 3
+# Výstup: visualizations/phase3/{scatter_p3,residuals_p3,advantage_p3}.png
+```
+
+**Interpretace grafů:**
+- `scatter_p3.png` — pokud jsou predikce clustered na 0.5 nebo 1.0, model kolaboval (issue #71)
+- `residuals_p3.png` — spike na +0.5 = padding artefakt (issue #72)
+- `advantage_p3.png` — Q1 n=0 = bug v quartile split při many-tie hodnotách (issue #73)
+
+### Konfigurace a aktivace
+
+V `config-ea.json` nebo `config-som-mlp-lstm.json`:
+```json
+{
+  "use_lstm_controller": true,
+  "lstm_controller_model_path": "app/lstm/models/lstm_controller_latest.keras",
+  "lstm_controller_scaler_path": "app/lstm/models/lstm_controller_scaler_latest.pkl"
+}
+```
+
+### Logování zásahů v SOM
+
+```
+LSTM ctrl @ 20%: step lr_f=0.998 rad_f=1.002 | cum_lr=0.941 cum_rad=0.970
+LSTM ctrl INTERVENTION @ 43%: lr_f=1.052 (Δ+0.052) rad_f=0.931 (Δ-0.069) | effective lr=0.003 R=3.18 | cum_lr=1.018 cum_rad=0.894
+```
+
+Milestone log každých ~10 % tréninku. Intervention log pouze při zásahu > 1 %.
 
 ---
 
-## References
+## Kompletní pipeline (od nuly)
 
-- [LSTM Networks](https://colah.github.io/posts/2015-08-Understanding-LSTMs/)
-- [Time Series Prediction with LSTM](https://machinelearningmastery.com/time-series-prediction-lstm-recurrent-neural-networks-python-keras/)
-- [Early Stopping Techniques](https://arxiv.org/abs/1703.09580)
+```bash
+# ── PHASE 2 ──────────────────────────────────────────────────────────
+# Předpoklad: EA běhy dokončeny v data/datasets/
+
+# 1. Připrav data
+.venv/bin/python3 app/lstm/prepare_dataset.py --results_root data/datasets
+
+# 2. Natrénuj
+cd app/lstm && ../.venv/bin/python3 src/train.py
+
+# 3. Vizualizuj
+../.venv/bin/python3 visualize_model.py --phase 2
+
+# ── PHASE 3 ──────────────────────────────────────────────────────────
+# Předpoklad: Phase 2 model natrénován, EA výsledky k dispozici
+
+# 1. Generuj perturbační data (paralelně, ~30–90 min dle počtu seedů)
+cd .. && .venv/bin/python3 app/lstm/generate_phase3_data.py \
+    --results_root data/datasets --n_pareto 5 --n_variants 8
+
+# 2. Připrav trénovací dataset
+.venv/bin/python3 app/lstm/prepare_phase3_dataset.py
+
+# 3. Natrénuj controller
+cd app/lstm && ../.venv/bin/python3 src/train_phase3.py
+
+# 4. Vizualizuj
+../.venv/bin/python3 visualize_model.py --phase 3
+```
+
+---
+
+## Aktuální stav modelů
+
+| Model | Trénovací data | Test MAE | Stav |
+|---|---|---|---|
+| Phase 2 (early stopping) | 4 datasety × 5 seedů × 5 gen × 30 pop | 0.041 | ✅ Nasazeno, threshold potřebuje kalibraci |
+| Phase 3 (controller) | Perturbace Pareto individuí, 4 DS | 0.10–0.12 | ⚠️ Fyzikální oprava dat nutná — regenerovat |
+
+**Prioritní opravy před dalším nasazením Phase 3:**
+1. Regenerovat `trajectories.json` se `make_constrained_perturb_fn` (již implementováno)
+2. Filtrovat nepřeturbované timestepy v `prepare_phase3_dataset.py`
+3. Opravit padding masking při evaluaci
+
+Viz [docs/lstm/LSTM_MODEL_ANALYSIS.md](../../docs/lstm/LSTM_MODEL_ANALYSIS.md) pro detaily.

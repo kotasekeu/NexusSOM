@@ -81,27 +81,39 @@ DROP_FIELDS = {
 
 # ── perturbation functions ────────────────────────────────────────────────────
 
-def make_random_perturb_fn(rng, lr_perturb=LR_PERTURB, radius_perturb=RADIUS_PERTURB,
-                           prob=PERTURB_PROB):
-    """Returns a dynamic_schedule_fn with random perturbations at each checkpoint."""
+def make_constrained_perturb_fn(rng, max_radius: float, max_lr: float,
+                                 apply_lr: bool = True, apply_radius: bool = True,
+                                 lr_perturb: float = LR_PERTURB,
+                                 radius_perturb: float = RADIUS_PERTURB,
+                                 prob: float = PERTURB_PROB):
+    """
+    Physically-constrained perturbation function.
+
+    Uses the checkpoint's actual current LR and radius to compute the proposed
+    new absolute value, clips it to valid bounds, then returns the factor needed
+    to reach that value.  This prevents cumulative drift into nonsensical ranges
+    (e.g. radius > map size, or LR growing instead of declining).
+
+    Bounds enforced per checkpoint:
+      lr     ∈ [1e-4, max_lr]          — max_lr = start_learning_rate of the individual
+      radius ∈ [1.0,  max_radius]      — max_radius = max(map_m, map_n)
+    """
     def fn(checkpoint):
-        lr_f = rng.uniform(1 - lr_perturb, 1 + lr_perturb) if rng.random() < prob else 1.0
-        rad_f = rng.uniform(1 - radius_perturb, 1 + radius_perturb) if rng.random() < prob else 1.0
-        return float(lr_f), float(rad_f)
-    return fn
+        lr_f = 1.0
+        if apply_lr and rng.random() < prob:
+            current_lr  = max(float(checkpoint.get('learning_rate', 0.1)), 1e-10)
+            proposed_lr = current_lr * rng.uniform(1 - lr_perturb, 1 + lr_perturb)
+            proposed_lr = float(np.clip(proposed_lr, 1e-4, max_lr))
+            lr_f        = proposed_lr / current_lr
 
+        rad_f = 1.0
+        if apply_radius and rng.random() < prob:
+            current_r  = max(float(checkpoint.get('radius', 5.0)), 1e-10)
+            proposed_r = current_r * rng.uniform(1 - radius_perturb, 1 + radius_perturb)
+            proposed_r = float(np.clip(proposed_r, 1.0, max_radius))
+            rad_f      = proposed_r / current_r
 
-def make_lr_only_fn(rng, lr_perturb=LR_PERTURB, prob=PERTURB_PROB):
-    def fn(checkpoint):
-        lr_f = rng.uniform(1 - lr_perturb, 1 + lr_perturb) if rng.random() < prob else 1.0
-        return float(lr_f), 1.0
-    return fn
-
-
-def make_radius_only_fn(rng, radius_perturb=RADIUS_PERTURB, prob=PERTURB_PROB):
-    def fn(checkpoint):
-        rad_f = rng.uniform(1 - radius_perturb, 1 + radius_perturb) if rng.random() < prob else 1.0
-        return 1.0, float(rad_f)
+        return lr_f, rad_f
     return fn
 
 
@@ -160,14 +172,21 @@ def _worker(task: dict) -> dict:
     if pc is None:
         dynamic_fn = None
     else:
-        rng = np.random.default_rng(pc['seed'])
+        map_m      = int(task['row_dict'].get('map_m', 20))
+        map_n      = int(task['row_dict'].get('map_n', 20))
+        max_radius = float(max(map_m, map_n))
+        max_lr     = float(task['row_dict'].get('start_learning_rate', 1.0))
+
+        rng   = np.random.default_rng(pc['seed'])
         ptype = pc['type']
         if ptype == 'lr+radius':
-            dynamic_fn = make_random_perturb_fn(rng)
+            dynamic_fn = make_constrained_perturb_fn(rng, max_radius, max_lr)
         elif ptype == 'lr_only':
-            dynamic_fn = make_lr_only_fn(rng)
-        else:
-            dynamic_fn = make_radius_only_fn(rng)
+            dynamic_fn = make_constrained_perturb_fn(rng, max_radius, max_lr,
+                                                      apply_radius=False)
+        else:  # radius_only
+            dynamic_fn = make_constrained_perturb_fn(rng, max_radius, max_lr,
+                                                      apply_lr=False)
 
     result = run_som(row, data, mask, dynamic_fn=dynamic_fn, seed=seed)
     return {**result, 'uid': task['uid'], 'variant': task['variant'],
@@ -246,20 +265,46 @@ def generate(seed_dir: str, dataset_path: str, n_pareto: int, n_variants: int,
     elapsed = time.time() - t_start
     print(f'All runs done in {elapsed:.1f}s  ({elapsed/total:.1f}s/run avg)')
 
-    # Build trajectories — compute delta_mqe relative to each uid's baseline
-    baselines = {r['uid']: r['final_mqe'] for r in raw_results if r['variant'] == 'baseline'}
+    # Build trajectories — multi-objective advantage vs baseline
+    # advantage = delta_mqe + α·delta_te + β·delta_dead  (all: positive = better)
+    # Weights chosen so MQE dominates but topology destruction is penalized.
+    ADV_W_MQE  = 1.0
+    ADV_W_TE   = 0.5
+    ADV_W_DEAD = 0.3
+
+    baselines = {
+        r['uid']: {
+            'mqe':  r['final_mqe'],
+            'te':   r['final_topographic_error'],
+            'dead': r['final_dead_ratio'],
+        }
+        for r in raw_results if r['variant'] == 'baseline'
+    }
+
     trajectories = []
     for r in raw_results:
-        uid          = r['uid']
-        baseline_mqe = baselines[uid]
-        delta        = baseline_mqe - r['final_mqe']  # positive = perturbed is BETTER
+        uid  = r['uid']
+        base = baselines[uid]
+
+        delta_mqe  = base['mqe']  - r['final_mqe']                  # positive = better
+        delta_te   = base['te']   - r['final_topographic_error']     # positive = better
+        delta_dead = base['dead'] - r['final_dead_ratio']            # positive = better
+        advantage  = (ADV_W_MQE  * delta_mqe
+                    + ADV_W_TE   * delta_te
+                    + ADV_W_DEAD * delta_dead)
+
         trajectories.append({
             'uid':                  uid,
             'variant':              r['variant'],
             'variant_seed':         r['variant_seed'],
             'final_mqe':            r['final_mqe'],
-            'delta_mqe':            float(delta),
-            'better_than_baseline': delta > 0,
+            'final_topographic_error': r['final_topographic_error'],
+            'final_dead_ratio':     r['final_dead_ratio'],
+            'delta_mqe':            float(delta_mqe),
+            'delta_te':             float(delta_te),
+            'delta_dead':           float(delta_dead),
+            'advantage':            float(advantage),
+            'better_than_baseline': advantage > 0,
             'checkpoints':          r['checkpoints'],
         })
 
@@ -273,10 +318,10 @@ def generate(seed_dir: str, dataset_path: str, n_pareto: int, n_variants: int,
         varts = [t for t in group if t['variant'] != 'baseline']
         if base is None:
             continue
-        best_delta = max((t['delta_mqe'] for t in varts), default=0.0)
-        n_pos      = sum(1 for t in varts if t['better_than_baseline'])
+        best_adv = max((t['advantage'] for t in varts), default=0.0)
+        n_pos    = sum(1 for t in varts if t['better_than_baseline'])
         print(f'  ── Individual {uid[:8]} ── baseline MQE={base["final_mqe"]:.4f}  '
-              f'best Δ={best_delta:+.4f}  better: {n_pos}/{len(varts)}')
+              f'best adv={best_adv:+.4f}  better: {n_pos}/{len(varts)}')
 
     n_better    = sum(1 for t in trajectories if t['better_than_baseline'])
     n_perturbed = sum(1 for t in trajectories if t['variant'] != 'baseline')

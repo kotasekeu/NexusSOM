@@ -59,6 +59,12 @@ def normalize_checkpoints(checkpoints: list) -> tuple:
     lr_f     = np.array([c.get('lr_factor',     1.0) for c in checkpoints], np.float32)
     radius_f = np.array([c.get('radius_factor', 1.0) for c in checkpoints], np.float32)
 
+    # 1.0 for timesteps where a perturbation was actually applied, 0.0 otherwise.
+    # Non-perturbed timesteps (60 % of data) get zero loss weight so the model
+    # cannot collapse to predicting 1.0 for everything.
+    perturb_mask = ((np.abs(lr_f - 1.0) > 0.01) | (np.abs(radius_f - 1.0) > 0.01)
+                    ).astype(np.float32)
+
     init_mqe    = max(mqe[0],    1e-10)
     init_lr     = max(lr[0],     1e-10)
     init_radius = max(radius[0], 1e-10)
@@ -84,6 +90,15 @@ def pad_ragged(arrays: list, pad_value: float = 0.0) -> np.ndarray:
     out   = np.full((len(arrays), T_max, F), pad_value, dtype=np.float32)
     for i, a in enumerate(arrays):
         out[i, :a.shape[0], :] = a
+    return out
+
+
+def pad_ragged_1d(arrays: list, pad_value: float = 0.0) -> np.ndarray:
+    """Pad list of (T_i,) arrays to (N, T_max)."""
+    T_max = max(a.shape[0] for a in arrays)
+    out   = np.full((len(arrays), T_max), pad_value, dtype=np.float32)
+    for i, a in enumerate(arrays):
+        out[i, :a.shape[0]] = a
     return out
 
 
@@ -145,12 +160,18 @@ def build_records(trajectories: list, ctx_map: dict) -> list:
         if seq_norm is None:
             continue
 
+        # Support both old format (delta_mqe only) and new (multi-objective advantage)
+        advantage = float(traj.get('advantage', traj.get('delta_mqe', 0.0)))
+
         records.append({
             'uid':       uid,
             'variant':   traj['variant'],
             'seq_norm':  seq_norm,       # (T, 6)
             'actions':   actions,        # (T, 2)
-            'delta_mqe': float(traj['delta_mqe']),
+            'delta_mqe': float(traj.get('delta_mqe', 0.0)),
+            'delta_te':  float(traj.get('delta_te',  0.0)),
+            'delta_dead':float(traj.get('delta_dead', 0.0)),
+            'advantage': advantage,
             'context':   ctx_map[uid],   # (4,)
         })
 
@@ -159,11 +180,30 @@ def build_records(trajectories: list, ctx_map: dict) -> list:
 
 def compute_advantages(records: list) -> np.ndarray:
     """
-    Compute normalized advantage weights per trajectory.
-    advantage = max(0, delta_mqe)  — only reward improvements
-    Normalized to [0, 1] by dividing by the max positive delta.
+    Multi-objective advantage via Z-score normalization.
+
+    Each component (delta_mqe, delta_te, delta_dead) is divided by its
+    global standard deviation across ALL records before summing.  This
+    prevents one component from dominating purely because its values happen
+    to be on a larger scale on a given dataset.
+
+    advantage = (Δmqe / σ_mqe) + (Δte / σ_te) + (Δdead / σ_dead)
+
+    Negative advantages are clipped to 0 — model only imitates trajectories
+    that improved all-objectives on net.  Result is normalized to [0, 1].
     """
-    raw = np.array([max(0.0, r['delta_mqe']) for r in records], dtype=np.float32)
+    delta_mqe  = np.array([r['delta_mqe']  for r in records], dtype=np.float64)
+    delta_te   = np.array([r['delta_te']   for r in records], dtype=np.float64)
+    delta_dead = np.array([r['delta_dead'] for r in records], dtype=np.float64)
+
+    std_mqe  = delta_mqe.std()  if delta_mqe.std()  > 1e-10 else 1.0
+    std_te   = delta_te.std()   if delta_te.std()   > 1e-10 else 1.0
+    std_dead = delta_dead.std() if delta_dead.std() > 1e-10 else 1.0
+
+    print(f'  Advantage σ — mqe: {std_mqe:.5f}  te: {std_te:.5f}  dead: {std_dead:.5f}')
+
+    raw = (delta_mqe / std_mqe) + (delta_te / std_te) + (delta_dead / std_dead)
+    raw = np.clip(raw, 0.0, None).astype(np.float32)
     max_val = raw.max() if raw.max() > 0 else 1.0
     return raw / max_val
 
@@ -203,11 +243,13 @@ def prepare(trajectories_path: str, seed_dirs: list, output_dir: str):
     print(f'Context map: {len(ctx_map)} individuals from {len(seed_dirs)} seed dir(s)')
 
     records = build_records(trajectories, ctx_map)
-    n_pert  = len(records)
-    n_better = sum(1 for r in records if r['delta_mqe'] > 0)
+    n_pert   = len(records)
+    n_better = sum(1 for r in records if r['advantage'] > 0)
     print(f'\nPerturbed trajectories: {n_pert}')
-    print(f'  Better than baseline: {n_better}/{n_pert} '
+    print(f'  Better than baseline (advantage > 0): {n_better}/{n_pert} '
           f'({n_better/max(1,n_pert)*100:.0f}%)')
+    print(f'  advantage range: [{min(r["advantage"] for r in records):.4f}, '
+          f'{max(r["advantage"] for r in records):.4f}]')
     print(f'  delta_mqe range: [{min(r["delta_mqe"] for r in records):.4f}, '
           f'{max(r["delta_mqe"] for r in records):.4f}]')
 
