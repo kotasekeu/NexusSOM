@@ -58,8 +58,7 @@ def _save_quantization_errors(som: KohonenSOM, normalized_data: np.ndarray, work
         print(f"ERROR: Failed to save quantization errors: {e}")
 
 def _get_bmu_assignments(som: KohonenSOM, normalized_data: np.ndarray, original_df: pd.DataFrame,
-                         primary_id_col: str) -> pd.DataFrame:
-    # Calculate BMU assignments for each data point
+                         primary_id_col: str, training_cols: list = None) -> pd.DataFrame:
     num_neurons = som.m * som.n
     flat_weights = som.weights.reshape(num_neurons, som.dim)
 
@@ -74,6 +73,14 @@ def _get_bmu_assignments(som: KohonenSOM, normalized_data: np.ndarray, original_
     df_assigned['bmu_key'] = [f"{i}_{j}" for i, j in zip(bmu_coords_i, bmu_coords_j)]
     df_assigned['qe'] = dists[np.arange(len(dists)), bmu_flat_indices]
 
+    # Per-dimension QE: absolute diff in normalized space for each feature column
+    if training_cols:
+        winning_weights = flat_weights[bmu_flat_indices]
+        diffs = np.abs(normalized_data - winning_weights)
+        for k, col in enumerate(training_cols):
+            if col != primary_id_col and k < diffs.shape[1]:
+                df_assigned[f'qe_dim_{col}'] = diffs[:, k]
+
     clusters = df_assigned.groupby('bmu_key')[primary_id_col].apply(list).to_dict()
 
     return df_assigned, clusters
@@ -84,7 +91,9 @@ def _save_sample_assignments(df_assigned: pd.DataFrame, extremes: dict,
     csv_dir = os.path.join(working_dir, 'csv')
     os.makedirs(csv_dir, exist_ok=True)
 
-    out = df_assigned[[primary_id_col, 'bmu_i', 'bmu_j', 'bmu_key', 'qe']].copy()
+    base_cols   = [primary_id_col, 'bmu_i', 'bmu_j', 'bmu_key', 'qe']
+    qe_dim_cols = [c for c in df_assigned.columns if c.startswith('qe_dim_')]
+    out = df_assigned[base_cols + qe_dim_cols].copy()
     out['is_outlier'] = out[primary_id_col].isin(extremes).astype(int)
     out = out.rename(columns={primary_id_col: 'sample_id'})
     out = out.sort_values('sample_id').reset_index(drop=True)
@@ -170,7 +179,16 @@ def perform_analysis(som: KohonenSOM, original_df: pd.DataFrame, normalized_data
         print("ERROR: 'primary_id' or 'numerical_column' missing in config for analysis.")
         return
 
-    df_assigned, clusters = _get_bmu_assignments(som, normalized_data, original_df, primary_id_col)
+    preprocessing_info = config.get('preprocessing_info', {})
+    training_cols = [col for col, info in preprocessing_info.items()
+                     if info.get('status', 'used') != 'ignored']
+    # Maintain original column order from the dataframe
+    if training_cols:
+        col_set = set(training_cols)
+        training_cols = [c for c in original_df.columns if c in col_set]
+
+    df_assigned, clusters = _get_bmu_assignments(
+        som, normalized_data, original_df, primary_id_col, training_cols)
 
     clusters_path = os.path.join(json_dir, "clusters.json")
     with open(clusters_path, 'w', encoding='utf-8') as f:

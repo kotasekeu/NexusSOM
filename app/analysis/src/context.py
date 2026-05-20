@@ -10,7 +10,7 @@ import pandas as pd
 from .loader import load_results
 from .stats import (compute_global_stats, compute_cluster_stats, compute_topology,
                     compute_tc, compute_silhouette)
-from .anomalies import detect_anomalies
+from .anomalies import detect_anomalies, compute_sample_qe
 
 
 def build_llm_context(results_dir: str) -> dict:
@@ -33,8 +33,9 @@ def build_llm_context(results_dir: str) -> dict:
         if c['neuron'] in sil_per_n:
             c['silhouette'] = sil_per_n[c['neuron']]
     anomalies    = detect_anomalies(data, global_stats, clusters)
+    sample_qe    = compute_sample_qe(data)
     anomaly_records = _build_anomaly_records(
-        data, anomalies.get('top_anomalies', []), global_stats)
+        data, anomalies.get('top_anomalies', []), global_stats, sample_qe)
 
     return {
         'map':              topology,
@@ -62,7 +63,7 @@ def save_llm_context(results_dir: str) -> str:
 # ─── Anomaly records — full row with delta annotations ────────────────────────
 
 def _build_anomaly_records(data: dict, top_anomalies: list,
-                           global_stats: dict) -> list:
+                           global_stats: dict, sample_qe: dict | None = None) -> list:
     """
     For each top anomaly (real sample_id only), load the full row from
     original_df and annotate each numeric column with:
@@ -140,13 +141,27 @@ def _build_anomaly_records(data: dict, top_anomalies: list,
                 entry['differs_from_cluster_dominant'] = str(dom_val)
             cols[col] = entry
 
-        records.append({
-            'sample_id':     sid,
-            'neuron':        neuron,
-            'type':          anomaly.get('type'),
+        record: dict = {
+            'sample_id':      sid,
+            'neuron':         neuron,
+            'type':           anomaly.get('type'),
             'distance_ratio': anomaly.get('distance_ratio'),
-            'columns':       cols,
-        })
+            'columns':        cols,
+        }
+
+        if sample_qe and sid in sample_qe:
+            sq = sample_qe[sid]
+            record['qe'] = sq['qe']
+            qe_dims = {k: v for k, v in sq.get('qe_dims', {}).items()
+                       if k != primary_id and k != 'id'}
+            if qe_dims:
+                primary_id_col = data['columns']['primary_id']
+                qe_dims = {k: v for k, v in qe_dims.items() if k != primary_id_col}
+                record['top_qe_dim'] = max(qe_dims, key=qe_dims.get)
+                record['qe_dims']    = dict(
+                    sorted(qe_dims.items(), key=lambda x: -x[1])[:6])
+
+        records.append(record)
 
     return records
 

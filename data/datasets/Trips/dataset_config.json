@@ -1,0 +1,36 @@
+{
+  "_comment": "SOM config for Trips dataset anomaly validation",
+  "map_size": [
+    15,
+    15
+  ],
+  "start_learning_rate": 0.8,
+  "end_learning_rate": 0.01,
+  "lr_decay_type": "linear-drop",
+  "start_radius_init_ratio": 0.8,
+  "end_radius": 1.0,
+  "radius_decay_type": "step-down",
+  "start_batch_percent": 1.0,
+  "end_batch_percent": 5.0,
+  "batch_growth_type": "exp-growth",
+  "epoch_multiplier": 1.0,
+  "normalize_weights_flag": false,
+  "growth_g": 15,
+  "random_seed": 42,
+  "map_type": "hex",
+  "num_batches": 9,
+  "max_epochs_without_improvement": 300,
+  "mqe_evaluations_per_run": 300,
+  "save_checkpoints": false,
+  "delimiter": ",",
+  "categorical_threshold_numeric": 30,
+  "noise_threshold_ratio": 0.2,
+  "categorical_threshold_text": 30,
+  "primary_id": "id",
+  "NEURAL_NETWORKS": {
+    "use_lstm": false,
+    "lstm_model_path": "app/lstm/models/lstm_latest.keras",
+    "lstm_scaler_path": "app/lstm/models/lstm_scaler_latest.pkl",
+    "lstm_quality_threshold": 0.75
+  }
+}

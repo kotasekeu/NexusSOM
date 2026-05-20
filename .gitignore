@@ -94,3 +94,4 @@ kohonen-log.txt
 /logs/
 /app/lstm/visualizations/
 /app/mlp/data/
+/data/datasets/Trips/results/

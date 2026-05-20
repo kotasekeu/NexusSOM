@@ -1,0 +1,119 @@
+{
+  "_comment": "Phase 3 LSTM training data collection run. LSTM early stopping DISABLED — full trajectories required for advantage-weighted training (truncated runs cannot serve as baseline reference). MLP filter ON to avoid wasting time on clearly bad configs.",
+
+  "use_nn": true,
+  "EA_SETTINGS": {
+    "population_size": 20,
+    "generations": 15,
+    "seeds": [42],
+    "_comment": "30 × 5 gen × 5 seeds ≈ 750 individuals. Each with 300 checkpoints = baseline corpus for generate_phase3_data.py"
+  },
+  "SEARCH_SPACE": {
+    "map_size": {
+      "type": "discrete_int_pair",
+      "comment": "Bounds set dynamically by apply_dynamic_search_space (Vesanto heuristic: U=5*sqrt(n_samples))"
+    },
+    "start_learning_rate": {
+      "type": "float",
+      "min": 0.5,
+      "max": 1.0,
+      "log_scale": true,
+      "comment": "Initial learning rate — standard SOM global phase range [0.5, 1.0]"
+    },
+    "end_learning_rate": {
+      "type": "float",
+      "min": 0.001,
+      "max": 0.2,
+      "log_scale": true,
+      "comment": "Final learning rate — log scale"
+    },
+    "lr_decay_type": {
+      "type": "categorical",
+      "values": ["linear-drop", "exp-drop", "step-down"]
+    },
+    "start_radius_init_ratio": {
+      "type": "float",
+      "min": 0.5,
+      "max": 1.0,
+      "log_scale": true,
+      "comment": "Initial radius as ratio of max(m,n)"
+    },
+    "radius_decay_type": {
+      "type": "categorical",
+      "values": ["linear-drop", "exp-drop", "step-down"]
+    },
+    "start_batch_percent": {
+      "type": "float",
+      "min": 0.0,
+      "max": 3.0,
+      "comment": "Initial batch size as % of dataset (hybrid mode)"
+    },
+    "end_batch_percent": {
+      "type": "float",
+      "min": 1.0,
+      "max": 5.0,
+      "comment": "Final batch size as % of dataset (must be > start_batch_percent)"
+    },
+    "batch_growth_type": {
+      "type": "categorical",
+      "values": ["linear-growth", "exp-growth"]
+    },
+    "epoch_multiplier": {
+      "type": "float",
+      "comment": "Bounds set dynamically by apply_dynamic_search_space"
+    },
+    "growth_g": {
+      "type": "int",
+      "min": 10,
+      "max": 40,
+      "comment": "Growth parameter for exp/log curves"
+    }
+  },
+  "GENETIC_OPERATORS": {
+    "sbx_eta": 20.0,
+    "mutation_eta": 20.0,
+    "mutation_prob": 0.1,
+    "crossover_prob": 0.9,
+    "tournament_k": 5
+  },
+  "FIXED_PARAMS": {
+    "end_radius": 1.0,    
+    "random_seed": 42,
+    "num_batches": 9,
+    "max_archive_size": 20,
+    "mqe_evaluations_per_run": 3,
+    "map_type": "hex",
+    "save_checkpoints": false,
+    "checkpoint_every_mqe": false,
+    "checkpoint_count": 25,
+    "early_stopping_window": 50,
+    "max_epochs_without_improvement": 500,
+    "normalize_weights_flag": false,
+    "generate_individual_maps": false
+  },
+  "NEURAL_NETWORKS": {
+    "use_mlp": false,
+    "use_lstm": false,
+    "use_cnn": false,
+    "use_lstm_controller": false,
+    "mlp_model_path": "app/mlp/models/mlp_latest.keras",
+    "mlp_scaler_path": "app/mlp/models/mlp_scaler_latest.pkl",
+    "lstm_model_path": "app/lstm/models/lstm_latest.keras",
+    "lstm_scaler_path": "app/lstm/models/lstm_scaler_latest.pkl",
+    "cnn_model_path": null,
+    "lstm_controller_model_path": "app/lstm/models/lstm_controller_latest.keras",
+    "lstm_controller_scaler_path": "app/lstm/models/lstm_controller_scaler_latest.pkl",
+    "lstm_quality_threshold": 0.75,
+    "mlp_filter_bad_configs": false,
+    "mlp_bad_quality_threshold": 0.5,
+    "verbose": false,
+    "_comment": "use_lstm=false: early stopping disabled — full 300-checkpoint trajectories required. use_lstm_controller=false: set to true once Phase 3 training is done. mlp_filter_bad_configs=true: keeps run times reasonable without truncating sequences."
+  },
+  "PREPROCES_DATA": {
+    "delimiter": ",",
+    "categorical_threshold_numeric": 30,
+    "noise_threshold_ratio": 0.2,
+    "categorical_threshold_text": 30,
+    "primary_id": "id"
+  }
+}

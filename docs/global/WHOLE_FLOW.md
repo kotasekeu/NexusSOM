@@ -145,3 +145,8 @@ python3 generate_dataset.py \
     --rows 500 \
     --seed 42 \
     --verbose
+
+
+
+generování grafů pareto z datasetu
+python app/tools/plot_pareto_evolution.py data/datasets/LungCancerDataset/results/

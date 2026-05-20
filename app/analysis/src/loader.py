@@ -96,6 +96,7 @@ def load_results(results_dir: str) -> dict:
     original_df      = _load_csv(os.path.join(csv_dir, 'original_input.csv'))
     weights          = _load_npy(os.path.join(csv_dir, 'weights.npy'))
     training_data    = _load_npy(os.path.join(csv_dir, 'training_data.npy'))
+    sample_assignments = _load_csv(os.path.join(csv_dir, 'sample_assignments.csv'))
 
     id_to_row        = _build_id_to_row(original_df, primary_id_col)
 
@@ -107,18 +108,19 @@ def load_results(results_dir: str) -> dict:
             id_to_neuron[str(sid)] = neuron_key
 
     return {
-        'results_dir':    results_dir,
-        'dataset_meta':   dataset_meta,
-        'run_metrics':    run_metrics,
-        'preprocessing':  preprocessing,
-        'columns':        columns,
-        'clusters':       clusters,       # {neuron_key: [sample_ids]}
-        'qe_data':        qe_data,
-        'extremes':       extremes,
-        'pie_data':       pie_data,       # {col: {categories:{}, counts:{}}}
-        'original_df':    original_df,
-        'weights':        weights,        # (m, n, dim) or None
-        'training_data':  training_data,  # (N, dim) or None
-        'id_to_row':      id_to_row,      # sample_id → df row index
-        'id_to_neuron':   id_to_neuron,
+        'results_dir':        results_dir,
+        'dataset_meta':       dataset_meta,
+        'run_metrics':        run_metrics,
+        'preprocessing':      preprocessing,
+        'columns':            columns,
+        'clusters':           clusters,           # {neuron_key: [sample_ids]}
+        'qe_data':            qe_data,
+        'extremes':           extremes,
+        'pie_data':           pie_data,           # {col: {categories:{}, counts:{}}}
+        'original_df':        original_df,
+        'weights':            weights,            # (m, n, dim) or None
+        'training_data':      training_data,      # (N, dim) or None
+        'sample_assignments': sample_assignments, # per-sample QE + per-dim QE
+        'id_to_row':          id_to_row,          # sample_id → df row index
+        'id_to_neuron':       id_to_neuron,
     }

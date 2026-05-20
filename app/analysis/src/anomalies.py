@@ -20,6 +20,8 @@ def detect_anomalies(data: dict, global_stats: dict, cluster_stats: list) -> dic
     primary_id  = columns['primary_id']
     numeric_cols = columns['numeric']
 
+    sample_qe = compute_sample_qe(data)
+
     all_local: list  = []
     cluster_summaries: dict = {}
 
@@ -84,8 +86,25 @@ def detect_anomalies(data: dict, global_stats: dict, cluster_stats: list) -> dic
     # Enrich with global extremes from extremes.json
     global_outliers = _enrich_global_extremes(data)
 
+    # High-QE samples not yet caught by z-score / one_of_n detection
+    qe_only = _detect_qe_outliers(sample_qe, {o['sample_id'] for o in all_local},
+                                   threshold_ratio=2.5)
+
+    # Attach QE to all detected entries (local + global_extreme)
+    primary_id_col = data['columns']['primary_id']
+    for entry in all_local + global_outliers:
+        sid = entry['sample_id']
+        sq = sample_qe.get(sid)
+        if sq is None:
+            continue
+        entry['qe'] = sq['qe']
+        dims = {k: v for k, v in sq.get('qe_dims', {}).items() if k != primary_id_col}
+        if dims:
+            entry['qe_dims']    = dims
+            entry['top_qe_dim'] = max(dims, key=dims.get)
+
     # Build ranked top_anomalies list
-    top_anomalies = _rank_anomalies(all_local, global_outliers, limit=20)
+    top_anomalies = _rank_anomalies(all_local, global_outliers, qe_only, limit=20)
 
     local_ids  = {o['sample_id'] for o in all_local}
     global_ids = {o['sample_id'] for o in global_outliers}
@@ -283,20 +302,22 @@ def _enrich_global_extremes(data: dict) -> list:
 
 # ─── Ranking ──────────────────────────────────────────────────────────────────
 
-def _rank_anomalies(local: list, global_ex: list, limit: int = 20) -> list:
+def _rank_anomalies(local: list, global_ex: list, qe_only: list,
+                    limit: int = 20) -> list:
     """
-    Merge local and global anomalies into a single ranked list.
-    Priority: multi_dim > one_of_n > numeric > global_extreme > categorical_minority.
+    Merge local, global, and high-QE anomalies into a single ranked list.
+    Priority: multi_dim > one_of_n > numeric > high_qe > global_extreme > categorical_minority.
+    Within same priority: more outlier dims → higher distance/QE ratio → higher QE.
     """
     type_priority = {
         'multi_dim':            0,
         'one_of_n':             1,
+        'high_qe':              1,  # same priority as one_of_n — BMU distance is equally strong signal
         'numeric':              2,
         'global_extreme':       3,
         'categorical_minority': 4,
     }
 
-    # Merge by sample_id — global extreme enriches existing entries
     merged: dict = {}
     for item in local:
         sid = item['sample_id']
@@ -306,18 +327,135 @@ def _rank_anomalies(local: list, global_ex: list, limit: int = 20) -> list:
         sid = item['sample_id']
         if sid in merged:
             merged[sid].setdefault('reasons', []).extend(item['reasons'])
-            merged[sid]['type'] = 'multi_dim' if merged[sid].get('n_outlier_dims', 0) > 1 else merged[sid]['type']
+            if merged[sid].get('n_outlier_dims', 0) > 1:
+                merged[sid]['type'] = 'multi_dim'
         else:
             merged[sid] = dict(item)
 
+    for item in qe_only:
+        sid = item['sample_id']
+        if sid not in merged:
+            merged[sid] = dict(item)
+        else:
+            # Upgrade lower-priority existing entry (e.g. global_extreme → high_qe)
+            existing_pri = type_priority.get(merged[sid].get('type', ''), 99)
+            new_pri      = type_priority.get(item.get('type', ''), 99)
+            if new_pri < existing_pri:
+                merged[sid] = dict(item)
+            elif 'qe' not in merged[sid] and 'qe' in item:
+                merged[sid]['qe']         = item['qe']
+                merged[sid]['qe_dims']    = item.get('qe_dims', {})
+                merged[sid]['top_qe_dim'] = item.get('top_qe_dim')
+
     def sort_key(a):
         priority = type_priority.get(a.get('type', ''), 99)
-        n_dims = a.get('n_outlier_dims', 0)
-        ratio  = a.get('distance_ratio', 0.0)
-        return (priority, -n_dims, -ratio)
+        n_dims   = a.get('n_outlier_dims', 0)
+        qe       = a.get('qe', 0.0)
+        ratio    = a.get('distance_ratio', 0.0)
+        # Within same priority: more outlier dims → higher QE → higher distance ratio
+        return (priority, -n_dims, -qe, -ratio)
 
     ranked = sorted(merged.values(), key=sort_key)
     return ranked[:limit]
+
+
+# ─── QE-based anomaly detection ───────────────────────────────────────────────
+
+def compute_sample_qe(data: dict) -> dict:
+    """
+    Compute per-sample QE and per-dimension QE contributions from training_data
+    and SOM weights.  Returns {sample_id: {'qe': float, 'qe_dims': {col: float}}}.
+    'qe_dims' values are absolute differences in normalized space.
+    """
+    training_data = data.get('training_data')
+    weights       = data.get('weights')
+    clusters      = data.get('clusters', {})
+    id_to_row     = data.get('id_to_row', {})
+    preprocessing = data.get('preprocessing', {})
+
+    if training_data is None or weights is None or not id_to_row:
+        return {}
+
+    m, n, dim = weights.shape
+    flat_weights = weights.reshape(m * n, dim)
+
+    # Column names in training_data order (same as original CSV minus noise cols)
+    # Infer primary_id to exclude it from qe_dims
+    primary_id_col = None
+    for col, info in preprocessing.items():
+        if info.get('nunique_ratio', 0.0) >= 0.99:
+            primary_id_col = col
+            break
+
+    training_cols = [col for col, info in preprocessing.items()
+                     if info.get('status', 'used') != 'ignored']
+
+    result: dict = {}
+    for neuron_key, sample_ids in clusters.items():
+        try:
+            bi, bj = map(int, neuron_key.split('_'))
+        except ValueError:
+            continue
+        bmu_weight = flat_weights[bi * n + bj]
+
+        for sid in sample_ids:
+            row_idx = id_to_row.get(sid)
+            if row_idx is None:
+                row_idx = id_to_row.get(str(sid))
+            if row_idx is None or row_idx >= len(training_data):
+                continue
+            sample = training_data[row_idx]
+            diffs  = np.abs(sample - bmu_weight)
+            qe     = float(np.linalg.norm(sample - bmu_weight))
+
+            qe_dims = {col: round(float(diffs[k]), 4)
+                       for k, col in enumerate(training_cols)
+                       if k < len(diffs) and col != primary_id_col}
+
+            result[sid] = {'qe': round(qe, 4), 'qe_dims': qe_dims}
+
+    return result
+
+
+def _detect_qe_outliers(sample_qe: dict, already_detected: set,
+                         threshold_ratio: float = 2.5) -> list:
+    """
+    Surface samples with high QE that were missed by z-score / one_of_n detection.
+    A sample is flagged when its QE exceeds threshold_ratio × dataset median QE.
+    """
+    if not sample_qe:
+        return []
+
+    qe_values = np.array([v['qe'] for v in sample_qe.values()])
+    median_qe = float(np.median(qe_values))
+    if median_qe == 0:
+        return []
+
+    result = []
+    for sid, sq in sample_qe.items():
+        if sid in already_detected:
+            continue
+        qe = sq['qe']
+        if qe <= threshold_ratio * median_qe:
+            continue
+        qe_dims = {k: v for k, v in sq.get('qe_dims', {}).items()}
+        top_dim = max(qe_dims, key=qe_dims.get) if qe_dims else None
+        entry: dict = {
+            'sample_id': sid,
+            'neuron':    None,
+            'type':      'high_qe',
+            'qe':        round(qe, 4),
+            'qe_ratio':  round(qe / median_qe, 2),
+            'reasons':   [
+                f"High quantization error: QE={qe:.3f} "
+                f"({qe / median_qe:.1f}× median={median_qe:.3f})"
+            ],
+        }
+        if qe_dims:
+            entry['qe_dims']    = qe_dims
+            entry['top_qe_dim'] = top_dim
+        result.append(entry)
+    return result
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
