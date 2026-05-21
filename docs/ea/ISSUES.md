@@ -202,6 +202,18 @@
 
 ---
 
+## Vizualizace a metriky SOM
+
+81. **TE pro hex mapy používala Moore neighborhood (8 sousedů) místo skutečných 6 hex sousedů** — test `max(|Δi|, |Δj|) <= 1` v `calculate_topographic_error` akceptoval všech 8 Moorových sousedů pro obě topologie; hex mřížka má přirozeně 6 sousedů; TE pro hex mapy byla systematicky podhodnocena (někteří nenásledníci přijati jako sousedé); opraveno: pro `map_type == 'hex'` se oba BMU vektorizovaně převedou na cube koordináty z precomputed `self.cube_coords` a sousedství ověří podmínkou `cube_distance == 1`; square topologie zachovává původní Moore test.
+
+82. **`_grid_edges` v `plot_som_topology.py` generovala nesprávné hrany pro hex mřížku** — parity-based logika (`i % 2 == 0 → edge (i+1, j+1)`, jinak `→ (i+1, j-1)`) odpovídala nesprávné cube konvenci; na 3×3 mřížce: 4 hrany kresleny s cube vzdáleností 2 (daleká spojení přes celou mapu), 4 reální sousedé vynecháni; výsledkem byl "guláš" v topologických grafech, původně přiřazovaný projekčním artefaktům UMAP/t-SNE nebo chybám SOM — ve skutečnosti šlo o chybně nakreslené hrany; ověřeno exhaustivním porovnáním cube vzdáleností pro 3×3 a 8×8; opraveno přepisem na cube koordinátový přístup: pro každý neuron se prochází 6 cube směrů `((±1,∓1,0), (±1,0,∓1), (0,±1,∓1))`, konvertuje zpět na offset souřadnice `(i = z, j = x + i//2)` a kontrolují meze.
+
+83. **Auto-detekce hex topologie v `plot_som_topology.py` selhávala — vždy čtvercová mřížka** — `_load()` četl `dataset_meta.json` a hledal klíč `hex_topology`; topologie SOM se zapisuje do `run_metrics.json` jako `map_topology: "hex"/"square"` v `som/run.py`; `dataset_meta.json` tento klíč nikdy neobsahuje; výsledek: `hex_topology = False` bez ohledu na skutečný typ mapy; opraveno: `_load()` nyní čte i `run_metrics.json`, odvozuje `hex_topology = (map_topology == "hex")` a sloučí hodnotu do `meta`; `dataset_meta.json` zůstává prioritní pokud klíč obsahuje; `--hex` flag zůstává jako manuální override.
+
+84. **`plot_som_topology.py` projikoval maskované dimenze — projekce neodpovídala trénovacímu prostoru SOM** — `_load()` nenačítal `ignore_mask.csv`; projekční funkce (2D, 3D, HTML) volaly `_project()` na plných `(N, dim)` datech bez aplikace masky; pro datasety s primárním ID sloupcem (Iris: `id`, dim 0): `training_data[:, 0]` obsahuje monotónní sekvenci `[0/149 .. 1.0]` — strukturovaný šum který PCA/UMAP zahrne do komponent; `weights[:, :, 0]` obsahuje náhodné inicializační hodnoty (nikdy neaktualizované, maska=True po celý trénink) — PCA/UMAP geometrie vah pak neodpovídá geometrii dat; výsledkem jsou artefakty v projekci nesouvisející s SOM topologií; opraveno: `_load()` nově načítá `ignore_mask.csv`, detekuje `always_masked_cols = mask.all(axis=0)` a ukládá do `meta`; nová funkce `_strip_masked()` odstraní always-masked sloupce z obou matic před projekcí a nuluje per-sample NaN pozice; pro Iris: `(150, 6)` → `(150, 5)` (bez id dimenze), projekce odpovídá prostoru kde SOM skutečně trénovala.
+
+---
+
 ## Checkpointy a LSTM data
 
 23. **Řídké checkpointy při dlouhém tréninku SOM** — 15 000 iterací a 25 checkpointů = 1 checkpoint na 600 iterací; příliš málo dat pro LSTM trénink; přidán flag `checkpoint_every_mqe` pro uložení při každém výpočtu MQE (~500 checkpointů na běh).

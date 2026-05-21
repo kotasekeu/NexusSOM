@@ -12,6 +12,8 @@ tqdm
 fpdf2
 pymoo
 psutil>=5.9.0
+plotly
+umap-learn
 
 # Optional: Neural Network Dependencies
 # Install separately with: pip install -r requirements_nn.txt

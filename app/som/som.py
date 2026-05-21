@@ -132,8 +132,16 @@ class KohonenSOM:
         bmu1_i, bmu1_j = np.divmod(best_two[:, 0], self.n)
         bmu2_i, bmu2_j = np.divmod(best_two[:, 1], self.n)
 
-        # Moore neighborhood: neighbors if max(|Δi|, |Δj|) <= 1
-        not_neighbors = (np.abs(bmu1_i - bmu2_i) > 1) | (np.abs(bmu1_j - bmu2_j) > 1)
+        if self.map_type == 'hex':
+            # Hex has 6 neighbors — use cube coordinate distance (== 1 iff true neighbor).
+            # cube_coords are precomputed correctly in __init__ with floor(i/2) offset.
+            cube_flat = self.cube_coords.reshape(-1, 3)
+            bmu1_cube = cube_flat[best_two[:, 0]]  # (N, 3)
+            bmu2_cube = cube_flat[best_two[:, 1]]  # (N, 3)
+            not_neighbors = (np.sum(np.abs(bmu1_cube - bmu2_cube), axis=1) / 2) > 1
+        else:
+            # Square: Moore neighborhood — max(|Δi|, |Δj|) <= 1
+            not_neighbors = (np.abs(bmu1_i - bmu2_i) > 1) | (np.abs(bmu1_j - bmu2_j) > 1)
         return not_neighbors.mean()
 
     def calculate_u_matrix_metrics(self) -> dict:
