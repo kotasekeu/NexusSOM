@@ -27,14 +27,20 @@ def load_pareto_csv(results_dir: str) -> pd.DataFrame:
 
     df = pd.read_csv(path)
     df["generation"] = df["generation"].astype(int)
-    for col in ("raw_mqe_ratio", "raw_te", "dead_ratio", "constraint_violation",
-                "map_m", "map_n", "duration"):
+    for col in ("raw_mqe_ratio", "raw_te", "raw_topo_corr", "dead_ratio",
+                "constraint_violation", "map_m", "map_n", "duration"):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
     df["constraint_violation"] = df["constraint_violation"].fillna(0.0)
     df["is_feasible"] = ~(df["is_penalized"].astype(str).str.lower() == "true")
     df["map_area"] = df["map_m"] * df["map_n"]
+
+    # Derive Pareto-space topological objective (lower = better, consistent with MQE/TE)
+    if "raw_topo_corr" in df.columns:
+        df["topo_obj"] = 1.0 - df["raw_topo_corr"].fillna(0.0)
+    elif "dead_ratio" in df.columns:
+        df["topo_obj"] = df["dead_ratio"]  # backward compat with pre-85 runs
 
     if df["raw_mqe_ratio"].isna().all():
         sys.exit(
@@ -152,18 +158,18 @@ def plot_evolution(df: pd.DataFrame, results_dir: str, output_path: str = None,
     _add_colorbar(fig, ax3, cmap, norm, generations)
 
     _scatter_panel(ax4, df, generations, gen_color, gen_alpha,
-                   xcol="raw_mqe_ratio", ycol="dead_ratio",
+                   xcol="raw_mqe_ratio", ycol="topo_obj",
                    xlabel="MQE ratio  (→ better)",
-                   ylabel="Dead neuron ratio  (↑ better)",
-                   title="MQE ratio vs Dead Neuron Ratio",
+                   ylabel="1 − Topo. corr. ρ  (↑ better)",
+                   title="MQE ratio vs Topological Correlation",
                    fixed_range=fixed_range)
     _add_colorbar(fig, ax4, cmap, norm, generations)
 
     _scatter_panel(ax5, df, generations, gen_color, gen_alpha,
-                   xcol="raw_te", ycol="dead_ratio",
+                   xcol="raw_te", ycol="topo_obj",
                    xlabel="Topographic error  (→ better)",
-                   ylabel="Dead neuron ratio  (↑ better)",
-                   title="Topographic Error vs Dead Neuron Ratio",
+                   ylabel="1 − Topo. corr. ρ  (↑ better)",
+                   title="Topographic Error vs Topological Correlation",
                    fixed_range=fixed_range)
     _add_colorbar(fig, ax5, cmap, norm, generations)
 
@@ -244,10 +250,10 @@ def export_csv(df: pd.DataFrame, stats: pd.DataFrame, results_dir: str, csv_path
 
     param_cols = [c for c in df.columns if c not in (
         "generation", "uid", "is_penalized", "is_feasible", "map_area",
-        "raw_mqe_ratio", "raw_te", "dead_ratio", "constraint_violation",
-        "map_m", "map_n", "duration",
+        "raw_mqe_ratio", "raw_te", "raw_topo_corr", "topo_obj", "dead_ratio",
+        "constraint_violation", "map_m", "map_n", "duration",
     )]
-    obj_cols = ["raw_mqe_ratio", "raw_te", "dead_ratio", "constraint_violation"]
+    obj_cols = ["raw_mqe_ratio", "raw_te", "raw_topo_corr", "dead_ratio", "constraint_violation"]
 
     rows = []
     for g in sorted(df["generation"].unique()):
@@ -295,7 +301,7 @@ def plot_pareto_3d(df: pd.DataFrame, results_dir: str, output_path: str = None,
 
     xs_all = df["raw_mqe_ratio"].values
     ys_all = df["raw_te"].values
-    zs_all = df["dead_ratio"].values
+    zs_all = df["topo_obj"].values
 
     pad_x = (xs_all.max() - xs_all.min()) * 0.08
     pad_y = (ys_all.max() - ys_all.min()) * 0.08
@@ -323,7 +329,7 @@ def plot_pareto_3d(df: pd.DataFrame, results_dir: str, output_path: str = None,
 
         xs = gdf["raw_mqe_ratio"].values
         ys = gdf["raw_te"].values
-        zs = gdf["dead_ratio"].values
+        zs = gdf["topo_obj"].values
         colors_g = [color] * len(gdf)
 
         # Shadow projections on the three background panes
@@ -341,7 +347,7 @@ def plot_pareto_3d(df: pd.DataFrame, results_dir: str, output_path: str = None,
             ax.scatter(
                 feasible["raw_mqe_ratio"],
                 feasible["raw_te"],
-                feasible["dead_ratio"],
+                feasible["topo_obj"],
                 c=[color], s=size_f, alpha=alpha,
                 marker="o", edgecolors="none", zorder=3,
             )
@@ -350,7 +356,7 @@ def plot_pareto_3d(df: pd.DataFrame, results_dir: str, output_path: str = None,
             ax.scatter(
                 infeasible["raw_mqe_ratio"],
                 infeasible["raw_te"],
-                infeasible["dead_ratio"],
+                infeasible["topo_obj"],
                 c=[color], s=size_f * 0.5, alpha=alpha * 0.5,
                 marker="x", linewidths=1.5, zorder=2,
             )
@@ -360,14 +366,14 @@ def plot_pareto_3d(df: pd.DataFrame, results_dir: str, output_path: str = None,
     ax.scatter(
         final_df["raw_mqe_ratio"],
         final_df["raw_te"],
-        final_df["dead_ratio"],
+        final_df["topo_obj"],
         s=280, c="red", marker="*", zorder=6,
     )
 
     if guide_lines:
         for xi, yi, zi in zip(final_df["raw_mqe_ratio"],
                               final_df["raw_te"],
-                              final_df["dead_ratio"]):
+                              final_df["topo_obj"]):
             ax.plot([xi, xi], [yi, yi], [zi, z_floor], color="red", alpha=0.12, lw=0.7)
             ax.plot([xi, xi], [yi, y_wall], [zi, zi],  color="red", alpha=0.12, lw=0.7)
             ax.plot([xi, x_wall], [yi, yi], [zi, zi],  color="red", alpha=0.12, lw=0.7)
@@ -433,11 +439,11 @@ def plot_pareto_3d(df: pd.DataFrame, results_dir: str, output_path: str = None,
 
     ax.set_xlabel("MQE ratio  (↓ better)", fontsize=11, labelpad=10)
     ax.set_ylabel("Topographic error  (↓ better)", fontsize=11, labelpad=10)
-    ax.set_zlabel("Dead neuron ratio  (↓ better)", fontsize=11, labelpad=10)
+    ax.set_zlabel("1 − Topo. corr. ρ  (↓ better)", fontsize=11, labelpad=10)
     ax.set_title(
         f"Pareto Front 3D — {os.path.basename(os.path.normpath(results_dir))}\n"
         f"({len(df['uid'].unique())} solutions across {len(generations)} generations)\n"
-        f"Orthographic — floor=MQE×TE  back wall=MQE×Dead  right wall=TE×Dead",
+        f"Orthographic — floor=MQE×TE  back wall=MQE×(1−ρ)  right wall=TE×(1−ρ)",
         fontsize=12, pad=16,
     )
 

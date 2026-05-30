@@ -95,3 +95,7 @@ kohonen-log.txt
 /app/lstm/visualizations/
 /app/mlp/data/
 /data/datasets/Trips/results/
+/data/datasets/SwissRoll/results/
+/var/Prezentace/
+/data/datasets/datasets.zip
+/app/mlp/visualizations/

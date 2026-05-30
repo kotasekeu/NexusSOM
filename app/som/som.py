@@ -144,6 +144,41 @@ class KohonenSOM:
             not_neighbors = (np.abs(bmu1_i - bmu2_i) > 1) | (np.abs(bmu1_j - bmu2_j) > 1)
         return not_neighbors.mean()
 
+    def calculate_topological_correlation(self) -> float:
+        """
+        Spearman rank correlation between pairwise distances of weight vectors
+        (data space) and pairwise distances of neurons (grid space).
+
+        High ρ → map unfolds the data manifold: neurons far apart in the grid
+                  are also far apart in weight space.
+        Low ρ  → map is crumpled: grid distances and weight distances diverge.
+
+        Uses only weight vectors — independent of dataset size.
+        Returns ρ ∈ [-1, 1]. Higher is better (EA objective: minimise 1 − ρ).
+        """
+        from scipy.spatial.distance import pdist
+        from scipy.stats import spearmanr
+
+        flat_w = self.weights.reshape(-1, self.dim)
+
+        data_dists = pdist(flat_w, metric='euclidean')
+
+        coord_flat = self.neuron_coords.reshape(-1, 2)
+        i_vals = coord_flat[:, 0].astype(float)
+        j_vals = coord_flat[:, 1].astype(float)
+        if self.map_type == 'hex':
+            x_phys = j_vals + 0.5 * (i_vals % 2)
+            y_phys = i_vals * (np.sqrt(3) / 2)
+            grid_dists = pdist(np.stack([x_phys, y_phys], axis=1), metric='euclidean')
+        else:
+            grid_dists = pdist(np.stack([i_vals, j_vals], axis=1), metric='euclidean')
+
+        if data_dists.std() < 1e-10 or grid_dists.std() < 1e-10:
+            return 0.0
+
+        rho, _ = spearmanr(data_dists, grid_dists)
+        return float(rho) if not np.isnan(rho) else 0.0
+
     def calculate_u_matrix_metrics(self) -> dict:
         m, n, weights = self.m, self.n, self.weights
         u_matrix = np.zeros((m, n))

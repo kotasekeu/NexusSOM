@@ -449,7 +449,7 @@ def _log_pareto_metrics(generation: int, metrics: dict):
 def log_pareto_front(generation: int, search_space: dict):
     """
     Append the current Pareto archive to pareto_front.csv — one row per (generation, solution).
-    Columns: generation, uid, raw_mqe_ratio, raw_te, dead_ratio,
+    Columns: generation, uid, raw_mqe_ratio, raw_te, raw_topo_corr, dead_ratio,
              is_penalized, penalty_factor, penalty_reason,
              initial_mqe, pen_mqe_ratio, pen_te,
              u_matrix_mean, u_matrix_std, u_matrix_max, distance_map_max,
@@ -472,7 +472,8 @@ def log_pareto_front(generation: int, search_space: dict):
         [
             res.get('raw_mqe_improvement_ratio', 1.0) or 1.0,
             res.get('raw_topographic_error', res.get('topographic_error', 1.0)),
-            res.get('dead_neuron_ratio', 1.0),
+            1.0 - float(res.get('raw_topological_correlation',
+                                res.get('topological_correlation', 0.0))),
         ]
         for _, res in ARCHIVE
         if not res.get('is_penalized', False)
@@ -486,7 +487,7 @@ def log_pareto_front(generation: int, search_space: dict):
     ds_keys = sorted({k for _, res in ARCHIVE for k in res if k.startswith('ds_')})
     fieldnames = [
         'generation', 'uid', 'dataset_name',
-        'raw_mqe_ratio', 'raw_te', 'dead_ratio',
+        'raw_mqe_ratio', 'raw_te', 'raw_topo_corr', 'dead_ratio',
         'constraint_violation', 'is_penalized', 'penalty_factor', 'penalty_reason',
         'initial_mqe', 'pen_mqe_ratio', 'pen_te',
         'map_m', 'map_n',
@@ -506,6 +507,7 @@ def log_pareto_front(generation: int, search_space: dict):
                 'dataset_name':        results.get('dataset_name'),
                 'raw_mqe_ratio':       results.get('raw_mqe_improvement_ratio'),
                 'raw_te':              results.get('raw_topographic_error', results.get('topographic_error')),
+                'raw_topo_corr':       results.get('raw_topological_correlation', results.get('topological_correlation')),
                 'dead_ratio':          results.get('dead_neuron_ratio'),
                 'constraint_violation': results.get('constraint_violation', 0.0),
                 'is_penalized':        results.get('is_penalized', False),
@@ -877,24 +879,33 @@ def run_evolution(ea_config: dict, data: np.ndarray, ignore_mask: np.ndarray) ->
             # ratio < 1 = improvement, ratio > 1 = worse than random init (penalized maps).
             # Fall back to absolute values when ratios are unavailable (e.g. no checkpoints).
             # mqe_improvement_ratio normalizes MQE across map sizes and datasets.
-            # topographic_error and dead_neuron_ratio are already in [0,1] — no normalization needed.
-            # NSGA-II objectives use RAW values (before penalty) so dominance reflects true quality.
-            # Penalized solutions are still in the population for genetic diversity but their raw
-            # quality metrics determine ranking. Penalty metadata is logged separately.
-            # Objectives: [raw_mqe_ratio, raw_topographic_error, dead_neuron_ratio]
-            # Training duration is removed — it is dataset/config metadata, not a quality objective.
+            # Objectives: [raw_mqe_ratio, raw_topographic_error, 1 - topological_correlation]
+            #   raw_mqe_improvement_ratio    — quantization quality (minimise)
+            #   raw_topographic_error        — local topology (minimise)
+            #   1 - topological_correlation  — global topology / manifold unfolding (minimise)
+            #
+            # dead_neuron_ratio removed from objectives — it remains as a constraint violation only.
+            # Keeping it as an objective created pressure toward small maps regardless of quality.
+            # As a constraint it hard-excludes structurally invalid configs without distorting the
+            # Pareto front geometry.
             def _mqe_obj(res):
                 r = res.get('raw_mqe_improvement_ratio')
                 if r is not None:
                     return r
                 return res.get('raw_best_mqe', res['best_mqe'])
 
+            def _corr_obj(res):
+                rho = res.get('raw_topological_correlation')
+                if rho is None:
+                    rho = res.get('topological_correlation', 0.0)
+                return 1.0 - float(rho)
+
             if use_cnn_objective:
                 objectives = np.array([
                     [
                         _mqe_obj(res),
                         res.get('raw_topographic_error', res.get('topographic_error', 1.0)),
-                        res.get('dead_neuron_ratio', 1.0),
+                        _corr_obj(res),
                         1.0 - (res.get('cnn_quality_score') or 0.0),
                     ]
                     for cfg, res in combined_population
@@ -904,7 +915,7 @@ def run_evolution(ea_config: dict, data: np.ndarray, ignore_mask: np.ndarray) ->
                     [
                         _mqe_obj(res),
                         res.get('raw_topographic_error', res.get('topographic_error', 1.0)),
-                        res.get('dead_neuron_ratio', 1.0),
+                        _corr_obj(res),
                     ]
                     for cfg, res in combined_population
                 ])
@@ -1294,6 +1305,7 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
                         'distance_map_max': 0.0, 'total_weight_updates': 0, 'epochs_ran': 0,
                         'cnn_quality_score': None,
                         'raw_best_mqe': pred_mqe * 2.0, 'raw_topographic_error': 1.0,
+                        'topological_correlation': 0.0, 'raw_topological_correlation': 0.0,
                         'raw_mqe_improvement_ratio': None,
                         'map_m': 10, 'map_n': 10,
                         'constraint_violation': 999.0, 'penalty_factor': 1000.0,
@@ -1347,9 +1359,11 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
         training_results['uid'] = uid
 
         topographic_error = som.calculate_topographic_error(data, mask=ignore_mask)
+        topo_corr = som.calculate_topological_correlation()
         u_matrix_metrics = som.calculate_u_matrix_metrics()
 
         training_results['topographic_error'] = topographic_error
+        training_results['topological_correlation'] = round(topo_corr, 8)
         training_results.update(u_matrix_metrics)
 
         training_results['training_duration'] = training_results.get('duration', None)
@@ -1385,6 +1399,7 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
         # Store raw values and map dimensions for constraint violation computation
         training_results['raw_best_mqe'] = round(raw_best_mqe, 8)
         training_results['raw_topographic_error'] = round(raw_topographic_error, 8)
+        training_results['raw_topological_correlation'] = round(topo_corr, 8)
         training_results['map_m'] = som.m
         training_results['map_n'] = som.n
 

@@ -150,3 +150,16 @@ python3 generate_dataset.py \
 
 generování grafů pareto z datasetu
 python app/tools/plot_pareto_evolution.py data/datasets/LungCancerDataset/results/
+
+
+generování topo grafů
+python app/tools/plot_som_topology.py data/datasets/LungCancerDataset/results/20260520_222723 --html
+
+ --projection tsne
+ umap
+ pca
+
+
+ generovaní pareto grafů
+
+ python app/tools/plot_pareto_evolution.py data/datasets/BreastCancer/results/20260518_123231/seed_42  --space-grid 5 --guide-lines --fixed-range
