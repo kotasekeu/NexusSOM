@@ -1,3 +1,4 @@
+
 # Fáze 2 — Databáze + API + LLM tool calling: specifikace požadavků
 
 **Verze:** 1.1 · **Datum:** 2026-06-02  

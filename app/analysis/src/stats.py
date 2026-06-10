@@ -325,6 +325,209 @@ def compute_silhouette(data: dict, n_max: int = 2000) -> dict:
     return {'global': global_mean, 'per_neuron': per_neuron}
 
 
+# ─── Spatial map analysis ─────────────────────────────────────────────────────
+# Mathematical replacement of the closed CNN track (docs/cnn/CNN_REQUIREMENTS.md):
+# fixed operators on the raw weight matrix instead of learned visual assessment.
+
+def compute_spatial_stats(data: dict) -> dict:
+    """
+    D4: Spatial quality of the organized map, computed directly on
+    weights[m, n, dim] — no images, no training.
+
+    Per feature: spatial gradients, Moran's I (spatial autocorrelation),
+    local extrema counts. Per categorical column: dominant-category region
+    structure (see compute_regions).
+
+    spatial_quality_score (0-1, higher = better organized) is the mean of:
+      - organization:     (mean Moran's I + 1) / 2 — smooth maps autocorrelate
+      - smoothness:       1 / (1 + median gradient roughness)
+      - region_coherence: 1 - mean dominant-category boundary ratio
+        (only when categorical pie data exists)
+
+    Note: adjacency is rook (4-neighbor grid). For hex maps this is an
+    approximation, but consistent across runs and therefore comparable.
+    """
+    weights = data.get('weights')
+    if weights is None or getattr(weights, 'ndim', 0) != 3:
+        return {}
+
+    feature_names = _weight_feature_names(data, weights.shape[2])
+    skip = {data['columns'].get('primary_id')} | set(data['columns'].get('noise', []))
+
+    per_feature: dict = {}
+    morans: list = []
+    roughness_vals: list = []
+    for d, name in enumerate(feature_names):
+        if name in skip:
+            continue
+        plane = weights[:, :, d].astype(float)
+        gy, gx = np.gradient(plane)
+        grad_mag = np.hypot(gy, gx)
+        plane_std = float(plane.std())
+        roughness = float(grad_mag.mean() / plane_std) if plane_std > 0 else None
+        mi = _morans_i(plane)
+        n_max, n_min = _count_local_extrema(plane)
+        entry = {
+            'gradient_mean': round(float(grad_mag.mean()), 4),
+            'gradient_max':  round(float(grad_mag.max()), 4),
+            'n_local_maxima': n_max,
+            'n_local_minima': n_min,
+        }
+        if roughness is not None:
+            entry['roughness'] = round(roughness, 4)
+            roughness_vals.append(roughness)
+        if mi is not None:
+            entry['morans_i'] = round(mi, 4)
+            morans.append(mi)
+        per_feature[name] = entry
+
+    regions = compute_regions(data)
+
+    components: list = []
+    result: dict = {'per_feature': per_feature}
+    if morans:
+        morans_mean = float(np.mean(morans))
+        result['morans_i_mean'] = round(morans_mean, 4)
+        components.append((morans_mean + 1.0) / 2.0)
+    if roughness_vals:
+        roughness_median = float(np.median(roughness_vals))
+        result['gradient_roughness_median'] = round(roughness_median, 4)
+        components.append(1.0 / (1.0 + roughness_median))
+    if regions:
+        result['regions'] = regions
+        boundary_ratios = [r['boundary_ratio'] for r in regions.values()
+                           if r.get('boundary_ratio') is not None]
+        if boundary_ratios:
+            components.append(1.0 - float(np.mean(boundary_ratios)))
+
+    if components:
+        result['spatial_quality_score'] = round(float(np.mean(components)), 4)
+    return result
+
+
+def compute_regions(data: dict) -> dict:
+    """
+    D5: Regional structure of dominant categories on the map.
+    For each categorical column, flood-fills (4-connectivity) contiguous
+    neurons sharing the same dominant category.
+
+    Returns {col: {n_regions, boundary_ratio, regions: [{category, size,
+    center: [row, col]}, ...largest 10]}}.
+    """
+    weights = data.get('weights')
+    map_shape = (data.get('run_metrics') or {}).get('map_size') or []
+    if len(map_shape) != 2 and weights is not None and getattr(weights, 'ndim', 0) == 3:
+        map_shape = [weights.shape[0], weights.shape[1]]
+    if len(map_shape) != 2:
+        return {}
+
+    try:
+        from scipy import ndimage
+    except ImportError:
+        return {}
+
+    result: dict = {}
+    for col, col_pie in (data.get('pie_data') or {}).items():
+        mat, code_to_label = _dominant_matrix(col_pie, tuple(map_shape))
+        if mat is None:
+            continue
+        regions: list = []
+        for code in np.unique(mat[mat >= 0]):
+            labeled, n_blobs = ndimage.label(mat == code)
+            for blob_id in range(1, n_blobs + 1):
+                cells = np.argwhere(labeled == blob_id)
+                center = cells.mean(axis=0)
+                regions.append({
+                    'category': code_to_label.get(int(code), str(code)),
+                    'size':     int(len(cells)),
+                    'center':   [round(float(center[0]), 1), round(float(center[1]), 1)],
+                })
+        regions.sort(key=lambda r: -r['size'])
+        result[col] = {
+            'n_regions':      len(regions),
+            'boundary_ratio': _boundary_ratio(mat),
+            'regions':        regions[:10],
+        }
+    return result
+
+
+def _weight_feature_names(data: dict, dim: int) -> list:
+    """Weight dims follow the training input column order (see
+    som/visualization.py generate_component_planes); fall back to dim_i."""
+    df = data.get('original_df')
+    if df is not None and len(df.columns) == dim:
+        return list(df.columns)
+    return [f'dim_{i}' for i in range(dim)]
+
+
+def _morans_i(plane: np.ndarray) -> float | None:
+    """Moran's I with rook adjacency. None for constant planes."""
+    z = plane - plane.mean()
+    denom = float((z ** 2).sum())
+    if denom == 0:
+        return None
+    num = 2.0 * float((z[:, :-1] * z[:, 1:]).sum() + (z[:-1, :] * z[1:, :]).sum())
+    w_sum = 2 * (z[:, :-1].size + z[:-1, :].size)
+    return (z.size / w_sum) * (num / denom)
+
+
+def _count_local_extrema(plane: np.ndarray) -> tuple:
+    """Strict local maxima/minima in a 3x3 neighborhood (plateaus excluded)."""
+    try:
+        from scipy.ndimage import maximum_filter, minimum_filter
+    except ImportError:
+        return 0, 0
+    mx = maximum_filter(plane, size=3)
+    mn = minimum_filter(plane, size=3)
+    not_flat = mx > mn
+    return (int(((plane == mx) & not_flat).sum()),
+            int(((plane == mn) & not_flat).sum()))
+
+
+def _dominant_matrix(col_pie: dict, shape: tuple):
+    """(m, n) int matrix of dominant category codes per neuron, -1 = no samples.
+    Returns (matrix, code → label map); (None, {}) if pie data is unusable."""
+    counts = col_pie.get('counts', {})
+    categories = col_pie.get('categories', {})
+    if not counts:
+        return None, {}
+    mat = np.full(shape, -1, dtype=int)
+    raw_to_code: dict = {}
+    code_to_label: dict = {}
+    for neuron_key, cnts in counts.items():
+        if not cnts or sum(cnts.values()) == 0:
+            continue
+        try:
+            r, c = (int(x) for x in str(neuron_key).split('_'))
+        except ValueError:
+            continue
+        if not (0 <= r < shape[0] and 0 <= c < shape[1]):
+            continue
+        dom_raw = max(cnts, key=lambda k: cnts[k])
+        code = raw_to_code.setdefault(dom_raw, len(raw_to_code))
+        code_to_label[code] = str(categories.get(dom_raw, dom_raw))
+        mat[r, c] = code
+    if (mat >= 0).sum() == 0:
+        return None, {}
+    return mat, code_to_label
+
+
+def _boundary_ratio(mat: np.ndarray) -> float | None:
+    """Fraction of adjacent (rook) neuron pairs, both active, whose dominant
+    categories differ. 0 = one homogeneous block, 1 = checkerboard."""
+    pairs = 0
+    mismatches = 0
+    h_valid = (mat[:, :-1] >= 0) & (mat[:, 1:] >= 0)
+    pairs += int(h_valid.sum())
+    mismatches += int((h_valid & (mat[:, :-1] != mat[:, 1:])).sum())
+    v_valid = (mat[:-1, :] >= 0) & (mat[1:, :] >= 0)
+    pairs += int(v_valid.sum())
+    mismatches += int((v_valid & (mat[:-1, :] != mat[1:, :])).sum())
+    if pairs == 0:
+        return None
+    return round(mismatches / pairs, 4)
+
+
 # ─── Map topology ─────────────────────────────────────────────────────────────
 
 def compute_topology(data: dict) -> dict:

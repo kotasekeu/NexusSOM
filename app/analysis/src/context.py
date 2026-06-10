@@ -9,7 +9,7 @@ import pandas as pd
 
 from .loader import load_results
 from .stats import (compute_global_stats, compute_cluster_stats, compute_topology,
-                    compute_tc, compute_silhouette)
+                    compute_tc, compute_silhouette, compute_spatial_stats)
 from .anomalies import detect_anomalies, compute_sample_qe
 
 
@@ -27,6 +27,9 @@ def build_llm_context(results_dir: str) -> dict:
     silhouette   = compute_silhouette(data)
     if silhouette.get('global') is not None:
         topology['silhouette'] = silhouette['global']
+    spatial      = compute_spatial_stats(data)
+    if spatial.get('spatial_quality_score') is not None:
+        topology['spatial_quality_score'] = spatial['spatial_quality_score']
     clusters     = compute_cluster_stats(data, global_stats)
     sil_per_n    = silhouette.get('per_neuron', {})
     for c in clusters:
@@ -37,7 +40,7 @@ def build_llm_context(results_dir: str) -> dict:
     anomaly_records = _build_anomaly_records(
         data, anomalies.get('top_anomalies', []), global_stats, sample_qe)
 
-    return {
+    context = {
         'map':              topology,
         'clusters':         _serialize_clusters(clusters),
         'anomalies':        _serialize_anomalies(anomalies),
@@ -45,6 +48,9 @@ def build_llm_context(results_dir: str) -> dict:
         'dimension_stats':  global_stats.get('dimension_stats', {}),
         'category_distributions': global_stats.get('category_distributions', {}),
     }
+    if spatial:
+        context['spatial_analysis'] = spatial
+    return context
 
 
 def save_llm_context(results_dir: str) -> str:

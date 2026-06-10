@@ -43,12 +43,19 @@ compute_spatial_quality(weights, clusters, dominant_category_map)
 
 | Krok | Co | Kde | Stav |
 |---|---|---|---|
-| 1 | `compute_spatial_quality()` — gradienty + Moran's I + lokální extrémy | `app/analysis/src/stats.py` | ❌ |
-| 2 | `compute_regions()` — flood-fill regionální shrnutí (D5) | `app/analysis/src/stats.py` | ❌ |
+| 1 | `compute_spatial_stats()` — gradienty + Moran's I + lokální extrémy + `spatial_quality_score` | `app/analysis/src/stats.py` | ✅ 2026-06-10 |
+| 2 | `compute_regions()` — flood-fill regionální shrnutí (D5) + boundary ratio | `app/analysis/src/stats.py` | ✅ 2026-06-10 |
 | 3 | Přidat `spatial_quality_score` do `ea.py` jako 4. Pareto cíl | `app/ea/ea.py` | ❌ |
 | 4 | Batch výpočet pro 5 853 existujících individuí | jednorázový skript | ❌ |
 | 5 | Přetrénovat MLP se 4. targetem (`spatial_quality_score`) | `app/mlp/` | ❌ |
 | 6 | Rozšířit LSTM Phase 3 reward o spatial signal | `app/lstm/train_phase3.py` | ❌ |
+
+**Implementační poznámky (kroky 1–2)**:
+- Výstup je napojen do `llm_context.json`: klíč `spatial_analysis` (per-feature metriky, regiony) + `map.spatial_quality_score`.
+- `spatial_quality_score` ∈ [0, 1], průměr tří složek: organizace `(Moran's I + 1)/2`, hladkost `1/(1 + medián gradient roughness)`, koherence regionů `1 − boundary_ratio` (jen pokud existují kategorické pie data).
+- Sousednost je rook (4-okolí) i pro hex mapy — aproximace, ale konzistentní napříč běhy, tedy porovnatelná.
+- Hranice clusterů: místo Sobel filtru (nevhodný pro nominální kódy) se počítá podíl sousedních párů aktivních neuronů s odlišnou dominantní kategorií.
+- Unit testy: `tests/unit/test_spatial_stats.py`. Ověřeno na wine/hybrid (30×30): score 0.89, Moran 0.93, `type` = 3 koherentní regiony.
 
 ---
 
