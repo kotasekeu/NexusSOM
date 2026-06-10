@@ -2,9 +2,10 @@
 plot_som_topology.py — SOM weight vectors + topological grid in projected space.
 
 Projection algorithms:
-  --projection pca   Linear, fast. Fails on large high-dim maps (low explained variance).
-  --projection umap  Non-linear, unfolds the SOM manifold. Best for large maps.
-  --projection tsne  Non-linear, fits data+weights jointly. Slower than UMAP.
+  --projection pca    Linear, fast. Fails on non-linear manifolds (Swiss Roll).
+  --projection umap   Non-linear, unfolds the SOM manifold. Best for large maps.
+  --projection tsne   Non-linear, fits data+weights jointly. Slower than UMAP.
+  --projection isomap Geodesic distance preserving. Best for manifold benchmarks.
 
 Data layers:
   default         Scatter of training samples (faint background)
@@ -12,14 +13,15 @@ Data layers:
   --grid-only     No training samples — pure grid geometry
 
 Output formats:
-  default         topology_2d.png (static)
-  --3d            topology_3d.png (static, only for pca/umap)
-  --html          topology_interactive.html (Plotly, zoomable, hover info)
+  default         topology_2d_{method}.png (static)
+  --3d            topology_3d_{method}.png (static, only for pca/umap/isomap)
+  --html          topology_interactive_{method}.html (Plotly, zoomable, hover info)
+  --compare       2×2 grid: (data | weights) × (PCA | ISOMAP) — ablation / Swiss Roll
 
 Usage:
   python app/tools/plot_som_topology.py <results_dir>
-  python app/tools/plot_som_topology.py <results_dir> --projection umap --grid-only
-  python app/tools/plot_som_topology.py <results_dir> --html
+  python app/tools/plot_som_topology.py <results_dir> --projection isomap
+  python app/tools/plot_som_topology.py <results_dir> --compare
   python app/tools/plot_som_topology.py <results_dir> --projection umap --3d --html
 """
 
@@ -96,12 +98,19 @@ def _strip_masked(training_data: np.ndarray, weights_flat: np.ndarray,
 
     Returns cleaned (training_data, weights_flat, kept_col_indices).
     """
-    n_dims = training_data.shape[1]
+    n_dims = weights_flat.shape[1]
     always_masked = meta.get('_always_masked_cols', [])
     keep = [d for d in range(n_dims) if d not in always_masked]
 
-    td_clean = training_data[:, keep].copy()
     wf_clean = weights_flat[:, keep].copy()
+
+    if training_data is None:
+        if always_masked:
+            print(f'Projection: stripped always-masked dims {always_masked} '
+                  f'({n_dims}D → {len(keep)}D)  [weights-only mode]')
+        return None, wf_clean, keep
+
+    td_clean = training_data[:, keep].copy()
 
     # Zero out per-sample NaN positions so they don't skew the projection
     mask = meta.get('_ignore_mask')
@@ -123,13 +132,16 @@ def _project(training_data: np.ndarray, weights_flat: np.ndarray,
     """
     Project training_data and weights_flat into n_components dimensions.
     Returns (data_proj, weights_proj, explained_variance_ratio_or_None).
+    If training_data is None, projects weights only (data_proj = None).
     """
+    weights_only = training_data is None
+    fit_data = weights_flat if weights_only else training_data
+
     if method == 'pca':
         pca = PCA(n_components=min(n_components, weights_flat.shape[1]))
-        pca.fit(training_data)
-        return (pca.transform(training_data),
-                pca.transform(weights_flat),
-                pca.explained_variance_ratio_)
+        pca.fit(fit_data)
+        data_proj = None if weights_only else pca.transform(training_data)
+        return data_proj, pca.transform(weights_flat), pca.explained_variance_ratio_
 
     if method == 'umap':
         try:
@@ -137,13 +149,19 @@ def _project(training_data: np.ndarray, weights_flat: np.ndarray,
         except ImportError:
             sys.exit('ERROR: umap-learn not installed. Run: pip install umap-learn')
         reducer = UMAP(n_components=n_components, random_state=42, verbose=False)
+        if weights_only:
+            return None, reducer.fit_transform(weights_flat), None
         data_proj = reducer.fit_transform(training_data)
-        w_proj    = reducer.transform(weights_flat)
-        return data_proj, w_proj, None
+        return data_proj, reducer.transform(weights_flat), None
 
     if method == 'tsne':
         from sklearn.manifold import TSNE
-        # t-SNE has no transform() — fit jointly on data + weights, then split
+        # t-SNE has no transform() — fit jointly, then split
+        if weights_only:
+            proj = TSNE(n_components=n_components, random_state=42,
+                        perplexity=min(30, len(weights_flat) - 1),
+                        max_iter=1000, verbose=0).fit_transform(weights_flat)
+            return None, proj, None
         n_data = len(training_data)
         combined = np.vstack([training_data, weights_flat])
         perplexity = min(30, len(combined) - 1)
@@ -152,7 +170,29 @@ def _project(training_data: np.ndarray, weights_flat: np.ndarray,
         proj = tsne.fit_transform(combined)
         return proj[:n_data], proj[n_data:], None
 
-    sys.exit(f'ERROR: unknown projection method "{method}". Use pca, umap, or tsne.')
+    if method == 'isomap':
+        import warnings
+        from sklearn.manifold import Isomap
+        if weights_only:
+            n_neighbors = min(15, len(weights_flat) - 1)
+            iso = Isomap(n_components=n_components, n_neighbors=n_neighbors)
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                return None, iso.fit_transform(weights_flat), None
+        # Joint fit on data + weights so the weight vectors become part of the
+        # neighbour graph. Using .transform() after fitting only on data causes
+        # boundary neurons to be mapped via Nyström approximation to wrong
+        # locations, producing long crossing lines in the weight grid.
+        n_neighbors = min(15, len(training_data) - 1)
+        iso = Isomap(n_components=n_components, n_neighbors=n_neighbors)
+        n_data = len(training_data)
+        combined = np.vstack([training_data, weights_flat])
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            combined_proj = iso.fit_transform(combined)
+        return combined_proj[:n_data], combined_proj[n_data:], None
+
+    sys.exit(f'ERROR: unknown projection method "{method}". Use pca, umap, tsne, or isomap.')
 
 
 # ─── Grid connectivity ────────────────────────────────────────────────────────
@@ -256,8 +296,8 @@ def plot_topology_2d(weights: np.ndarray, training_data: np.ndarray,
     fig, ax = plt.subplots(figsize=(10, 8))
     ax.set_facecolor('#f8f8f8')
 
-    # Layer 1: data
-    if not grid_only:
+    # Layer 1: data (skip if not available)
+    if not grid_only and data_2d is not None:
         if density:
             ax.hexbin(data_2d[:, 0], data_2d[:, 1],
                       gridsize=40, cmap='Blues', mincnt=1,
@@ -355,7 +395,8 @@ def plot_topology_3d(weights: np.ndarray, training_data: np.ndarray,
     flat_w = weights.reshape(m * n, dim)
     td_proj, wf_proj, _ = _strip_masked(training_data, flat_w, meta or {})
 
-    if td_proj.shape[1] < 3:
+    active_dims = wf_proj.shape[1]
+    if active_dims < 3:
         print('WARNING: fewer than 3 active dimensions after masking — skipping 3D plot.')
         return
     if method == 'tsne':
@@ -377,7 +418,7 @@ def plot_topology_3d(weights: np.ndarray, training_data: np.ndarray,
         axis.pane.set_edgecolor((0.7, 0.7, 0.7, 0.25))
     ax.grid(False)
 
-    if not grid_only:
+    if not grid_only and data_3d is not None:
         ax.scatter(data_3d[:, 0], data_3d[:, 1], data_3d[:, 2],
                    color='#2980b9', alpha=0.12, s=4, linewidths=0)
 
@@ -451,8 +492,8 @@ def plot_topology_html(weights: np.ndarray, training_data: np.ndarray,
 
     fig = go.Figure()
 
-    # Layer 1: training data (scatter, hidden by default in legend)
-    if not grid_only:
+    # Layer 1: training data (skip if not available)
+    if not grid_only and data_2d is not None:
         fig.add_trace(go.Scatter(
             x=data_2d[:, 0], y=data_2d[:, 1],
             mode='markers',
@@ -545,6 +586,119 @@ def plot_topology_html(weights: np.ndarray, training_data: np.ndarray,
     print(f'Saved: {output_path}')
 
 
+# ─── Compare plot (2×2: data/weights × PCA/ISOMAP) ───────────────────────────
+
+def plot_topology_compare(weights: np.ndarray, training_data: np.ndarray,
+                          hex_topology: bool, results_dir: str,
+                          output_path: str = None, meta: dict = None,
+                          assignments=None):
+    """
+    2×2 ablation grid:
+      col 0 = PCA (linear)   col 1 = ISOMAP (geodesic)
+      row 0 = training data  row 1 = SOM weight vectors
+
+    Designed for Swiss Roll: PCA collapses the spiral, ISOMAP unfolds it.
+    Points coloured by row index (≈ unrolling parameter t for Swiss Roll).
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.gridspec as gridspec
+
+    flat_w = weights.reshape(-1, weights.shape[2])
+    td_clean, wf_clean, _ = _strip_masked(training_data, flat_w, meta or {})
+    m, n = weights.shape[0], weights.shape[1]
+    n_data    = len(td_clean)
+    n_neurons = len(wf_clean)
+
+    methods = [('PCA', 'pca'), ('ISOMAP', 'isomap')]
+    rows    = [('Trénovací data', td_clean),
+               (f'Váhy SOM ({m}×{n})', wf_clean)]
+
+    # Data colour: row index 0..N-1 (for Swiss Roll this ≈ spiral parameter t)
+    data_color = np.arange(n_data, dtype=float)
+
+    # Weight colour: for each neuron, mean row index of its assigned samples.
+    # This puts neurons on the same colour scale as the data they represent.
+    # Using assignments CSV (bmu_i, bmu_j) avoids recomputing BMUs.
+    weight_color = np.zeros(n_neurons, dtype=float)
+    if assignments is not None:
+        try:
+            for ni in range(n_neurons):
+                bi, bj = divmod(ni, n)
+                mask = (assignments['bmu_i'].astype(int) == bi) & \
+                       (assignments['bmu_j'].astype(int) == bj)
+                # sample_id is 1-based; row index = sample_id - 1
+                sids = assignments.loc[mask, 'sample_id'].astype(int).values - 1
+                valid = sids[(sids >= 0) & (sids < n_data)]
+                if len(valid) > 0:
+                    weight_color[ni] = float(np.mean(valid))
+        except Exception:
+            weight_color = np.linspace(0, n_data - 1, n_neurons)
+    else:
+        # Fallback: linear interpolation across neurons
+        weight_color = np.linspace(0, n_data - 1, n_neurons)
+
+    edges = _grid_edges(m, n, hex_topology)
+
+    fig = plt.figure(figsize=(14, 11))
+    gs  = gridspec.GridSpec(2, 2, figure=fig, hspace=0.38, wspace=0.28,
+                            top=0.92, bottom=0.06, left=0.06, right=0.97)
+
+    for col, (method_label, method_key) in enumerate(methods):
+        print(f'  projecting {method_key.upper()} …', end=' ', flush=True)
+        try:
+            data_proj, w_proj, _ = _project(td_clean, wf_clean, method_key)
+        except Exception as exc:
+            print(f'FAILED ({exc})')
+            for row in range(2):
+                ax = fig.add_subplot(gs[row, col])
+                ax.text(0.5, 0.5, f'{method_key.upper()}\nfailed:\n{exc}',
+                        ha='center', va='center', transform=ax.transAxes, fontsize=8)
+                ax.axis('off')
+            continue
+        print('ok')
+
+        for row, (row_label, _) in enumerate(rows):
+            ax = fig.add_subplot(gs[row, col])
+
+            clim = dict(vmin=0, vmax=n_data - 1)
+            if row == 0:
+                ax.scatter(data_proj[:, 0], data_proj[:, 1],
+                           c=data_color, cmap='plasma', s=6, alpha=0.55,
+                           linewidths=0, rasterized=True, **clim)
+            else:
+                for (i0, j0), (i1, j1) in edges:
+                    x0, y0 = w_proj[i0 * n + j0]
+                    x1, y1 = w_proj[i1 * n + j1]
+                    ax.plot([x0, x1], [y0, y1], color='#555', lw=0.7,
+                            alpha=0.7, zorder=1)
+                ax.scatter(w_proj[:, 0], w_proj[:, 1],
+                           c=weight_color, cmap='plasma', s=22,
+                           edgecolors='white', linewidths=0.3,
+                           zorder=2, **clim)
+
+            ax.set_title(f'{method_label} — {row_label}', fontsize=10)
+            ax.set_xticks([]); ax.set_yticks([])
+
+    cbar_ax = fig.add_axes([0.15, 0.02, 0.70, 0.018])
+    sm = plt.cm.ScalarMappable(cmap='plasma',
+                               norm=plt.Normalize(0, n_data - 1))
+    sm.set_array([])
+    plt.colorbar(sm, cax=cbar_ax, orientation='horizontal',
+                 label='Row index (≈ unrolling parameter t for Swiss Roll)')
+
+    fig.suptitle(
+        'Topology comparison: PCA (linear) vs ISOMAP (geodesic)\n'
+        'Correct SOM training → ISOMAP weight grid unfolds to a flat rectangle',
+        fontsize=12,
+    )
+
+    if output_path is None:
+        output_path = os.path.join(results_dir, 'topology_compare_pca_isomap.png')
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f'Saved: {output_path}')
+
+
 # ─── CLI ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -552,8 +706,11 @@ def main():
         description='Visualize SOM topology (weight grid) in projected space.')
     parser.add_argument('results_dir', help='Path to SOM results directory')
     parser.add_argument('--projection', default='pca',
-                        choices=['pca', 'umap', 'tsne'],
+                        choices=['pca', 'umap', 'tsne', 'isomap'],
                         help='Dimensionality reduction algorithm (default: pca)')
+    parser.add_argument('--compare', action='store_true',
+                        help='Generate 2×2 PCA vs ISOMAP comparison grid '
+                             '(ablation / Swiss Roll validation)')
     parser.add_argument('--3d', dest='do_3d', action='store_true',
                         help='Also generate 3D topology plot (not supported for tsne)')
     parser.add_argument('--only3d', action='store_true',
@@ -586,14 +743,14 @@ def main():
     if weights is None:
         sys.exit('ERROR: csv/weights.npy not found')
     if training_data is None:
-        sys.exit('ERROR: csv/training_data.npy not found')
+        print('INFO: csv/training_data.npy not found — weights-only mode (grid rendered without data scatter)')
 
     m, n, dim = weights.shape
     n_neurons = m * n
     always_masked = meta.get('_always_masked_cols', [])
     active_dims = dim - len(always_masked)
-    print(f'Weights: {weights.shape}  Training data: {training_data.shape}  '
-          f'Neurons: {n_neurons}')
+    td_shape = training_data.shape if training_data is not None else 'N/A'
+    print(f'Weights: {weights.shape}  Training data: {td_shape}  Neurons: {n_neurons}')
     if always_masked:
         print(f'Masked dims (excluded from projection): {always_masked}  '
               f'Active dims for projection: {active_dims}')
@@ -605,19 +762,25 @@ def main():
     if n_neurons > 200 and args.projection == 'pca':
         print('HINT: large map detected — consider --projection umap for better unfolding.')
 
-    if not args.only3d:
+    if args.compare:
+        print('Generating PCA vs ISOMAP comparison grid …')
+        plot_topology_compare(weights, training_data, hex_topology,
+                              args.results_dir, meta=meta,
+                              assignments=assignments)
+
+    if not args.only3d and not args.compare:
         plot_topology_2d(weights, training_data, assignments, hex_topology,
                          args.results_dir, args.output,
                          grid_only=args.grid_only, density=args.density,
                          method=args.projection, meta=meta)
 
-    if args.do_3d or args.only3d:
+    if (args.do_3d or args.only3d) and not args.compare:
         plot_topology_3d(weights, training_data, assignments, hex_topology,
                          args.results_dir, args.output3d,
                          elev=args.elev, azim=args.azim,
                          grid_only=args.grid_only, method=args.projection, meta=meta)
 
-    if args.html:
+    if args.html and not args.compare:
         plot_topology_html(weights, training_data, assignments, hex_topology,
                            args.results_dir, args.output_html,
                            grid_only=args.grid_only, method=args.projection, meta=meta)

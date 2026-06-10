@@ -33,16 +33,20 @@ DATASETS_DIR = os.path.join(
 # ─── Swiss Roll ───────────────────────────────────────────────────────────────
 
 def generate_swiss_roll(n_samples: int = 2000, noise: float = 0.1,
-                        random_seed: int = 42) -> pd.DataFrame:
+                        random_seed: int = 42) -> tuple[pd.DataFrame, pd.DataFrame]:
     from sklearn.datasets import make_swiss_roll
     X, t = make_swiss_roll(n_samples=n_samples, noise=noise,
                            random_state=random_seed)
+    # SOM training data: only x, y, z — t must NOT be included.
+    # t is the unrolling parameter (correlated with the spiral angle) — if fed
+    # to SOM as a dimension it dominates the distance metric and prevents proper
+    # 3D unfolding (the map collapses to 1D along t instead of learning the manifold).
     df = pd.DataFrame(X, columns=['x', 'y', 'z'])
     df.insert(0, 'id', range(1, len(df) + 1))
-    # Include the unroll parameter as ground-truth column (not used by SOM,
-    # but useful for validating that the output colour-codes correctly)
-    df['t'] = np.round(t, 4)
-    return df
+
+    # Ground-truth: saved separately for visualization / colour-coding only.
+    gt = pd.DataFrame({'id': range(1, len(df) + 1), 't': np.round(t, 4)})
+    return df, gt
 
 
 def save_swiss_roll(n_samples: int = 2000, noise: float = 0.1,
@@ -50,12 +54,16 @@ def save_swiss_roll(n_samples: int = 2000, noise: float = 0.1,
     out_dir = os.path.join(DATASETS_DIR, 'SwissRoll')
     os.makedirs(out_dir, exist_ok=True)
 
-    df = generate_swiss_roll(n_samples, noise, random_seed)
+    df, gt = generate_swiss_roll(n_samples, noise, random_seed)
+
     csv_path = os.path.join(out_dir, 'swiss_roll.csv')
     df.to_csv(csv_path, index=False)
-    print(f"Saved {len(df)} samples → {csv_path}")
+    print(f"Saved {len(df)} samples → {csv_path}  (columns: {list(df.columns)})")
 
-    # Vesanto rule: U = 5*sqrt(n), side = sqrt(U)
+    gt_path = os.path.join(out_dir, 'swiss_roll_groundtruth.csv')
+    gt.to_csv(gt_path, index=False)
+    print(f"Saved ground-truth t → {gt_path}  (use for colour-coding, not training)")
+
     import math
     side = max(10, round(math.sqrt(5 * math.sqrt(n_samples))))
     _write_swiss_roll_config(out_dir, side, n_samples, random_seed)
@@ -63,16 +71,19 @@ def save_swiss_roll(n_samples: int = 2000, noise: float = 0.1,
 
 def _write_swiss_roll_config(out_dir: str, side: int, n_samples: int,
                               random_seed: int):
-    import json, math
+    import json
 
-    # epoch_multiplier: target ~10 000 iterations
+    # epoch_multiplier × n_samples = total weight updates (one per sample, sequential).
+    # Target ~10 000 updates — sufficient for Swiss Roll manifold unfolding.
     em = max(3.0, round(10000 / n_samples, 1))
 
     cfg = {
         "_comment": (
             "Swiss Roll benchmark — 3D data on 2D manifold. "
             f"Map {side}×{side} hex ({side*side} neurons for {n_samples} samples). "
-            "Correctly trained SOM unfolds the roll: high Spearman rho, TE ≈ 0."
+            f"epoch_multiplier={em} → {int(em*n_samples)} weight updates. "
+            "Correctly trained SOM unfolds the roll: high Spearman rho, TE ≈ 0. "
+            "ground-truth t is in swiss_roll_groundtruth.csv — NOT included in training."
         ),
         "processing_type": "hybrid",
         "map_size": [side, side],
@@ -105,7 +116,7 @@ def _write_swiss_roll_config(out_dir: str, side: int, n_samples: int,
     path = os.path.join(out_dir, 'config-som.json')
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(cfg, f, indent=4, ensure_ascii=False)
-    print(f"Saved config → {path}  (map {side}×{side}, epoch_multiplier={em})")
+    print(f"Saved config → {path}  (map {side}×{side}, {int(em*n_samples)} weight updates)")
 
 
 # ─── Space-filling ────────────────────────────────────────────────────────────

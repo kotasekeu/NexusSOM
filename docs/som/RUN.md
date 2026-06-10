@@ -54,6 +54,43 @@ For details on how to format the configuration file, see the **[Configuration Gu
 
 ---
 
+## Diagnostické přepínače v config-som.json
+
+### `track_sample_coverage`
+
+Sleduje kolikrát byl každý vstupní vektor zpracován během tréninku. Určeno pro ověření pokrytí při stochastickém nebo hybridním režimu.
+
+```json
+"track_sample_coverage": true
+```
+
+**Výstup:** `csv/sample_coverage.json`
+
+```json
+{
+  "min": 9,
+  "max": 26,
+  "mean": 20.0,
+  "std": 3.99,
+  "never_processed": 0,
+  "never_processed_ratio": 0.0,
+  "total_samples": 1000,
+  "counts": [23, 22, 9, ...]
+}
+```
+
+**Interpretace podle režimu:**
+
+| Nastavení | Očekávané chování |
+|-----------|-------------------|
+| `batch_percent=100%` | Každý vzorek zpracován stejně — `std=0` |
+| `batch_percent < 100%`, `num_batches=1` | `np.random.choice` per iteraci → nerovnoměrné pokrytí, `std > 0` |
+| `batch_percent < 100%`, `num_batches > 1` | Záleží na poměru `batch_percent × N / num_batches` vs. velikost sekce |
+
+`never_processed > 0` nastane při velmi malém `batch_percent`, krátkém tréninku nebo velkém `num_batches` — vzorky v sekci nebyly nikdy vybrány `np.random.choice`. Toto je skutečná chyba pokrytí, ne normální výsledek.
+
+---
+
 ## Kompletní pipeline — od dat po report
 
 Všechny příkazy se spouštějí z **root adresáře projektu** (`/NexusSom/`).  

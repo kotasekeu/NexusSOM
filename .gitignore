@@ -99,3 +99,5 @@ kohonen-log.txt
 /var/Prezentace/
 /data/datasets/datasets.zip
 /app/mlp/visualizations/
+/data/datasets/WineQuality/results/
+/data/datasets/wine/

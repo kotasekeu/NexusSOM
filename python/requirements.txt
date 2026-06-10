@@ -14,6 +14,7 @@ pymoo
 psutil>=5.9.0
 plotly
 umap-learn
+streamlit
 
 # Optional: Neural Network Dependencies
 # Install separately with: pip install -r requirements_nn.txt

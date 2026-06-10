@@ -72,6 +72,7 @@ class KohonenSOM:
         # Checkpointing for LSTM training data collection
         self.save_checkpoints = kwargs.get('save_checkpoints', False)
         self.checkpoint_count = kwargs.get('checkpoint_count', 10)
+        self.track_sample_coverage = kwargs.get('track_sample_coverage', False)
         # If True, save a checkpoint at every MQE evaluation (ignores checkpoint_count)
         self.checkpoint_every_mqe = kwargs.get('checkpoint_every_mqe', False)
 
@@ -371,6 +372,8 @@ class KohonenSOM:
         _ctrl_cp_count = 0
         _ctrl_log_every = max(1, self.mqe_evaluations_per_run // 10)
 
+        _coverage = np.zeros(total_samples, dtype=np.int64) if self.track_sample_coverage else None
+
         pbar = tqdm(range(total_iterations), desc="SOM Training", unit="iter")
         iteration = 0  # Initialize iteration variable to avoid scope issues
         for iteration in pbar:
@@ -410,6 +413,9 @@ class KohonenSOM:
                 self.update_weights(sample, bmu_idx, current_lr, current_radius, mask=sample_mask)
 
             self.total_weight_updates += len(samples_to_process)
+
+            if _coverage is not None:
+                _coverage[indices_to_process] += 1
 
             if self.normalize_weights_flag:
                 self.normalize_weights()
@@ -537,6 +543,30 @@ class KohonenSOM:
                 json.dump(checkpoints, f, indent=2)
             log_message(working_dir, "SYSTEM", f"Training checkpoints saved to '{checkpoints_path}'")
 
+        # Save sample coverage stats if tracking was enabled
+        coverage_stats = None
+        if _coverage is not None:
+            never_processed = int(np.sum(_coverage == 0))
+            coverage_stats = {
+                'min': int(_coverage.min()),
+                'max': int(_coverage.max()),
+                'mean': round(float(_coverage.mean()), 2),
+                'std': round(float(_coverage.std()), 2),
+                'never_processed': never_processed,
+                'never_processed_ratio': round(never_processed / total_samples, 4),
+                'total_samples': total_samples,
+            }
+            import json as _json
+            coverage_path = os.path.join(csv_dir, "sample_coverage.json")
+            with open(coverage_path, 'w') as f:
+                _json.dump({**coverage_stats, 'counts': _coverage.tolist()}, f)
+            log_message(working_dir, "SYSTEM",
+                        f"Sample coverage: min={coverage_stats['min']} "
+                        f"max={coverage_stats['max']} "
+                        f"mean={coverage_stats['mean']} "
+                        f"never_processed={never_processed} "
+                        f"({coverage_stats['never_processed_ratio']*100:.1f}%)")
+
         return {
             'best_mqe': self.best_mqe,
             'duration': duration,
@@ -546,5 +576,6 @@ class KohonenSOM:
             "lstm_stopped": lstm_stopped,
             "lstm_stop_progress": lstm_stop_progress,
             "history": self.history,
-            "checkpoints": checkpoints if self.save_checkpoints else []
+            "checkpoints": checkpoints if self.save_checkpoints else [],
+            "sample_coverage": coverage_stats,
         }

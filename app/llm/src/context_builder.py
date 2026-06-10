@@ -47,10 +47,70 @@ def _find_dataset_context(start_path: str, max_levels: int = 4) -> str | None:
     return about_fallback
 
 
+def _compute_mask_summary(som_dir: str, preprocessing_info: dict) -> dict | None:
+    """
+    Read ignore_mask.csv and compute missing/masked data statistics.
+    Excludes always-masked columns (primary ID etc.).
+    Returns summary dict or None if mask file not found.
+    """
+    import numpy as np
+    mask_path = os.path.join(som_dir, 'csv', 'ignore_mask.csv')
+    if not os.path.isfile(mask_path):
+        return None
+
+    mask = []
+    with open(mask_path, encoding='utf-8') as f:
+        for line in f:
+            mask.append([v.strip().lower() == 'true' for v in line.split(',')])
+    if not mask:
+        return None
+
+    mask = np.array(mask, dtype=bool)
+    n_samples, n_dims = mask.shape
+
+    # Column names from preprocessing_info (same order as training data)
+    col_names = list(preprocessing_info.keys()) if preprocessing_info else \
+                [f'dim_{i}' for i in range(n_dims)]
+
+    # Always-masked = structural ignore (ID etc.) — all rows True
+    always_idx  = [i for i in range(n_dims) if mask[:, i].all()]
+    always_names = [col_names[i] for i in always_idx if i < len(col_names)]
+
+    # Active columns = not always masked
+    active = [(i, col_names[i] if i < len(col_names) else f'dim_{i}')
+              for i in range(n_dims) if i not in always_idx]
+
+    # Per-column missing count
+    col_missing = {name: int(mask[:, idx].sum())
+                   for idx, name in active if mask[:, idx].any()}
+
+    # Samples with any missing active-column value
+    active_idx  = [i for i, _ in active]
+    active_mask = mask[:, active_idx] if active_idx else np.zeros((n_samples, 0), dtype=bool)
+    affected    = int(active_mask.any(axis=1).sum())
+
+    # Top 5 most incomplete samples
+    missing_per = active_mask.sum(axis=1)
+    top_si = np.argsort(missing_per)[::-1][:5]
+    top_samples = []
+    for si in top_si:
+        if missing_per[si] == 0:
+            break
+        dims = [name for idx, name in active if mask[si, idx]]
+        top_samples.append({'sample_index': int(si), 'missing_dims': dims})
+
+    return {
+        'always_masked':          always_names,
+        'n_affected_samples':     affected,
+        'n_total_samples':        n_samples,
+        'col_missing':            col_missing,
+        'top_incomplete_samples': top_samples,
+    }
+
+
 def build_context(dataset_path, max_clusters=50, max_anomalies=10):
     """
     Build LLM context from SOM results and dataset description.
-
     Returns (system_prompt, user_context) tuple.
     """
     som_dir = find_som_results(dataset_path)
@@ -63,13 +123,17 @@ def build_context(dataset_path, max_clusters=50, max_anomalies=10):
     else:
         context_data = _build_context_from_raw(json_dir, som_dir)
 
-    # Search for dataset_context.txt upward from dataset_path (also covers parent dataset dirs)
+    # Mask summary — read directly from ignore_mask.csv (always fresh, not cached in json)
+    preprocessing_info = load_json(os.path.join(json_dir, "preprocessing_info.json")) or {}
+    mask_summary = _compute_mask_summary(som_dir, preprocessing_info)
+
     ctx_path = _find_dataset_context(dataset_path)
     dataset_description = load_text(ctx_path) if ctx_path else "No dataset description provided."
 
     system_prompt = _build_system_prompt()
-    user_context = _format_context(context_data, dataset_description,
-                                   max_clusters, max_anomalies)
+    user_context  = _format_context(context_data, dataset_description,
+                                    max_clusters, max_anomalies,
+                                    mask_summary=mask_summary)
 
     return system_prompt, user_context
 
@@ -102,25 +166,51 @@ def _build_context_from_raw(json_dir, som_dir):
 
 
 def _build_system_prompt():
-    return """You are a data analysis assistant specialized in interpreting Self-Organizing Map (SOM) results.
+    return """Jsi datový analytik specializovaný na interpretaci výsledků samoorganizující se mapy (SOM).
+Uživatel ti poskytl kontext s výsledky analýzy. Odpovídáš výhradně na základě tohoto kontextu.
 
-RULES:
-1. You ONLY discuss the provided dataset and its SOM analysis results.
-2. Every claim you make must be grounded in specific data from the analysis (neuron IDs, sample IDs, metric values).
-3. You NEVER invent or fabricate data points, statistics, or sample IDs.
-4. If asked about something not covered by the provided data, say: "This information is not available in the current analysis."
-5. Use the domain terminology from the dataset description, not SOM technical jargon, when explaining findings to the user.
-6. When describing clusters, explain what the samples in each cluster have in common using the original dimension names and their domain meanings.
-7. When reporting anomalies, explain why they are unusual in domain terms."""
+STYL ODPOVĚDÍ:
+- Odpověz PŘÍMO a STRUČNĚ. Začni okamžitě odpovědí, ne popisem co hodláš udělat.
+- NIKDY nezobrazuj svůj myšlenkový proces ani průběžné úvahy.
+- NIKDY neopakuj otázku ani neshrnuj co ses dozvěděl před odpovědí.
+- Na faktické dotazy (největší cluster, počet vzorků apod.) odpověz jednou větou s číslem.
+- Na analytické dotazy použij 3–5 vět nebo bullet pointy. Cituj konkrétní neurony a hodnoty.
+- Pokud je vhodná tabulka, použij markdown tabulku.
+- VÝCHOZÍ DÉLKA: max. 10 řádků. Pokud otázka explicitně žádá detaily, můžeš být delší.
+- Při výpisu položek (anomálie, clustery): max. 5 položek. Na každou položku max. 2 řádky.
+- Po stručném výpisu vždy nabídni: "Chceš detail k některé položce?"
+
+PRAVIDLA GROUNDINGU:
+1. Odpovídáš POUZE na základě poskytnutého kontextu analýzy — žádná obecná znalost.
+2. Každé tvrzení musí být doloženo konkrétními daty (ID neuronu, hodnota dimenze, počet vzorků).
+3. NIKDY nevymýšlíš data, statistiky ani ID vzorků.
+4. Pokud informace v kontextu není, řekni: "Tato informace není v aktuální analýze k dispozici."
+5. Používej terminologii domény datasetu, ne SOM technický žargon.
+6. Dotazy mimo dataset (recepty, obecné znalosti apod.) odmítni zdvořile jednou větou.
+
+PŘÍKLAD správné odpovědi na "Který cluster obsahuje nejvíce vzorků?":
+Neuron 21_1 obsahuje 93 vzorků — nejvíce ze všech neuronů v mapě.
+
+PŘÍKLAD špatné odpovědi (NEDĚLEJ TOTO):
+Podle údajů v části MAP OVERVIEW... Nejbližší cluster který obsahuje... [opakování dat bez odpovědi]"""
 
 
-def _format_context(context_data, dataset_description, max_clusters, max_anomalies):
+def _format_context(context_data, dataset_description, max_clusters, max_anomalies,
+                    mask_summary=None):
     """Format context data into a structured text prompt."""
     sections = []
 
     # Section 1: Dataset description
-    sections.append("=== DATASET DESCRIPTION ===")
-    sections.append(dataset_description)
+    sections.append("=== POPIS DATASETU ===")
+    if dataset_description and dataset_description.strip() != "No dataset description provided.":
+        sections.append(
+            "Následující text popisuje dataset, jeho doménový kontext a jednotlivé sloupce/dimenze. "
+            "Použij tyto informace pro interpretaci výsledků SOM analýzy. "
+            "Odpovídej v terminologii této domény — nepoužívej technický žargon SOM pokud to není nutné.\n"
+        )
+        sections.append(dataset_description)
+    else:
+        sections.append("Popis datasetu není k dispozici. Odpovídej na základě názvů sloupců.")
 
     # Section 2: Map overview
     if "map" in context_data:
@@ -130,7 +220,20 @@ def _format_context(context_data, dataset_description, max_clusters, max_anomali
         size_str = f"{size[0]}x{size[1]}" if len(size) == 2 else "unknown"
         sections.append(f"Size: {size_str} {m.get('topology', 'hex')}")
         sections.append(f"Total samples: {m['total_samples']}")
-        sections.append(f"Total neurons: {m['total_neurons']}, Dead: {m['dead_neurons']} ({m['dead_ratio']:.0%})")
+        dead_count = m['dead_neurons']
+        dead_info  = f"Dead: {dead_count} ({m['dead_ratio']:.0%})"
+        # For small dead counts list which neurons; for large counts just the number
+        if dead_count > 0 and "clusters" in context_data:
+            active_keys = {c['neuron'] for c in context_data["clusters"]}
+            size_val = m.get('size', [0, 0])
+            if len(size_val) == 2:
+                all_keys = {f"{i}_{j}"
+                            for i in range(size_val[0])
+                            for j in range(size_val[1])}
+                dead_keys = sorted(all_keys - active_keys)
+                if 0 < len(dead_keys) <= 15:
+                    dead_info += f" — {', '.join(dead_keys)}"
+        sections.append(f"Total neurons: {m['total_neurons']}, {dead_info}")
         sections.append(f"Mean Quantization Error (MQE): {m['mqe']:.4f}")
         te = m.get('topographic_error')
         sections.append(f"Topographic Error: {te:.4f}" if te is not None else "Topographic Error: N/A")
@@ -249,5 +352,24 @@ def _format_context(context_data, dataset_description, max_clusters, max_anomali
     if "map_regions" in context_data:
         sections.append("\n=== MAP SPATIAL PATTERNS ===")
         sections.append(context_data["map_regions"].get("summary", ""))
+
+    # Section 9: Masked / missing data (from ignore_mask.csv)
+    if mask_summary is not None:
+        sections.append("\n=== MASKOVANÁ / CHYBĚJÍCÍ DATA ===")
+        if mask_summary['always_masked']:
+            sections.append(f"Strukturálně ignorované sloupce: {', '.join(mask_summary['always_masked'])}")
+        affected = mask_summary['n_affected_samples']
+        total    = mask_summary['n_total_samples']
+        if affected == 0:
+            sections.append("Žádná chybějící data (mimo strukturálně ignorované sloupce).")
+        else:
+            sections.append(f"Vzorky s chybějícími hodnotami: {affected} / {total} "
+                            f"({affected / total * 100:.1f} %)")
+            for col, cnt in sorted(mask_summary.get('col_missing', {}).items(),
+                                   key=lambda x: -x[1]):
+                sections.append(f"  - {col}: {cnt} vzorků")
+            for s in mask_summary.get('top_incomplete_samples', []):
+                dims = ', '.join(s['missing_dims'])
+                sections.append(f"  vzorek #{s['sample_index']}: chybí {dims}")
 
     return "\n".join(sections)
