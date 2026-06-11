@@ -361,7 +361,10 @@ def compute_spatial_stats(data: dict) -> dict:
         if name in skip:
             continue
         plane = weights[:, :, d].astype(float)
-        gy, gx = np.gradient(plane)
+        # np.gradient needs >= 2 elements per axis; chain maps (1xN / Nx1)
+        # have a singleton axis with no gradient — treat it as zero.
+        gy = np.gradient(plane, axis=0) if plane.shape[0] > 1 else np.zeros_like(plane)
+        gx = np.gradient(plane, axis=1) if plane.shape[1] > 1 else np.zeros_like(plane)
         grad_mag = np.hypot(gy, gx)
         plane_std = float(plane.std())
         roughness = float(grad_mag.mean() / plane_std) if plane_std > 0 else None

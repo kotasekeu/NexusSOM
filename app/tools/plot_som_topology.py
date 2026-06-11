@@ -83,6 +83,15 @@ def _load(results_dir: str):
     )
 
 
+def _find_groundtruth(results_dir: str) -> str | None:
+    """*_groundtruth.csv next to the dataset (results_dir is
+    <dataset_dir>/results/<timestamp>) — same convention as verify_topology."""
+    import glob
+    dataset_dir = os.path.dirname(os.path.dirname(os.path.abspath(results_dir)))
+    matches = sorted(glob.glob(os.path.join(dataset_dir, '*_groundtruth.csv')))
+    return matches[0] if matches else None
+
+
 # ─── Mask application ─────────────────────────────────────────────────────────
 
 def _strip_masked(training_data: np.ndarray, weights_flat: np.ndarray,
@@ -731,8 +740,12 @@ def plot_topology_compare(weights: np.ndarray, training_data: np.ndarray,
       col 0 = PCA (linear)   col 1 = ISOMAP (geodesic)
       row 0 = training data  row 1 = SOM weight vectors
 
-    Designed for Swiss Roll: PCA collapses the spiral, ISOMAP unfolds it.
-    Points coloured by row index (≈ unrolling parameter t for Swiss Roll).
+    Designed for manifold benchmarks: PCA collapses the manifold, ISOMAP
+    unfolds it. Points are coloured by the first ground-truth parameter
+    (auto-discovered *_groundtruth.csv next to the dataset); generated
+    datasets are NOT ordered by the manifold parameter, so the former
+    row-index colouring was meaningless noise. Falls back to row index
+    when no ground truth exists.
     """
     import matplotlib.pyplot as plt
     import matplotlib.gridspec as gridspec
@@ -744,16 +757,30 @@ def plot_topology_compare(weights: np.ndarray, training_data: np.ndarray,
     n_neurons = len(wf_clean)
 
     methods = [('PCA', 'pca'), ('ISOMAP', 'isomap')]
-    rows    = [('Trénovací data', td_clean),
-               (f'Váhy SOM ({m}×{n})', wf_clean)]
+    rows    = [('Training data', td_clean),
+               (f'SOM weights ({m}×{n})', wf_clean)]
 
-    # Data colour: row index 0..N-1 (for Swiss Roll this ≈ spiral parameter t)
+    # Data colour: ground-truth manifold parameter when available
+    # (groundtruth ids are 1-based and match the original row order).
     data_color = np.arange(n_data, dtype=float)
+    color_label = 'Row index (no ground truth found)'
+    gt_path = _find_groundtruth(results_dir)
+    if gt_path is not None:
+        try:
+            gt = pd.read_csv(gt_path).sort_values('id')
+            param_cols = [c for c in gt.columns if c != 'id'
+                          and pd.api.types.is_numeric_dtype(gt[c])]
+            if param_cols and len(gt) == n_data:
+                data_color = gt[param_cols[0]].values.astype(float)
+                color_label = (f"Ground-truth parameter '{param_cols[0]}' "
+                               f"({os.path.basename(gt_path)})")
+        except Exception:
+            pass
 
-    # Weight colour: for each neuron, mean row index of its assigned samples.
-    # This puts neurons on the same colour scale as the data they represent.
+    # Weight colour: for each neuron, mean colour value of its assigned
+    # samples — same colour scale as the data it represents.
     # Using assignments CSV (bmu_i, bmu_j) avoids recomputing BMUs.
-    weight_color = np.zeros(n_neurons, dtype=float)
+    weight_color = np.full(n_neurons, np.nan)
     if assignments is not None:
         try:
             for ni in range(n_neurons):
@@ -764,12 +791,12 @@ def plot_topology_compare(weights: np.ndarray, training_data: np.ndarray,
                 sids = assignments.loc[mask, 'sample_id'].astype(int).values - 1
                 valid = sids[(sids >= 0) & (sids < n_data)]
                 if len(valid) > 0:
-                    weight_color[ni] = float(np.mean(valid))
+                    weight_color[ni] = float(np.mean(data_color[valid]))
         except Exception:
-            weight_color = np.linspace(0, n_data - 1, n_neurons)
-    else:
-        # Fallback: linear interpolation across neurons
-        weight_color = np.linspace(0, n_data - 1, n_neurons)
+            weight_color[:] = np.nan
+    # Dead neurons (no samples) get the scale minimum
+    weight_color = np.where(np.isnan(weight_color),
+                            float(np.min(data_color)), weight_color)
 
     edges = _grid_edges(m, n, hex_topology)
 
@@ -794,7 +821,8 @@ def plot_topology_compare(weights: np.ndarray, training_data: np.ndarray,
         for row, (row_label, _) in enumerate(rows):
             ax = fig.add_subplot(gs[row, col])
 
-            clim = dict(vmin=0, vmax=n_data - 1)
+            clim = dict(vmin=float(np.min(data_color)),
+                        vmax=float(np.max(data_color)))
             if row == 0:
                 ax.scatter(data_proj[:, 0], data_proj[:, 1],
                            c=data_color, cmap='plasma', s=6, alpha=0.55,
@@ -815,14 +843,15 @@ def plot_topology_compare(weights: np.ndarray, training_data: np.ndarray,
 
     cbar_ax = fig.add_axes([0.15, 0.02, 0.70, 0.018])
     sm = plt.cm.ScalarMappable(cmap='plasma',
-                               norm=plt.Normalize(0, n_data - 1))
+                               norm=plt.Normalize(float(np.min(data_color)),
+                                                  float(np.max(data_color))))
     sm.set_array([])
-    plt.colorbar(sm, cax=cbar_ax, orientation='horizontal',
-                 label='Row index (≈ unrolling parameter t for Swiss Roll)')
+    plt.colorbar(sm, cax=cbar_ax, orientation='horizontal', label=color_label)
 
     fig.suptitle(
         'Topology comparison: PCA (linear) vs ISOMAP (geodesic)\n'
-        'Correct SOM training → ISOMAP weight grid unfolds to a flat rectangle',
+        'A manifold-following SOM appears as a coherent unfolded grid in '
+        f'ISOMAP (fit: {ISOMAP_FIT})',
         fontsize=12,
     )
 

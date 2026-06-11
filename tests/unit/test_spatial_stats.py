@@ -78,6 +78,15 @@ class TestSpatialStats:
         assert 'morans_i' not in entry
         assert 'roughness' not in entry
 
+    def test_chain_map_singleton_axis(self):
+        # 1xN chain maps (helix, space-filling benchmarks) have no row
+        # gradient — must not crash and must still produce a score.
+        w = np.linspace(0.0, 1.0, 100).reshape(1, 100, 1)
+        result = compute_spatial_stats(make_data(w))
+        entry = result['per_feature']['dim_0']
+        assert entry['gradient_mean'] > 0
+        assert 0.0 <= result['spatial_quality_score'] <= 1.0
+
     def test_score_in_unit_range(self):
         for w in (smooth_weights(), noisy_weights()):
             score = compute_spatial_stats(make_data(w))['spatial_quality_score']

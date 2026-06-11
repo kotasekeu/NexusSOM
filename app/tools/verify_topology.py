@@ -26,7 +26,10 @@ Global metrics:
                                  ground-truth space and on the SOM grid.
   - trustworthiness / continuity grid positions vs ground-truth coordinates.
   - For label columns (categorical ground truth, e.g. blobs):
-    adjusted_rand_index (label vs neuron) and mean neuron purity.
+    adjusted_rand_index after merging neurons by dominant label (raw
+    neuron-level ARI is reported but granularity-sensitive) + neuron purity.
+  - For 1xN chain maps with 2 active dims (space-filling): self-crossing
+    count of the chain polyline in data space.
   - Always: hit-distribution stats (dead ratio, density Gini) — negative
     control for "the system must not invent structure".
 
@@ -58,6 +61,9 @@ GLOBAL_PASS = 0.70      # pairwise distance Spearman (standardized gt params)
 GLOBAL_WARN = 0.50
 ARI_PASS = 0.80
 ARI_WARN = 0.50
+# Chain self-crossings (1xN maps with 2 active dims, e.g. space-filling):
+# a correct chain winds without crossing itself.
+CHAIN_WARN_MAX = 2      # 0 = PASS, <= 2 = WARN, more = FAIL
 
 
 # ─── Loading ──────────────────────────────────────────────────────────────────
@@ -133,12 +139,13 @@ def param_adherence(param: np.ndarray, grid_xy: np.ndarray) -> dict:
     ss_tot = float(np.sum((param - param.mean()) ** 2))
     linear_r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
 
-    rho_x = abs(spearmanr(param, grid_xy[:, 0]).statistic)
-    rho_y = abs(spearmanr(param, grid_xy[:, 1]).statistic)
+    # nanmax: a 1xN chain has one constant grid axis -> spearman is NaN there
+    with np.errstate(invalid='ignore'):
+        rho = [abs(spearmanr(param, grid_xy[:, i]).statistic) for i in (0, 1)]
     return {
         'grid_param_R2': round(max(0.0, knn_r2), 4),
         'linear_R2': round(linear_r2, 4),
-        'best_axis_spearman': round(float(max(rho_x, rho_y)), 4),
+        'best_axis_spearman': round(float(np.nanmax(rho)), 4),
     }
 
 
@@ -196,15 +203,67 @@ def trustworthiness_continuity(gt_params: np.ndarray, grid_xy: np.ndarray,
 
 
 def label_metrics(labels: np.ndarray, bmu_keys: pd.Series) -> dict:
-    """Cluster separation vs ground-truth labels (cluster = neuron)."""
+    """Cluster separation vs ground-truth labels (cluster = neuron).
+
+    Raw ARI(label, neuron) is granularity-sensitive: ~200 micro-clusters vs a
+    handful of labels scores near 0 *by construction* even for a perfect map
+    (observed on blobs: raw ARI 0.05 at purity 1.0). The decisive metric is
+    ARI after merging neurons by their dominant label — does the map carve the
+    labels into recoverable regions — together with purity.
+    """
     from sklearn.metrics import adjusted_rand_score
     df = pd.DataFrame({'label': labels, 'neuron': bmu_keys.values})
     purity_per_neuron = df.groupby('neuron')['label'].agg(
         lambda s: s.value_counts().iloc[0] / len(s))
+    dominant = df.groupby('neuron')['label'].agg(
+        lambda s: s.value_counts().index[0])
+    merged_pred = df['neuron'].map(dominant)
     return {
         'adjusted_rand_index': round(float(
+            adjusted_rand_score(df['label'], merged_pred)), 4),
+        'adjusted_rand_index_raw': round(float(
             adjusted_rand_score(df['label'], df['neuron'])), 4),
         'mean_neuron_purity': round(float(purity_per_neuron.mean()), 4),
+    }
+
+
+def chain_self_crossings(results_dir: str, run_metrics: dict) -> dict | None:
+    """For 1xN chain maps with exactly 2 active dims (space-filling benchmark):
+    count proper intersections between non-adjacent segments of the chain
+    polyline in data space. A correct chain winds without crossing itself.
+    Returns None when not applicable (not a chain, no weights, dims != 2)."""
+    map_size = run_metrics.get('map_size') or []
+    if len(map_size) != 2 or min(map_size) != 1:
+        return None
+    w_path = os.path.join(results_dir, 'csv', 'weights.npy')
+    if not os.path.isfile(w_path):
+        return None
+    weights = np.load(w_path)
+    pts = weights.reshape(-1, weights.shape[2])
+    mask_path = os.path.join(results_dir, 'csv', 'ignore_mask.csv')
+    if os.path.isfile(mask_path):
+        mask = pd.read_csv(mask_path, header=None).values.astype(bool)
+        pts = pts[:, ~mask.all(axis=0)]
+    if pts.shape[1] != 2:
+        return None
+
+    def orient(a, b, c):
+        return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+
+    n_seg = len(pts) - 1
+    crossings = 0
+    for a in range(n_seg):
+        p, q = pts[a], pts[a + 1]
+        for b in range(a + 2, n_seg):
+            r, s = pts[b], pts[b + 1]
+            if (orient(p, q, r) * orient(p, q, s) < 0
+                    and orient(r, s, p) * orient(r, s, q) < 0):
+                crossings += 1
+    return {
+        'segments': n_seg,
+        'self_crossings': crossings,
+        'verdict': ('PASS' if crossings == 0
+                    else 'WARN' if crossings <= CHAIN_WARN_MAX else 'FAIL'),
     }
 
 
@@ -255,13 +314,22 @@ def verify(results_dir: str, groundtruth_path: str | None = None,
                  '(docs/som/issues.md #23) — grid_param_R2 does.'),
     }
 
+    verdicts = []
+    chain = chain_self_crossings(results_dir, run_metrics)
+    if chain is not None:
+        report['chain'] = chain
+        verdicts.append(chain['verdict'])
+
     if groundtruth_path is None:
         groundtruth_path = find_groundtruth(results_dir)
 
     if groundtruth_path is None:
         report['groundtruth'] = None
-        report['verdict'] = 'NO-GROUNDTRUTH (hit distribution only — '
-        report['verdict'] += 'negative-control mode)'
+        if verdicts:
+            report['verdict'] = _aggregate(verdicts)
+        else:
+            report['verdict'] = 'NO-GROUNDTRUTH (hit distribution only — '
+            report['verdict'] += 'negative-control mode)'
         return report
 
     gt = pd.read_csv(groundtruth_path)
@@ -275,7 +343,6 @@ def verify(results_dir: str, groundtruth_path: str | None = None,
     report['groundtruth'] = os.path.abspath(groundtruth_path)
     report['n_samples_matched'] = int(len(merged))
 
-    verdicts = []
     if param_cols:
         params_block = {}
         for col in param_cols:
@@ -302,21 +369,29 @@ def verify(results_dir: str, groundtruth_path: str | None = None,
         labels_block = {}
         for col in label_cols:
             metrics = label_metrics(merged[col].values, merged['bmu_key'])
-            metrics['verdict'] = verdict(metrics['adjusted_rand_index'],
-                                         ARI_PASS, ARI_WARN)
+            # Both must hold: regions recoverable (merged ARI) AND neurons
+            # label-pure — either alone can be gamed.
+            metrics['verdict'] = verdict(
+                min(metrics['adjusted_rand_index'],
+                    metrics['mean_neuron_purity']),
+                ARI_PASS, ARI_WARN)
             verdicts.append(metrics['verdict'])
             labels_block[col] = metrics
         report['labels'] = labels_block
 
     if not verdicts:
         report['verdict'] = 'NO-METRICS (ground truth has no usable columns)'
-    elif 'FAIL' in verdicts:
-        report['verdict'] = 'FAIL'
-    elif 'WARN' in verdicts:
-        report['verdict'] = 'WARN'
     else:
-        report['verdict'] = 'PASS'
+        report['verdict'] = _aggregate(verdicts)
     return report
+
+
+def _aggregate(verdicts: list) -> str:
+    if 'FAIL' in verdicts:
+        return 'FAIL'
+    if 'WARN' in verdicts:
+        return 'WARN'
+    return 'PASS'
 
 
 def print_report(report: dict):
@@ -328,6 +403,10 @@ def print_report(report: dict):
     hd = report['hit_distribution']
     print(f"hits: {hd['active_neurons']}/{hd['total_neurons']} neurons active, "
           f"dead_ratio={hd['dead_ratio']}, gini={hd['hit_gini']}")
+    if 'chain' in report:
+        ch = report['chain']
+        print(f"  chain: {ch['self_crossings']} self-crossings over "
+              f"{ch['segments']} segments  → {ch['verdict']}")
     if report.get('groundtruth') is None:
         print('No ground truth found — negative-control mode only.')
     for col, m in report.get('manifold_params', {}).items():
@@ -343,7 +422,8 @@ def print_report(report: dict):
         print(f"  trustworthiness={nb['trustworthiness']}  "
               f"continuity={nb['continuity']}")
     for col, m in report.get('labels', {}).items():
-        print(f"  labels '{col}':  ARI={m['adjusted_rand_index']}  "
+        print(f"  labels '{col}':  ARI(merged)={m['adjusted_rand_index']}  "
+              f"raw={m['adjusted_rand_index_raw']}  "
               f"purity={m['mean_neuron_purity']}  → {m['verdict']}")
     print(f"VERDICT: {report['verdict']}")
 

@@ -149,7 +149,8 @@ automatically.
 
 Ground-truth benchmarks prove that the SOM organization works and that there
 is no mathematical error — each targets one property (full table in
-`app/tools/generate_benchmark.py`):
+`app/tools/generate_benchmark.py`). **Measured verdicts and the resulting
+correctness assessment are recorded in `BENCHMARKS.md`.**
 
 ```bash
 # Generate one or all benchmarks (dataset + ground truth + tuned config-som.json)
@@ -187,7 +188,11 @@ is sufficient):
   which local metrics cannot see. Calibration: an ideal 15×15 mapping scores
   ≈ 0.98 on both Swiss Roll and S-Curve.
 
-Plus trustworthiness/continuity, ARI + purity for labeled benchmarks, and
+Plus trustworthiness/continuity, label metrics for labeled benchmarks
+(ARI after merging neurons by dominant label + neuron purity — raw
+neuron-level ARI is reported but granularity-sensitive: ~200 micro-clusters
+vs 5 labels score near 0 by construction even for a perfect map), a chain
+self-crossing count for 1×N maps with 2 active dims (space-filling), and
 hit-distribution stats (dead ratio, Gini) as the negative control. Console
 verdict PASS/WARN/FAIL + machine-readable `json/verify_topology.json` —
 citable in the ablation study.
