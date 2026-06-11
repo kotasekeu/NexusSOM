@@ -48,7 +48,7 @@ def generate_training_plots(training_results: dict, output_dir: str):
         ax = _setup_plot("MQE Evolution", "Iteration", "MQE")
         _plot_history(ax, mqe_history, "MQE", 'royalblue')
 
-        best_mqe_val = training_results.get('best MQE')
+        best_mqe_val = training_results.get('best_mqe')
         if best_mqe_val:
             iterations, values = zip(*mqe_history)
             best_mqe_iter = iterations[np.argmin(values)]

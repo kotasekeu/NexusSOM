@@ -47,7 +47,7 @@ The project is extensively documented to guide users and developers. All documen
 | **Single SOM Run (`som/`)** | |
 | ⚙️ [`som/CONFIG.md`](./docs/som/CONFIG.md) | Guide to all parameters for a single SOM run. |
 | ▶️ [`som/RUN.md`](./docs/som/RUN.md) | How to execute a single SOM analysis. |
-| 🖼️ [`som/EXAMPLES.md`](./docs/som/EXAMPLES.md) | **(New)** A visual gallery of all generated maps and plots with explanations. |
+| 🖼️ [`som/VISUALIZATIONS.md`](./docs/som/VISUALIZATIONS.md) | A visual guide to all generated maps, training plots, and topology projections. |
 | **Evolutionary Algorithm (`ea/`)** | |
 | ⚙️ [`ea/CONFIG.md`](./docs/ea/CONFIG.md) | Guide to configuring the evolutionary optimization. |
 | ▶️ [`ea/RUN.md`](./docs/ea/RUN.md) | How to execute an evolutionary run to find optimal parameters. |

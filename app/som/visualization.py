@@ -1,53 +1,132 @@
-# visualization.py
+# visualization.py — SOM map rendering.
+#
+# All functions work from stored artifacts — a weight matrix (m, n, dim) plus
+# map_type ('hex' | 'square') — never from a live KohonenSOM instance. This
+# lets the UI and ablation tooling re-render any saved run from weights.npy
+# without re-training (see render_results_dir).
+import json
 import os
+
 import matplotlib
 matplotlib.use('Agg')  # non-interactive backend — required for multiprocessing on Windows
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import json
+from matplotlib.colors import Normalize
 from matplotlib.patches import Rectangle, RegularPolygon, Wedge, Circle, Patch
-from matplotlib.colors import Normalize, ListedColormap
-from som.som import KohonenSOM
 
 
-# Central drawing function for SOM maps
-def _create_map(som: KohonenSOM, values: np.ndarray, title: str, output_file: str,
-                cmap: str, cbar_label: str = None, show_text: list = None, show_title: bool = True,
-                fixed_norm: bool = False, vmax: float = None):
+# ─── Shared numpy helpers ─────────────────────────────────────────────────────
+
+def _bmu_indices(weights: np.ndarray, data: np.ndarray,
+                 mask: np.ndarray = None) -> np.ndarray:
+    """Flat BMU index for every sample (vectorized, mask-aware)."""
+    flat_weights = weights.reshape(-1, weights.shape[2])
+    diffs = data[:, np.newaxis, :] - flat_weights[np.newaxis, :, :]
+    if mask is not None:
+        diffs *= (~mask)[:, np.newaxis, :]
+    dists = np.linalg.norm(diffs, axis=2)
+    return np.argmin(dists, axis=1)
+
+
+def _neuron_qe_map(weights: np.ndarray, data: np.ndarray,
+                   mask: np.ndarray = None) -> np.ndarray:
+    """Per-neuron mean quantization error as an (m, n) matrix."""
+    m, n, dim = weights.shape
+    flat_weights = weights.reshape(-1, dim)
+    bmu_idx = _bmu_indices(weights, data)
+
+    diffs = data - flat_weights[bmu_idx]
+    if mask is not None:
+        diffs = diffs * (~mask)
+    errors = np.linalg.norm(diffs, axis=1)
+
+    sum_errors = np.bincount(bmu_idx, weights=errors, minlength=m * n)
+    counts = np.bincount(bmu_idx, minlength=m * n)
+    neuron_errors = np.divide(sum_errors, counts,
+                              out=np.zeros_like(sum_errors), where=counts != 0)
+    return neuron_errors.reshape(m, n)
+
+
+def compute_u_matrix(weights: np.ndarray, map_type: str) -> np.ndarray:
+    """
+    Vectorized U-Matrix: per-neuron mean distance to its grid neighbors.
+    Square grid uses 4 neighbors; hex grid uses 6 with row-parity offsets.
+    """
+    m, n, _ = weights.shape
+    if map_type == 'hex':
+        # Odd-r convention (odd rows shifted right) — must match the cube
+        # coordinates used by KohonenSOM for training/TE: even rows reach
+        # diagonals at j-1/j, odd rows at j/j+1. The legacy implementation had
+        # the two parities swapped (docs/som/issues.md #25).
+        offsets_even = {(-1, -1), (-1, 0), (0, -1), (0, 1), (1, -1), (1, 0)}
+        offsets_odd = {(-1, 0), (-1, 1), (0, -1), (0, 1), (1, 0), (1, 1)}
+    else:
+        offsets_even = offsets_odd = {(-1, 0), (1, 0), (0, -1), (0, 1)}
+
+    row_is_even = (np.arange(m)[:, None] % 2 == 0) * np.ones((1, n), dtype=bool)
+
+    dist_sum = np.zeros((m, n))
+    counts = np.zeros((m, n))
+    for di, dj in offsets_even | offsets_odd:
+        # Distance to the (di, dj)-shifted neighbor over the valid overlap region
+        i0, i1 = max(0, -di), m - max(0, di)
+        j0, j1 = max(0, -dj), n - max(0, dj)
+        if i0 >= i1 or j0 >= j1:
+            continue
+        dist = np.full((m, n), np.nan)
+        dist[i0:i1, j0:j1] = np.linalg.norm(
+            weights[i0 + di:i1 + di, j0 + dj:j1 + dj] - weights[i0:i1, j0:j1], axis=2)
+
+        applicable = np.zeros((m, n), dtype=bool)
+        if (di, dj) in offsets_even:
+            applicable |= row_is_even
+        if (di, dj) in offsets_odd:
+            applicable |= ~row_is_even
+        valid = applicable & ~np.isnan(dist)
+        dist_sum[valid] += dist[valid]
+        counts[valid] += 1
+
+    return np.divide(dist_sum, counts, out=np.zeros((m, n)), where=counts > 0)
+
+
+# ─── Central drawing function ─────────────────────────────────────────────────
+
+def _grid_patches(m: int, n: int, map_type: str) -> list:
+    """Matplotlib patches for the neuron grid, ordered row-major (i*n + j)."""
+    if map_type == 'hex':
+        side_len = 0.5
+        radius = side_len / np.cos(np.pi / 6)
+        dy = 2 * radius * (3 / 4)
+        return [RegularPolygon((j * (2 * side_len) + (i % 2) * side_len, i * dy),
+                               numVertices=6, radius=radius)
+                for i in range(m) for j in range(n)]
+    side_len = 1.0
+    return [Rectangle((j - side_len / 2, i - side_len / 2), side_len, side_len)
+            for i in range(m) for j in range(n)]
+
+
+def _create_map(values: np.ndarray, map_type: str, title: str, output_file: str,
+                cmap, cbar_label: str = None, show_text: list = None,
+                show_title: bool = True, fixed_norm: bool = False, vmax: float = None):
     """
     Universal function for rendering any SOM map (U-Matrix, Hitmap, etc.).
 
     Args:
-        show_title: If True, display title above the map. Set to False for CNN training data.
-        fixed_norm: If True, normalize to [0, vmax] for consistent visualization across all maps.
+        values: (m, n) matrix of per-neuron values to color.
+        map_type: 'hex' or 'square'.
+        show_title: If True, display title above the map.
+        fixed_norm: If True, normalize to [0, vmax] for consistent visualization.
         vmax: Maximum value for fixed normalization. If None, uses values.max().
     """
-    m, n, map_type = som.m, som.n, som.map_type
+    m, n = values.shape
 
     fig, ax = plt.subplots(figsize=(n * 1.2, m * 1.2))
     ax.set_aspect('equal')
     ax.axis('off')
 
-    # Calculate neuron positions and sizes
-    if map_type == 'hex':
-        side_len = 0.5
-        radius = side_len / np.cos(np.pi / 6)
-        dy = 2 * radius * (3 / 4)
-        patches = []
-        for i in range(m):
-            for j in range(n):
-                x = j * (2 * side_len) + (i % 2) * side_len
-                y = i * dy
-                patches.append(RegularPolygon((x, y), numVertices=6, radius=radius))
-    else:  # square
-        side_len = 1.0
-        patches = []
-        for i in range(m):
-            for j in range(n):
-                patches.append(Rectangle((j - side_len / 2, i - side_len / 2), side_len, side_len))
+    patches = _grid_patches(m, n, map_type)
 
-    # Create patch collection with colors
     collection = plt.matplotlib.collections.PatchCollection(patches)
     collection.set_array(values.flatten())
     collection.set_cmap(cmap)
@@ -81,16 +160,16 @@ def _create_map(som: KohonenSOM, values: np.ndarray, title: str, output_file: st
     if cbar_label:
         fig_legend, ax_legend = plt.subplots(figsize=(1.5, 6))
 
-        # Use fixed normalization if requested, otherwise use min/max
         if fixed_norm:
             max_val = vmax if vmax is not None else values.max()
             norm = Normalize(vmin=0, vmax=max_val)
         else:
             norm = Normalize(vmin=values.min(), vmax=values.max())
 
-        cbar = plt.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=cmap), cax=ax_legend,
-                            orientation='vertical', label=cbar_label)
-        legend_path = os.path.join(os.path.dirname(output_file), "legends", os.path.basename(output_file))
+        plt.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=cmap), cax=ax_legend,
+                     orientation='vertical', label=cbar_label)
+        legend_path = os.path.join(os.path.dirname(output_file), "legends",
+                                   os.path.basename(output_file))
         os.makedirs(os.path.dirname(legend_path), exist_ok=True)
         fig_legend.savefig(legend_path, dpi=150, bbox_inches='tight')
         plt.close(fig_legend)
@@ -109,65 +188,41 @@ def generate_categorical_legend(categories: dict, cmap_name: str, title: str, ou
 
     ax.legend(handles=handles, title=title, loc='center', frameon=False, fontsize='large')
 
-    legend_path = os.path.join(os.path.dirname(output_file), "legends", os.path.basename(output_file))
+    legend_path = os.path.join(os.path.dirname(output_file), "legends",
+                               os.path.basename(output_file))
     os.makedirs(os.path.dirname(legend_path), exist_ok=True)
     fig.savefig(legend_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
 
-def generate_u_matrix(som: KohonenSOM, output_file: str, show_title: bool = True):
+
+# ─── Individual map generators ────────────────────────────────────────────────
+
+def generate_u_matrix(weights: np.ndarray, map_type: str, output_file: str,
+                      show_title: bool = True):
     """Calculates and visualizes the U-Matrix, supporting both square and hex grids."""
-    m, n, weights = som.m, som.n, som.weights
-    u_matrix = np.zeros((m, n))
-
-    # Iterate over each neuron to calculate its average distance to neighbors
-    for i in range(m):
-        for j in range(n):
-            neuron_weights = weights[i, j]
-            neighbor_distances = []
-
-            # Define neighbors based on map type
-            if som.map_type == 'hex':
-                # Hexagonal neighbors have complex offsets
-                if i % 2 == 0:  # Even rows
-                    neighbors = [(i - 1, j), (i - 1, j + 1), (i, j - 1), (i, j + 1), (i + 1, j), (i + 1, j + 1)]
-                else:  # Odd rows
-                    neighbors = [(i - 1, j - 1), (i - 1, j), (i, j - 1), (i, j + 1), (i + 1, j - 1), (i + 1, j)]
-            else:  # Square neighbors
-                neighbors = [(i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1)]
-
-            # Calculate distances to valid neighbors
-            for ni, nj in neighbors:
-                if 0 <= ni < m and 0 <= nj < n:
-                    neighbor_weights = weights[ni, nj]
-                    neighbor_distances.append(np.linalg.norm(neuron_weights - neighbor_weights))
-
-            if neighbor_distances:
-                u_matrix[i, j] = np.mean(neighbor_distances)
-
-    _create_map(som, u_matrix, "U-Matrix", output_file, cmap='viridis',
+    u_matrix = compute_u_matrix(weights, map_type)
+    _create_map(u_matrix, map_type, "U-Matrix", output_file, cmap='viridis',
                 cbar_label="Average distance to neighbors", show_title=show_title)
 
 
-def generate_hit_map(som: KohonenSOM, normalized_data: np.ndarray, output_file: str):
+def generate_hit_map(weights: np.ndarray, map_type: str, normalized_data: np.ndarray,
+                     output_file: str, mask: np.ndarray = None):
     """Vectorized calculation and rendering of Hit Map."""
-    num_neurons = som.m * som.n
-    flat_weights = som.weights.reshape(num_neurons, som.dim)
+    m, n, _ = weights.shape
+    hit_counts = np.bincount(_bmu_indices(weights, normalized_data, mask),
+                             minlength=m * n).reshape(m, n)
 
-    dists = np.linalg.norm(normalized_data[:, np.newaxis, :] - flat_weights[np.newaxis, :, :], axis=2)
-    bmu_indices = np.argmin(dists, axis=1)
-
-    hit_counts = np.bincount(bmu_indices, minlength=num_neurons).reshape(som.m, som.n)
-
-    _create_map(som, hit_counts, "Hit Map", output_file, cmap='Blues',
+    _create_map(hit_counts.astype(float), map_type, "Hit Map", output_file, cmap='Blues',
                 cbar_label="Number of assigned samples", show_text=hit_counts.flatten())
 
 
-def generate_component_planes(som: KohonenSOM, original_df: pd.DataFrame, config: dict, output_dir: str):
+def generate_component_planes(weights: np.ndarray, map_type: str,
+                              original_df: pd.DataFrame, config: dict, output_dir: str):
     """
     Render component planes for ALL columns used in training.
     """
-    # Get all columns that were actually used for SOM training
-    training_columns = [col for col in original_df.columns]
+    m, n, dim = weights.shape
+    training_columns = list(original_df.columns)
     primary_id_col = config.get('primary_id', 'primary_id')
 
     try:
@@ -175,18 +230,16 @@ def generate_component_planes(som: KohonenSOM, original_df: pd.DataFrame, config
     except ValueError:
         pid_index = -1
 
-    weights_reshaped = som.weights.reshape(som.m, som.n, -1)
-
     # Ensure correct number of columns
-    if len(training_columns) != som.dim:
+    if len(training_columns) != dim:
         print(
-            f"WARNING: Number of training columns ({len(training_columns)}) does not match SOM dimension ({som.dim}). Component planes may have incorrect labels.")
-        training_columns = [f"dim_{i}" for i in range(som.dim)]
+            f"WARNING: Number of training columns ({len(training_columns)}) does not match SOM dimension ({dim}). Component planes may have incorrect labels.")
+        training_columns = [f"dim_{i}" for i in range(dim)]
 
     for i, col_name in enumerate(training_columns):
         if i == pid_index:
             continue
-        plane_values = weights_reshaped[:, :, i]
+        plane_values = weights[:, :, i]
 
         # Denormalize values for better legend interpretation (only for numerical columns)
         if col_name in config.get('numerical_column', []):
@@ -200,32 +253,24 @@ def generate_component_planes(som: KohonenSOM, original_df: pd.DataFrame, config
             cbar_label_text = f"Weight value for {col_name} (categorical)"
 
         output_file = os.path.join(output_dir, f"component_{col_name}.png")
-        _create_map(som, de_normalized_values, f"Component Plane: {col_name}", output_file,
-                    cmap='coolwarm', cbar_label=cbar_label_text)
+        _create_map(de_normalized_values, map_type, f"Component Plane: {col_name}",
+                    output_file, cmap='coolwarm', cbar_label=cbar_label_text)
 
 
-def generate_pie_map(som: KohonenSOM, pie_data: dict, output_file: str, cmap_name: str = 'tab20b'):
+def generate_pie_map(weights: np.ndarray, map_type: str, pie_data: dict,
+                     output_file: str, cmap_name: str = 'tab20b'):
     """
     Visualizes categorical data distribution on the SOM grid using pie charts.
     """
-    m, n, map_type = som.m, som.n, som.map_type
+    m, n, _ = weights.shape
 
     fig, ax = plt.subplots(figsize=(n * 1.2, m * 1.2))
     ax.set_aspect('equal')
     ax.axis('off')
 
-    if map_type == 'hex':
-        side_len = 0.5;
-        radius = side_len / np.cos(np.pi / 6);
-        dy = 2 * radius * (3 / 4)
-        patches = [RegularPolygon((j * (2 * side_len) + (i % 2) * side_len, i * dy), numVertices=6, radius=radius) for i
-                   in range(m) for j in range(n)]
-    else:  # square
-        side_len = 1.0
-        patches = [Rectangle((j - side_len / 2, i - side_len / 2), side_len, side_len) for i in range(m) for j in
-                   range(n)]
-
-    bg_collection = plt.matplotlib.collections.PatchCollection(patches, facecolor='#f0f0f0', edgecolor='white')
+    patches = _grid_patches(m, n, map_type)
+    bg_collection = plt.matplotlib.collections.PatchCollection(
+        patches, facecolor='#f0f0f0', edgecolor='white')
     ax.add_collection(bg_collection)
     ax.autoscale_view()
 
@@ -234,7 +279,8 @@ def generate_pie_map(som: KohonenSOM, pie_data: dict, output_file: str, cmap_nam
     num_categories = len(cat_keys)
     cmap = plt.get_cmap(cmap_name)
 
-    coords = np.array([p.get_center() if map_type == 'square' else p.xy for p in patches]).reshape(m, n, 2)
+    coords = np.array([p.get_center() if map_type == 'square' else p.xy
+                       for p in patches]).reshape(m, n, 2)
     pie_radius = (coords[0, 1, 0] - coords[0, 0, 0]) * 0.45 if n > 1 else 0.45
 
     for pos, counts in pie_data['counts'].items():
@@ -287,7 +333,9 @@ def generate_pie_map(som: KohonenSOM, pie_data: dict, output_file: str, cmap_nam
         output_file=output_file
     )
 
-def generate_pie_maps(som: KohonenSOM, config: dict, working_dir: str, output_dir: str):
+
+def generate_pie_maps(weights: np.ndarray, map_type: str, config: dict,
+                      working_dir: str, output_dir: str):
     """
     Loads pre-calculated pie data and generates a Pie Map for each categorical column.
     """
@@ -303,14 +351,15 @@ def generate_pie_maps(som: KohonenSOM, config: dict, working_dir: str, output_di
                 pie_data = json.load(f)
 
             output_file = os.path.join(output_dir, f"pie_map_{col}.png")
-            generate_pie_map(som, pie_data, output_file)
+            generate_pie_map(weights, map_type, pie_data, output_file)
         else:
             print(f"WARNING: Pie data file not found for column '{col}' at '{json_path}'. Skipping Pie Map.")
 
 
-def generate_cluster_map(som: KohonenSOM, clusters: dict, output_file: str):
+def generate_cluster_map(weights: np.ndarray, map_type: str, clusters: dict,
+                         output_file: str):
     """Render map of active neurons (clusters)."""
-    m, n = som.m, som.n
+    m, n, _ = weights.shape
 
     # Create map where each active neuron has a unique integer label
     labels = np.full((m, n), -1, dtype=int)
@@ -328,77 +377,142 @@ def generate_cluster_map(som: KohonenSOM, clusters: dict, output_file: str):
 
     cmap = plt.get_cmap('tab20', num_clusters)
 
-    _create_map(som, labels, "Cluster Map", output_file, cmap=cmap)
+    _create_map(labels.astype(float), map_type, "Cluster Map", output_file, cmap=cmap)
 
 
-def generate_distance_map(som: KohonenSOM, normalized_data: np.ndarray,
+def generate_distance_map(weights: np.ndarray, map_type: str, normalized_data: np.ndarray,
                           mask: np.ndarray, output_file: str, show_title: bool = True):
-
-    neuron_error_map, _ = som.compute_quantization_error(normalized_data, mask=mask)
-
-    if neuron_error_map is not None:
-        _create_map(som, neuron_error_map, "Distance Map (Neuron QE)", output_file,
-                    cmap='magma', cbar_label="Quantization Error", show_title=show_title)
+    """Per-neuron quantization error map."""
+    neuron_error_map = _neuron_qe_map(weights, normalized_data, mask)
+    _create_map(neuron_error_map, map_type, "Distance Map (Neuron QE)", output_file,
+                cmap='magma', cbar_label="Quantization Error", show_title=show_title)
 
 
-def generate_dead_neurons_map(som: KohonenSOM, normalized_data: np.ndarray, output_file: str, show_title: bool = True):
+def generate_dead_neurons_map(weights: np.ndarray, map_type: str,
+                              normalized_data: np.ndarray, output_file: str,
+                              show_title: bool = True, mask: np.ndarray = None):
     """
     Generates a map showing dead (inactive) neurons.
     Dead neurons are those that have not been assigned any data samples (hit count = 0).
     Uses binary colormap: black for dead neurons, white for active neurons.
     """
-    num_neurons = som.m * som.n
-    flat_weights = som.weights.reshape(num_neurons, som.dim)
-
-    # Vectorized calculation of BMUs (same as in generate_hit_map)
-    dists = np.linalg.norm(normalized_data[:, np.newaxis, :] - flat_weights[np.newaxis, :, :], axis=2)
-    bmu_indices = np.argmin(dists, axis=1)
-
-    # Count hits per neuron
-    hit_counts = np.bincount(bmu_indices, minlength=num_neurons).reshape(som.m, som.n)
-
-    # Create binary map: 0 = dead (black), 1 = active (white)
+    m, n, _ = weights.shape
+    hit_counts = np.bincount(_bmu_indices(weights, normalized_data, mask),
+                             minlength=m * n).reshape(m, n)
     activity_map = (hit_counts > 0).astype(float)
 
-    _create_map(som, activity_map, "Dead Neurons Map", output_file,
-                cmap='binary', cbar_label="Neuron activity (0=dead, 1=active)", show_title=show_title)
+    _create_map(activity_map, map_type, "Dead Neurons Map", output_file,
+                cmap='binary', cbar_label="Neuron activity (0=dead, 1=active)",
+                show_title=show_title)
 
 
-def generate_individual_maps(som: KohonenSOM, normalized_data: np.ndarray,
-                             mask: np.ndarray, output_dir: str):
+# ─── Orchestrators ────────────────────────────────────────────────────────────
+
+def generate_individual_maps(weights: np.ndarray, map_type: str,
+                             normalized_data: np.ndarray, mask: np.ndarray,
+                             output_dir: str):
     """
     Generate individual maps (U-Matrix, Distance Map, Dead Neurons Map) for EA runs.
-    Maps are generated WITHOUT titles to be suitable for CNN training.
+    Maps are generated WITHOUT titles (legacy: was required for CNN training data).
     """
     maps_dir = os.path.join(output_dir, "visualizations")
     os.makedirs(maps_dir, exist_ok=True)
 
-    # Generate maps without titles for CNN compatibility
-    generate_u_matrix(som, os.path.join(maps_dir, "u_matrix.png"), show_title=False)
-    generate_distance_map(som, normalized_data, mask, os.path.join(maps_dir, "distance_map.png"), show_title=False)
-    generate_dead_neurons_map(som, normalized_data, os.path.join(maps_dir, "dead_neurons_map.png"), show_title=False)
+    generate_u_matrix(weights, map_type, os.path.join(maps_dir, "u_matrix.png"),
+                      show_title=False)
+    generate_distance_map(weights, map_type, normalized_data, mask,
+                          os.path.join(maps_dir, "distance_map.png"), show_title=False)
+    generate_dead_neurons_map(weights, map_type, normalized_data,
+                              os.path.join(maps_dir, "dead_neurons_map.png"),
+                              show_title=False, mask=mask)
 
 
-def generate_all_maps(som: KohonenSOM, original_df: pd.DataFrame, normalized_data: np.ndarray, config: dict,
-                      mask: np.ndarray, output_dir: str):
+def generate_all_maps(weights: np.ndarray, map_type: str, original_df: pd.DataFrame,
+                      normalized_data: np.ndarray, config: dict, mask: np.ndarray,
+                      output_dir: str):
     """Main orchestrator for generating all maps."""
     maps_dir = os.path.join(output_dir, "visualizations")
     os.makedirs(maps_dir, exist_ok=True)
 
     print("INFO: Generating visualizations...")
 
-    generate_individual_maps(som, normalized_data, mask, output_dir)
+    generate_individual_maps(weights, map_type, normalized_data, mask, output_dir)
 
-    # generate_u_matrix(som, os.path.join(maps_dir, "u_matrix.png"))
-    generate_hit_map(som, normalized_data, os.path.join(maps_dir, "hit_map.png"))
-    generate_component_planes(som, original_df, config, maps_dir)
+    generate_hit_map(weights, map_type, normalized_data,
+                     os.path.join(maps_dir, "hit_map.png"), mask=mask)
+    generate_component_planes(weights, map_type, original_df, config, maps_dir)
 
-    clusters_path = os.path.join(output_dir, "clusters.json")
+    clusters_path = os.path.join(output_dir, "json", "clusters.json")
     if os.path.exists(clusters_path):
         with open(clusters_path, 'r', encoding='utf-8') as f:
             clusters = json.load(f)
-        generate_cluster_map(som, clusters, os.path.join(maps_dir, "cluster_map.png"))
+        generate_cluster_map(weights, map_type, clusters,
+                             os.path.join(maps_dir, "cluster_map.png"))
 
-    generate_pie_maps(som, config, output_dir, maps_dir)
+    generate_pie_maps(weights, map_type, config, output_dir, maps_dir)
 
     print("INFO: Map generation completed.")
+
+
+def render_results_dir(results_dir: str) -> str:
+    """
+    Re-render all maps for a stored run purely from its saved artifacts —
+    no live SOM object, no re-training. Entry point for the UI and for
+    ablation-study comparison tooling.
+
+    Reads: csv/weights.npy (required), run_metrics.json (map topology),
+    csv/training_data.npy, csv/ignore_mask.csv, csv/original_input.csv,
+    json/preprocessing_info.json. Returns the visualizations directory path.
+    """
+    csv_dir = os.path.join(results_dir, 'csv')
+    json_dir = os.path.join(results_dir, 'json')
+
+    weights_path = os.path.join(csv_dir, 'weights.npy')
+    if not os.path.isfile(weights_path):
+        raise FileNotFoundError(f"weights.npy not found in '{csv_dir}'")
+    weights = np.load(weights_path)
+
+    run_metrics = {}
+    rm_path = os.path.join(results_dir, 'run_metrics.json')
+    if os.path.isfile(rm_path):
+        with open(rm_path, encoding='utf-8') as f:
+            run_metrics = json.load(f)
+    map_type = run_metrics.get('map_topology', 'hex')
+
+    normalized_data = np.load(os.path.join(csv_dir, 'training_data.npy'))
+    original_df = pd.read_csv(os.path.join(csv_dir, 'original_input.csv'))
+
+    mask = None
+    mask_path = os.path.join(csv_dir, 'ignore_mask.csv')
+    if os.path.isfile(mask_path):
+        mask = pd.read_csv(mask_path, header=None).values.astype(bool)
+
+    # Reconstruct column classification from preprocessing_info
+    preprocessing_info = {}
+    pi_path = os.path.join(json_dir, 'preprocessing_info.json')
+    if os.path.isfile(pi_path):
+        with open(pi_path, encoding='utf-8') as f:
+            preprocessing_info = json.load(f)
+
+    primary_id = None
+    numerical, categorical = [], []
+    for col, info in preprocessing_info.items():
+        if info.get('nunique_ratio', 0.0) >= 0.99 and primary_id is None:
+            primary_id = col
+            continue
+        if info.get('status') == 'ignored':
+            continue
+        if info.get('is_categorical', False):
+            categorical.append(col)
+        elif info.get('base_type') == 'numeric':
+            numerical.append(col)
+
+    config = {
+        'primary_id': primary_id or 'primary_id',
+        'numerical_column': numerical,
+        'categorical_column': categorical,
+    }
+
+    generate_all_maps(weights, map_type, original_df, normalized_data, config,
+                      mask, results_dir)
+    return os.path.join(results_dir, 'visualizations')

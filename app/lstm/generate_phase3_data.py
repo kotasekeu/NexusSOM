@@ -123,6 +123,7 @@ def build_som(row: pd.Series, data: np.ndarray) -> KohonenSOM:
     """Construct KohonenSOM from a results.csv row."""
     params = {k: v for k, v in row.items() if k not in DROP_FIELDS}
     params.update(FIXED)
+    params.setdefault('show_progress', False)  # batch generation — no tqdm bars
     # Remove any remaining non-SOM keys that crept in
     for k in list(params.keys()):
         if isinstance(params[k], float) and np.isnan(params[k]):
@@ -135,23 +136,15 @@ def run_som(row: pd.Series, data: np.ndarray, ignore_mask: np.ndarray,
     """Run one SOM training. Returns dict with checkpoints + final metrics."""
     np.random.seed(seed)
     som = build_som(row, data)
-    import tempfile, shutil
-    tmp = tempfile.mkdtemp()
-    try:
-        result = som.train(data, ignore_mask=ignore_mask, working_dir=tmp,
-                           dynamic_schedule_fn=dynamic_fn)
-        topo_error = som.calculate_topographic_error(data, mask=ignore_mask)
-        _, dead_ratio = som.calculate_dead_neurons(data)
-        cp_path = os.path.join(tmp, 'csv', 'training_checkpoints.json')
-        checkpoints = json.loads(Path(cp_path).read_text()) if os.path.exists(cp_path) else []
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+    result = som.train(data, ignore_mask=ignore_mask, dynamic_schedule_fn=dynamic_fn)
+    topo_error = som.calculate_topographic_error(data, mask=ignore_mask)
+    _, dead_ratio = som.calculate_dead_neurons(data, mask=ignore_mask)
 
     return {
         'final_mqe':               result['best_mqe'],
         'final_topographic_error': topo_error,
         'final_dead_ratio':        dead_ratio,
-        'checkpoints':             checkpoints,
+        'checkpoints':             result.get('checkpoints', []),
     }
 
 
@@ -220,7 +213,6 @@ def generate(seed_dir: str, dataset_path: str, n_pareto: int, n_variants: int,
 
     # Preprocess dataset once — shared (read-only) across all workers
     print(f'Preprocessing dataset: {dataset_path}')
-    import tempfile
     preprocess_config = {
         'PREPROCES_DATA': {
             'delimiter': ',',
@@ -229,10 +221,10 @@ def generate(seed_dir: str, dataset_path: str, n_pareto: int, n_variants: int,
             'categorical_threshold_text': 30,
         }
     }
-    with tempfile.TemporaryDirectory() as tmp:
-        input_df = pd.read_csv(dataset_path)
-        npy_path, _, ignore_mask, _ = preprocess_data(input_df, preprocess_config, tmp)
-        data = np.load(npy_path)
+    input_df = pd.read_csv(dataset_path)
+    pre = preprocess_data(input_df, preprocess_config)
+    data = pre.training_data
+    ignore_mask = pre.ignore_mask
     print(f'Dataset shape: {data.shape}')
 
     # Build task list for all individuals × variants

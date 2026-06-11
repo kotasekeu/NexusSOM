@@ -6,7 +6,6 @@ import os
 import json
 from collections import defaultdict
 from som.som import KohonenSOM
-from scipy.spatial.distance import cdist
 
 
 def _prepare_pie_map_data(df_assigned: pd.DataFrame, categorical_cols: list) -> dict:
@@ -19,13 +18,13 @@ def _prepare_pie_map_data(df_assigned: pd.DataFrame, categorical_cols: list) -> 
 
         all_categories = sorted(df_assigned[col].dropna().unique())
         category_map = {str(i + 1): cat for i, cat in enumerate(all_categories)}
+        cat_to_code = {cat: code for code, cat in category_map.items()}
 
         counts_dict = {}
         for bmu_key_np, row in counts_df.iterrows():
             bmu_key = str(bmu_key_np)
             counts_dict[bmu_key] = {
-                str(next(k for k, v in category_map.items() if v == cat_name)): int(count)
-                for cat_name, count in row.items()
+                cat_to_code[cat_name]: int(count) for cat_name, count in row.items()
             }
 
         pie_data[col] = {
@@ -57,13 +56,35 @@ def _save_quantization_errors(som: KohonenSOM, normalized_data: np.ndarray, work
     except Exception as e:
         print(f"ERROR: Failed to save quantization errors: {e}")
 
+def _masked_bmu(normalized_data: np.ndarray, flat_weights: np.ndarray,
+                ignore_mask: np.ndarray = None, chunk_size: int = 1024) -> tuple:
+    """
+    BMU index and quantization error per sample, honoring the per-sample
+    ignore mask so assignments match training-time BMU selection.
+    Chunked to keep the (chunk, neurons, dim) broadcast memory-bounded.
+    """
+    n = normalized_data.shape[0]
+    bmu_indices = np.empty(n, dtype=int)
+    qe = np.empty(n)
+    for start in range(0, n, chunk_size):
+        end = min(start + chunk_size, n)
+        diffs = normalized_data[start:end, np.newaxis, :] - flat_weights[np.newaxis, :, :]
+        if ignore_mask is not None:
+            diffs *= (~ignore_mask[start:end])[:, np.newaxis, :]
+        dists = np.linalg.norm(diffs, axis=2)
+        idx = np.argmin(dists, axis=1)
+        bmu_indices[start:end] = idx
+        qe[start:end] = dists[np.arange(end - start), idx]
+    return bmu_indices, qe
+
+
 def _get_bmu_assignments(som: KohonenSOM, normalized_data: np.ndarray, original_df: pd.DataFrame,
-                         primary_id_col: str, training_cols: list = None) -> pd.DataFrame:
+                         primary_id_col: str, training_cols: list = None,
+                         ignore_mask: np.ndarray = None) -> tuple[pd.DataFrame, dict]:
     num_neurons = som.m * som.n
     flat_weights = som.weights.reshape(num_neurons, som.dim)
 
-    dists = cdist(normalized_data, flat_weights, 'euclidean')
-    bmu_flat_indices = np.argmin(dists, axis=1)
+    bmu_flat_indices, sample_qe = _masked_bmu(normalized_data, flat_weights, ignore_mask)
 
     bmu_coords_i, bmu_coords_j = np.unravel_index(bmu_flat_indices, (som.m, som.n))
 
@@ -71,12 +92,14 @@ def _get_bmu_assignments(som: KohonenSOM, normalized_data: np.ndarray, original_
     df_assigned['bmu_i'] = bmu_coords_i
     df_assigned['bmu_j'] = bmu_coords_j
     df_assigned['bmu_key'] = [f"{i}_{j}" for i, j in zip(bmu_coords_i, bmu_coords_j)]
-    df_assigned['qe'] = dists[np.arange(len(dists)), bmu_flat_indices]
+    df_assigned['qe'] = sample_qe
 
     # Per-dimension QE: absolute diff in normalized space for each feature column
     if training_cols:
         winning_weights = flat_weights[bmu_flat_indices]
         diffs = np.abs(normalized_data - winning_weights)
+        if ignore_mask is not None:
+            diffs *= ~ignore_mask  # masked dims carry no error
         for k, col in enumerate(training_cols):
             if col != primary_id_col and k < diffs.shape[1]:
                 df_assigned[f'qe_dim_{col}'] = diffs[:, k]
@@ -167,7 +190,7 @@ def _detect_extremes(df_assigned: pd.DataFrame, numerical_cols: list, primary_id
     return dict(extremes)
 
 def perform_analysis(som: KohonenSOM, original_df: pd.DataFrame, normalized_data: np.ndarray, config: dict,
-                     working_dir: str):
+                     working_dir: str, ignore_mask: np.ndarray = None):
     print("INFO: Starting organized data analysis...")
     json_dir = os.path.join(working_dir, "json")
 
@@ -188,7 +211,8 @@ def perform_analysis(som: KohonenSOM, original_df: pd.DataFrame, normalized_data
         training_cols = [c for c in original_df.columns if c in col_set]
 
     df_assigned, clusters = _get_bmu_assignments(
-        som, normalized_data, original_df, primary_id_col, training_cols)
+        som, normalized_data, original_df, primary_id_col, training_cols,
+        ignore_mask=ignore_mask)
 
     clusters_path = os.path.join(json_dir, "clusters.json")
     with open(clusters_path, 'w', encoding='utf-8') as f:

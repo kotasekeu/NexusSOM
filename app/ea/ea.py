@@ -43,6 +43,8 @@ from sklearn.datasets import make_blobs
 from multiprocessing import Pool, cpu_count
 
 from som.preprocess import validate_input_data, preprocess_data
+from som.persistence import (save_preprocess_artifacts, save_weights,
+                             save_training_checkpoints, save_sample_coverage)
 from som.som import KohonenSOM
 from som.graphs import generate_training_plots
 from som.visualization import generate_individual_maps
@@ -719,8 +721,9 @@ def _run_probe_worker(args: tuple):
                   'nn_config', 'org_threshold', 'max_archive_size']:
             som_params.pop(k, None)
         som_params['save_checkpoints'] = False
+        som_params['show_progress'] = False
         som = KohonenSOM(dim=data.shape[1], **som_params)
-        som.train(data, ignore_mask=ignore_mask, working_dir=probe_dir)
+        som.train(data, ignore_mask=ignore_mask)
         u_metrics = som.calculate_u_matrix_metrics()
         distance_map, _ = som.compute_quantization_error(data, mask=ignore_mask)
         dist_max = float(np.max(distance_map)) if distance_map is not None else 0.0
@@ -1288,6 +1291,8 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
         som_params.pop('crowding_distance', None)  # Fitness metadata from NSGA-II
         som_params.pop('comment', None)  # Comment fields from config
         som_params.pop('nn_config', None)  # NN config is not a SOM param
+        # No per-iteration progress bars in batch evaluation (overridable via FIXED_PARAMS)
+        som_params.setdefault('show_progress', False)
 
         # MLP pre-screen: predict quality before full SOM training
         if nn is not None and nn.can_predict_fitness() and nn_config.get('mlp_filter_bad_configs', False):
@@ -1352,9 +1357,18 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
 
         som = KohonenSOM(dim=data.shape[1], **som_params)
 
-        training_results = som.train(data, ignore_mask=ignore_mask, working_dir=individual_dir,
+        training_results = som.train(data, ignore_mask=ignore_mask,
                                      lstm_early_stop_fn=lstm_early_stop_fn,
                                      dynamic_schedule_fn=dynamic_schedule_fn)
+
+        # Persist per-individual artifacts. Checkpoints feed the LSTM training
+        # pipeline (lstm/prepare_dataset.py reads them from individual dirs).
+        # Weights are optional — nothing downstream reads them since the CNN
+        # track closed (spatial analysis works on som.weights in memory).
+        save_training_checkpoints(training_results.get('checkpoints', []), individual_dir)
+        save_sample_coverage(training_results.get('sample_coverage'), individual_dir)
+        if fixed_params.get('save_individual_weights', False):
+            save_weights(som.weights, individual_dir)
 
         training_results['uid'] = uid
 
@@ -1368,7 +1382,7 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
 
         training_results['training_duration'] = training_results.get('duration', None)
 
-        dead_count, dead_ratio = som.calculate_dead_neurons(data)
+        dead_count, dead_ratio = som.calculate_dead_neurons(data, mask=ignore_mask)
         training_results['dead_neuron_count'] = dead_count
         training_results['dead_neuron_ratio'] = dead_ratio
 
@@ -1433,14 +1447,17 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
             if key.startswith('ds_') or key == 'dataset_name':
                 training_results[key] = value
 
-        generate_training_plots(training_results, individual_dir)
+        # Training plots per individual are optional — hundreds of runs × 4 PNGs
+        # add measurable time; disable via FIXED_PARAMS.generate_training_plots.
+        if fixed_params.get('generate_training_plots', True):
+            generate_training_plots(training_results, individual_dir)
 
         # generate_individual_maps: controlled by FIXED_PARAMS.generate_individual_maps
         # Set to false when CNN visual quality assessment is not needed (spatial analysis
         # works directly on som.weights — no PNG files required).
         _gen_maps = fixed_params.get('generate_individual_maps', True)
         if _gen_maps:
-            generate_individual_maps(som, data, ignore_mask, individual_dir)
+            generate_individual_maps(som.weights, som.map_type, data, ignore_mask, individual_dir)
 
         # CNN visual quality assessment (combine individual maps → RGB → CNN score)
         training_results['cnn_quality_score'] = None
@@ -1589,10 +1606,12 @@ def main():
     print("INFO: Preparing data for evolution...")
     if INPUT_FILE:
         input_data_df = validate_input_data(INPUT_FILE, base_results_dir, preprocess_config)
-        training_data_path, _, ignore_mask, _ = preprocess_data(input_data_df, preprocess_config, base_results_dir)
-        loaded_data = np.load(training_data_path)
+        pre = preprocess_data(input_data_df, preprocess_config)
+        save_preprocess_artifacts(pre, input_data_df, base_results_dir)
+        loaded_data = pre.training_data
+        ignore_mask = pre.ignore_mask
         config['PREPROCES_DATA'] = preprocess_config
-        print(f"INFO: Data loaded and normalized from file {training_data_path}. Shape: {loaded_data.shape}")
+        print(f"INFO: Data loaded and normalized from file {INPUT_FILE}. Shape: {loaded_data.shape}")
     else:
         data_params = config.get("DATA_PARAMS", {})
         sample_size = data_params.get("sample_size", 1000)

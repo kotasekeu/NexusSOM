@@ -127,6 +127,18 @@ def _strip_masked(training_data: np.ndarray, weights_flat: np.ndarray,
 
 # ─── Projection ───────────────────────────────────────────────────────────────
 
+# ISOMAP fit mode, set from CLI (--isomap-fit):
+#   'joint' — data + weights in one neighbor graph (no out-of-sample artifacts,
+#             BUT weights lying off-manifold bridge manifold layers and can
+#             prevent unrolling — e.g. a SOM cutting through the Swiss Roll
+#             collapses the embedding into a ring).
+#   'data'  — fit on data only, weights mapped out-of-sample (Nyström; boundary
+#             neurons less precise, but the data manifold unrolls faithfully —
+#             the more honest verification view: a manifold-following SOM lands
+#             as a coherent grid, a layer-bridging SOM scatters).
+ISOMAP_FIT = 'joint'
+
+
 def _project(training_data: np.ndarray, weights_flat: np.ndarray,
              method: str, n_components: int = 2):
     """
@@ -136,6 +148,17 @@ def _project(training_data: np.ndarray, weights_flat: np.ndarray,
     """
     weights_only = training_data is None
     fit_data = weights_flat if weights_only else training_data
+
+    if method == 'raw':
+        # No transformation at all — the honest ground view for 2D/3D
+        # benchmark datasets (Swiss Roll, S-Curve, helix...): weights and data
+        # are shown in their native space.
+        if weights_flat.shape[1] != n_components:
+            sys.exit(f"ERROR: 'raw' projection needs exactly {n_components} "
+                     f"active dims, this run has {weights_flat.shape[1]}. "
+                     f"Use raw only for 2D/3D benchmark datasets.")
+        data_proj = None if weights_only else training_data
+        return data_proj, weights_flat, None
 
     if method == 'pca':
         pca = PCA(n_components=min(n_components, weights_flat.shape[1]))
@@ -179,12 +202,21 @@ def _project(training_data: np.ndarray, weights_flat: np.ndarray,
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore')
                 return None, iso.fit_transform(weights_flat), None
-        # Joint fit on data + weights so the weight vectors become part of the
-        # neighbour graph. Using .transform() after fitting only on data causes
-        # boundary neurons to be mapped via Nyström approximation to wrong
-        # locations, producing long crossing lines in the weight grid.
         n_neighbors = min(15, len(training_data) - 1)
         iso = Isomap(n_components=n_components, n_neighbors=n_neighbors)
+        if ISOMAP_FIT == 'data':
+            # Fit on data only — the manifold unrolls faithfully; weights are
+            # mapped out-of-sample (Nyström), so boundary neurons may be less
+            # precise, but off-manifold weights cannot distort the embedding.
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                data_proj = iso.fit_transform(training_data)
+                w_proj = iso.transform(weights_flat)
+            return data_proj, w_proj, None
+        # Joint fit on data + weights so the weight vectors become part of the
+        # neighbour graph — no out-of-sample artifacts, but weights lying off
+        # the manifold bridge its layers and can prevent unrolling (see the
+        # ISOMAP_FIT comment above and docs/som/issues.md #23).
         n_data = len(training_data)
         combined = np.vstack([training_data, weights_flat])
         with warnings.catch_warnings():
@@ -586,6 +618,108 @@ def plot_topology_html(weights: np.ndarray, training_data: np.ndarray,
     print(f'Saved: {output_path}')
 
 
+def plot_topology_html3d(weights: np.ndarray, training_data: np.ndarray,
+                         assignments: pd.DataFrame, hex_topology: bool,
+                         results_dir: str, output_path: str = None,
+                         grid_only: bool = False, method: str = 'pca',
+                         meta: dict = None):
+    """
+    Interactive ROTATABLE 3D topology plot (Plotly Scatter3d). Drag rotates the
+    camera — a single fixed viewpoint often hides whether the grid is a clean
+    sheet or a folded one. Not supported for t-SNE (no stable 3D embedding).
+    """
+    try:
+        import plotly.graph_objects as go
+    except ImportError:
+        sys.exit('ERROR: plotly not installed. Run: pip install plotly')
+    if method == 'tsne':
+        sys.exit('ERROR: 3D interactive plot is not supported for t-SNE.')
+
+    m, n, dim = weights.shape
+    flat_w = weights.reshape(m * n, dim)
+
+    td_proj, wf_proj, _ = _strip_masked(training_data, flat_w, meta or {})
+    data_3d, w_3d_flat, var_exp = _project(td_proj, wf_proj, method, 3)
+    w_3d = w_3d_flat.reshape(m, n, 3)
+
+    nqe = _neuron_qe(assignments, m, n)
+    nqe_flat = nqe.ravel() if nqe is not None else np.zeros(m * n)
+
+    fig = go.Figure()
+
+    if not grid_only and data_3d is not None:
+        fig.add_trace(go.Scatter3d(
+            x=data_3d[:, 0], y=data_3d[:, 1], z=data_3d[:, 2],
+            mode='markers',
+            marker=dict(color='#2980b9', size=1.5, opacity=0.25),
+            name='Training data', hoverinfo='skip',
+        ))
+
+    edges = _grid_edges(m, n, hex_topology)
+    _, stretched, _ = _edge_colors(w_3d, edges)
+
+    seg = {True: ([], [], []), False: ([], [], [])}
+    for e_idx, ((i1, j1), (i2, j2)) in enumerate(edges):
+        xs, ys, zs = seg[bool(stretched[e_idx])]
+        xs += [w_3d[i1, j1, 0], w_3d[i2, j2, 0], None]
+        ys += [w_3d[i1, j1, 1], w_3d[i2, j2, 1], None]
+        zs += [w_3d[i1, j1, 2], w_3d[i2, j2, 2], None]
+
+    fig.add_trace(go.Scatter3d(
+        x=seg[False][0], y=seg[False][1], z=seg[False][2], mode='lines',
+        line=dict(color='#2c3e50', width=2),
+        name='Grid edge (normal)', hoverinfo='skip', opacity=0.75,
+    ))
+    if seg[True][0]:
+        fig.add_trace(go.Scatter3d(
+            x=seg[True][0], y=seg[True][1], z=seg[True][2], mode='lines',
+            line=dict(color='#e67e22', width=2),
+            name='Grid edge (stretched — topology error or projection artefact)',
+            hoverinfo='skip', opacity=0.6,
+        ))
+
+    hover = [f'Neuron [{i},{j}]<br>Mean QE: {nqe_flat[i * n + j]:.4f}'
+             for i in range(m) for j in range(n)]
+    fig.add_trace(go.Scatter3d(
+        x=w_3d[:, :, 0].ravel(), y=w_3d[:, :, 1].ravel(), z=w_3d[:, :, 2].ravel(),
+        mode='markers',
+        marker=dict(color=nqe_flat, colorscale='Plasma', size=4,
+                    colorbar=dict(title='Mean QE', thickness=14),
+                    line=dict(color='white', width=0.5)),
+        text=hover, hovertemplate='%{text}<extra></extra>', name='Neurons',
+    ))
+
+    fig.update_layout(
+        title=dict(
+            text=(f'SOM Topology 3D [{method.upper()}] — '
+                  f'{os.path.basename(os.path.normpath(results_dir))}<br>'
+                  f'<sub>{m}×{n} grid | {"hex" if hex_topology else "rect"} | '
+                  f'drag to rotate</sub>'),
+            font_size=14,
+        ),
+        scene=dict(xaxis_title='Dim 1', yaxis_title='Dim 2', zaxis_title='Dim 3',
+                   aspectmode='data'),
+        hovermode='closest',
+        autosize=True,
+        margin=dict(l=10, r=10, t=80, b=10),
+    )
+
+    if output_path is None:
+        output_path = os.path.join(results_dir,
+                                   f'topology_interactive_3d_{method}.html')
+
+    html = fig.to_html(full_html=True, include_plotlyjs='cdn',
+                       config={'responsive': True})
+    html = html.replace(
+        '<body>', '<body style="margin:0;padding:0;overflow:hidden;">'
+    ).replace(
+        '<div id="', '<div style="width:100vw;height:100vh;" id="'
+    )
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(html)
+    print(f'Saved: {output_path}')
+
+
 # ─── Compare plot (2×2: data/weights × PCA/ISOMAP) ───────────────────────────
 
 def plot_topology_compare(weights: np.ndarray, training_data: np.ndarray,
@@ -706,8 +840,21 @@ def main():
         description='Visualize SOM topology (weight grid) in projected space.')
     parser.add_argument('results_dir', help='Path to SOM results directory')
     parser.add_argument('--projection', default='pca',
-                        choices=['pca', 'umap', 'tsne', 'isomap'],
-                        help='Dimensionality reduction algorithm (default: pca)')
+                        choices=['pca', 'umap', 'tsne', 'isomap', 'raw'],
+                        help="Dimensionality reduction algorithm (default: pca). "
+                             "'raw' = no transformation, only for runs with exactly "
+                             "2 (2D plots) or 3 (3D plots) active dims — the honest "
+                             "ground view for benchmark datasets")
+    parser.add_argument('--isomap-fit', choices=['joint', 'data'], default='joint',
+                        help="ISOMAP graph: 'joint' = data+weights together "
+                             "(default; off-manifold weights can bridge manifold "
+                             "layers and block unrolling), 'data' = fit on data "
+                             "only, weights mapped out-of-sample (honest manifold "
+                             "verification view)")
+    parser.add_argument('--all', dest='do_all', action='store_true',
+                        help='Generate everything at once: 2D for all four '
+                             'projections, 3D where supported (pca/umap/isomap), '
+                             'interactive HTML per projection, and the compare grid')
     parser.add_argument('--compare', action='store_true',
                         help='Generate 2×2 PCA vs ISOMAP comparison grid '
                              '(ablation / Swiss Roll validation)')
@@ -717,6 +864,9 @@ def main():
                         help='Generate only the 3D plot (skip 2D)')
     parser.add_argument('--html', action='store_true',
                         help='Generate interactive Plotly HTML (zoomable, hover info)')
+    parser.add_argument('--html3d', action='store_true',
+                        help='Generate ROTATABLE interactive 3D Plotly HTML '
+                             '(not for tsne)')
     parser.add_argument('--hex', action='store_true',
                         help='Use hexagonal grid connectivity')
     parser.add_argument('--grid-only', action='store_true',
@@ -734,6 +884,9 @@ def main():
     parser.add_argument('--azim', type=float, default=45,
                         help='3D azimuth angle (default: 45)')
     args = parser.parse_args()
+
+    global ISOMAP_FIT
+    ISOMAP_FIT = args.isomap_fit
 
     if not os.path.isdir(args.results_dir):
         sys.exit(f'ERROR: directory not found: {args.results_dir}')
@@ -762,13 +915,72 @@ def main():
     if n_neurons > 200 and args.projection == 'pca':
         print('HINT: large map detected — consider --projection umap for better unfolding.')
 
+    if args.do_all:
+        # Full verification batch: every projection (2D + HTML), 3D where
+        # supported, plus the PCA/ISOMAP comparison grid. Each step is
+        # isolated so a missing optional dependency (umap-learn, plotly)
+        # skips that output instead of killing the whole batch.
+        def _step(label, fn):
+            try:
+                fn()
+            except SystemExit as e:
+                print(f'SKIP {label}: {e}')
+            except Exception as e:
+                print(f'SKIP {label}: {e}')
+
+        for method in ('pca', 'umap', 'tsne', 'isomap'):
+            print(f'--- {method.upper()} ---')
+            _step(f'2D {method}', lambda m=method: plot_topology_2d(
+                weights, training_data, assignments, hex_topology,
+                args.results_dir, None, grid_only=args.grid_only,
+                density=args.density, method=m, meta=meta))
+            if method != 'tsne':  # t-SNE 3D unsupported
+                _step(f'3D {method}', lambda m=method: plot_topology_3d(
+                    weights, training_data, assignments, hex_topology,
+                    args.results_dir, None, elev=args.elev, azim=args.azim,
+                    grid_only=args.grid_only, method=m, meta=meta))
+                _step(f'HTML3D {method}', lambda m=method: plot_topology_html3d(
+                    weights, training_data, assignments, hex_topology,
+                    args.results_dir, None, grid_only=args.grid_only,
+                    method=m, meta=meta))
+            _step(f'HTML {method}', lambda m=method: plot_topology_html(
+                weights, training_data, assignments, hex_topology,
+                args.results_dir, None, grid_only=args.grid_only,
+                method=m, meta=meta))
+        # Raw (untransformed) views — only when the data space itself is 2D/3D
+        if active_dims == 3:
+            print('--- RAW (3D data space) ---')
+            _step('3D raw', lambda: plot_topology_3d(
+                weights, training_data, assignments, hex_topology,
+                args.results_dir, None, elev=args.elev, azim=args.azim,
+                grid_only=args.grid_only, method='raw', meta=meta))
+            _step('HTML3D raw', lambda: plot_topology_html3d(
+                weights, training_data, assignments, hex_topology,
+                args.results_dir, None, grid_only=args.grid_only,
+                method='raw', meta=meta))
+        elif active_dims == 2:
+            print('--- RAW (2D data space) ---')
+            _step('2D raw', lambda: plot_topology_2d(
+                weights, training_data, assignments, hex_topology,
+                args.results_dir, None, grid_only=args.grid_only,
+                density=args.density, method='raw', meta=meta))
+        print('--- COMPARE ---')
+        _step('compare grid', lambda: plot_topology_compare(
+            weights, training_data, hex_topology, args.results_dir,
+            meta=meta, assignments=assignments))
+        return
+
     if args.compare:
         print('Generating PCA vs ISOMAP comparison grid …')
         plot_topology_compare(weights, training_data, hex_topology,
                               args.results_dir, meta=meta,
                               assignments=assignments)
 
-    if not args.only3d and not args.compare:
+    skip_2d = args.projection == 'raw' and active_dims != 2
+    if skip_2d:
+        print(f"INFO: skipping 2D plot — 'raw' with {active_dims} active dims "
+              f"is only available in 3D (--3d / --only3d / --html3d).")
+    if not args.only3d and not args.compare and not skip_2d:
         plot_topology_2d(weights, training_data, assignments, hex_topology,
                          args.results_dir, args.output,
                          grid_only=args.grid_only, density=args.density,
@@ -784,6 +996,11 @@ def main():
         plot_topology_html(weights, training_data, assignments, hex_topology,
                            args.results_dir, args.output_html,
                            grid_only=args.grid_only, method=args.projection, meta=meta)
+
+    if args.html3d and not args.compare:
+        plot_topology_html3d(weights, training_data, assignments, hex_topology,
+                             args.results_dir, None,
+                             grid_only=args.grid_only, method=args.projection, meta=meta)
 
 
 if __name__ == '__main__':

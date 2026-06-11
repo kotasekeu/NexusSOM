@@ -101,3 +101,5 @@ kohonen-log.txt
 /app/mlp/visualizations/
 /data/datasets/WineQuality/results/
 /data/datasets/wine/
+/data/datasets/Helix/results/
+/data/datasets/SCurve/results/

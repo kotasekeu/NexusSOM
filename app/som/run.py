@@ -1,15 +1,14 @@
 import argparse
-import json
 import os
 import sys
-from datetime import datetime
-import pandas as pd
-import numpy as np
 
 from som.analysis import perform_analysis
 from som.graphs import generate_training_plots
 from som.visualization import generate_all_maps
 from som.preprocess import validate_input_data, preprocess_data
+from som.persistence import (save_preprocess_artifacts, save_weights,
+                             save_training_checkpoints, save_sample_coverage,
+                             save_run_metrics)
 from analysis.src.context import save_llm_context
 from som.utils import load_configuration, log_message, \
     get_working_directory
@@ -104,6 +103,142 @@ def _build_lstm_early_stop_fn(nn_cfg: dict, dataset_stats: dict):
         return None
 
 
+def run_pipeline(input_path: str, config: dict | str, output_dir: str = None,
+                 seed: int = None) -> str:
+    """
+    Programmatic entry point for one full SOM run:
+    validate → preprocess → train → analyze → llm context → plots → maps.
+
+    This is the API the multi-seed tool, ablation tooling, and the UI call —
+    same pipeline as the CLI, no subprocess needed.
+
+    Args:
+        input_path: path to the input CSV file.
+        config: configuration dict, or path to a JSON config file.
+        output_dir: results directory; default is a timestamped folder
+            next to the input CSV (results/<timestamp>).
+        seed: overrides config['random_seed'] when given (multi-seed runs).
+
+    Returns the results directory path. Raises on failure.
+    """
+    if isinstance(config, str):
+        config = load_configuration(config)
+    config = dict(config)  # local copy — callers' dict stays untouched
+    if seed is not None:
+        config['random_seed'] = seed
+
+    if output_dir:
+        working_dir = output_dir
+        os.makedirs(working_dir, exist_ok=True)
+        log_message(working_dir, "SYSTEM", f"Using specified output directory: '{working_dir}'")
+    else:
+        working_dir = get_working_directory(input_path)
+        log_message(working_dir, "SYSTEM", f"Created default output directory: '{working_dir}'")
+
+    log_message(working_dir, "SYSTEM",
+                f"Pipeline started with input: '{input_path}', seed: {config.get('random_seed')}")
+
+    # Data validation and preprocessing
+    log_message(working_dir, "SYSTEM", "Starting data validation and preprocessing...")
+
+    input_data_df = validate_input_data(input_path, working_dir, config)
+    log_message(working_dir, "SYSTEM", "Input data loaded for validation.")
+
+    config['num_samples'] = len(input_data_df)
+
+    log_message(working_dir, "SYSTEM",
+                f"Input data '{input_path}' validated successfully. Shape: {input_data_df.shape}")
+
+    # Preprocess and normalize data (pure), then persist the artifacts
+    log_fn = lambda message: log_message(working_dir, "SYSTEM", message)  # noqa: E731
+    pre = preprocess_data(input_data_df, config, log_fn=log_fn)
+    save_preprocess_artifacts(pre, input_data_df, working_dir)
+    log_message(working_dir, "SYSTEM", "Data preprocessing completed and saved.")
+
+    training_data = pre.training_data
+    ignore_mask = pre.ignore_mask
+    dataset_stats = pre.dataset_stats
+
+    # Column classification feeds analysis and visualization below.
+    # Kept out of the original config object — preprocess no longer mutates it.
+    runtime_config = {
+        **config,
+        'numerical_column': pre.numerical_column,
+        'categorical_column': pre.categorical_column,
+        'preprocessing_info': pre.preprocessing_info,
+    }
+
+    # NN models — loaded from NEURAL_NETWORKS section if present
+    nn_cfg = config.get('NEURAL_NETWORKS', {})
+    lstm_early_stop_fn  = _build_lstm_early_stop_fn(nn_cfg, dataset_stats)
+    dynamic_schedule_fn = _build_lstm_controller_fn(nn_cfg, dataset_stats)
+
+    # SOM initialization and training
+    log_message(working_dir, "SYSTEM", "Initializing and training SOM...")
+
+    som_params = {**config, 'dim': training_data.shape[1]}
+    som_params.pop('NEURAL_NETWORKS', None)
+    som_params.pop('PREPROCES_DATA', None)
+
+    som = KohonenSOM(**som_params)
+
+    # Train SOM (pure compute), then persist training artifacts
+    log_message(working_dir, "SYSTEM", "Starting SOM training...")
+    training_results = som.train(training_data, ignore_mask=ignore_mask,
+                                 lstm_early_stop_fn=lstm_early_stop_fn,
+                                 dynamic_schedule_fn=dynamic_schedule_fn,
+                                 log_fn=log_fn)
+    save_weights(som.weights, working_dir)
+    save_training_checkpoints(training_results.get('checkpoints', []), working_dir)
+    save_sample_coverage(training_results.get('sample_coverage'), working_dir)
+
+    lstm_stopped = training_results.get('lstm_stopped', False)
+    log_message(working_dir, "SYSTEM",
+                f"SOM training completed. Best MQE: {training_results['best_mqe']:.6f}"
+                + (f" [LSTM early stop at progress={training_results.get('lstm_stop_progress', '?')}]"
+                   if lstm_stopped else ""))
+
+    # Save run metrics (topographic_error, map geometry) for downstream analysis
+    final_te = som.calculate_topographic_error(training_data, mask=ignore_mask)
+    run_metrics = {
+        "map_size": [som.m, som.n],
+        "map_topology": config.get('map_type', 'hex'),
+        "best_mqe": training_results['best_mqe'],
+        "topographic_error": final_te,
+        "duration": training_results.get('duration'),
+        "lstm_stopped": lstm_stopped,
+        "lstm_stop_progress": training_results.get('lstm_stop_progress'),
+    }
+    save_run_metrics(run_metrics, working_dir)
+
+    # Analysis phase
+    log_message(working_dir, "SYSTEM", "Starting analysis phase...")
+    perform_analysis(som, input_data_df, training_data, runtime_config, working_dir,
+                     ignore_mask=ignore_mask)
+    log_message(working_dir, "SYSTEM", "Analysis phase completed.")
+
+    # Build LLM context from analysis outputs
+    log_message(working_dir, "SYSTEM", "Building LLM context...")
+    save_llm_context(working_dir)
+    log_message(working_dir, "SYSTEM", "LLM context ready.")
+
+    # Generate training plots (optional — batch contexts may skip them)
+    if config.get('save_training_plots', True):
+        log_message(working_dir, "SYSTEM", "Generating training plots...")
+        generate_training_plots(training_results, working_dir)
+        log_message(working_dir, "SYSTEM", "Training plots generated.")
+
+    # Generate all SOM visualizations (optional)
+    if config.get('save_visualizations', True):
+        log_message(working_dir, "SYSTEM", "Generating SOM visualizations...")
+        generate_all_maps(som.weights, som.map_type, input_data_df, training_data,
+                          runtime_config, ignore_mask, working_dir)
+        log_message(working_dir, "SYSTEM", "SOM visualizations generated.")
+
+    log_message(working_dir, "SYSTEM", "SOM analysis finished successfully.")
+    return working_dir
+
+
 def main():
     # Parse command-line arguments for input, config, and output paths
     parser = argparse.ArgumentParser(description='SOM algorithm')
@@ -111,127 +246,21 @@ def main():
     parser.add_argument('-c', '--config', required=True, help='Path to a custom configuration file (JSON)')
     parser.add_argument('-o', '--output',
                         help='Optional: Path to the output directory. If not provided, a timestamped folder will be created next to the input CSV file.')
+    parser.add_argument('-s', '--seed', type=int,
+                        help='Optional: Override random_seed from the config.')
     args = parser.parse_args()
 
-    working_dir = None
     try:
-        # Determine output directory, create if necessary
-        if args.output:
-            working_dir = args.output
-            os.makedirs(working_dir, exist_ok=True)
-            print(f"INFO: Using specified output directory: '{working_dir}'")
-            log_message(working_dir, "SYSTEM", f"Using specified output directory: '{working_dir}'")
-        else:
-            input_base_dir = os.path.dirname(os.path.abspath(args.input))
-            working_dir = get_working_directory(args.input)
-            print(f"INFO: Created default output directory: '{working_dir}'")
-            log_message(working_dir, "SYSTEM", f"Created default output directory: '{working_dir}'")
-
-        # Log application start
-        log_message(working_dir, "SYSTEM", f"Application started with input: '{args.input}', config: '{args.config}'")
-        log_message(working_dir, "SYSTEM", f"Output directory: '{working_dir}'")
-
-        # Load configuration file
-        config = load_configuration(args.config)
-        log_message(working_dir, "SYSTEM", f"Configuration file '{args.config}' loaded successfully.")
-
-        # Data validation and preprocessing
-        log_message(working_dir, "SYSTEM", "Starting data validation and preprocessing...")
-
-        input_data_df = validate_input_data(args.input, working_dir, config) # TODO project settings like delimiter, selected columns etc. update config
-        log_message(working_dir, "SYSTEM", "Input data loaded for validation.")
-
-        config['num_samples'] = len(input_data_df)
-
-        log_message(working_dir, "SYSTEM",
-                    f"Input data '{args.input}' validated successfully. Shape: {input_data_df.shape}")
-
-        # Preprocess and normalize data
-        training_data_path, _, ignore_mask, dataset_stats = preprocess_data(input_data_df, config, working_dir)
-        log_message(working_dir, "SYSTEM", "Data preprocessing completed.")
-
-        training_data = np.load(training_data_path)
-        log_message(working_dir, "SYSTEM",
-                    f"Training data loaded from '{training_data_path}'. Shape: {training_data.shape}")
-
-        # NN models — loaded from NEURAL_NETWORKS section if present
-        nn_cfg = config.get('NEURAL_NETWORKS', {})
-        lstm_early_stop_fn  = _build_lstm_early_stop_fn(nn_cfg, dataset_stats)
-        dynamic_schedule_fn = _build_lstm_controller_fn(nn_cfg, dataset_stats)
-
-        # SOM initialization and training
-        log_message(working_dir, "SYSTEM", "Initializing and training SOM...")
-
-        som_params = {**config, 'dim': training_data.shape[1]}
-        som_params.pop('NEURAL_NETWORKS', None)
-        som_params.pop('PREPROCES_DATA', None)
-
-        som = KohonenSOM(**som_params)
-
-        # Train SOM
-        log_message(working_dir, "SYSTEM", "Starting SOM training...")
-        training_results = som.train(training_data, ignore_mask=ignore_mask, working_dir=working_dir,
-                                     lstm_early_stop_fn=lstm_early_stop_fn,
-                                     dynamic_schedule_fn=dynamic_schedule_fn)
-
-        lstm_stopped = training_results.get('lstm_stopped', False)
-        log_message(working_dir, "SYSTEM",
-                    f"SOM training completed. Best MQE: {training_results['best_mqe']:.6f}"
-                    + (f" [LSTM early stop at progress={training_results.get('lstm_stop_progress', '?')}]"
-                       if lstm_stopped else ""))
-
-        # Save run metrics for result_analyzer (topographic_error, map geometry)
-        checkpoints = training_results.get('checkpoints', [])
-        final_te = checkpoints[-1]['topographic_error'] if checkpoints else None
-        run_metrics = {
-            "map_size": [som.m, som.n],
-            "map_topology": config.get('map_type', 'hex'),
-            "best_mqe": training_results['best_mqe'],
-            "topographic_error": final_te,
-            "duration": training_results.get('duration'),
-            "lstm_stopped": lstm_stopped,
-            "lstm_stop_progress": training_results.get('lstm_stop_progress'),
-        }
-        with open(os.path.join(working_dir, "run_metrics.json"), 'w') as f:
-            json.dump(run_metrics, f, indent=2)
-
-        # Analysis phase
-        log_message(working_dir, "SYSTEM", "Starting analysis phase...")
-        perform_analysis(som, input_data_df, training_data, config, working_dir)
-        log_message(working_dir, "SYSTEM", "Analysis phase completed.")
-
-        # Build LLM context from analysis outputs
-        log_message(working_dir, "SYSTEM", "Building LLM context...")
-        save_llm_context(working_dir)
-        log_message(working_dir, "SYSTEM", "LLM context ready.")
-
-        # Generate training plots
-        log_message(working_dir, "SYSTEM", "Generating training plots...")
-        generate_training_plots(training_results, working_dir)
-        log_message(working_dir, "SYSTEM", "Training plots generated.")
-
-        # Generate all SOM visualizations
-        log_message(working_dir, "SYSTEM", "Generating SOM visualizations...")
-        generate_all_maps(som, input_data_df, training_data, config, ignore_mask, working_dir)
-        log_message(working_dir, "SYSTEM", "SOM visualizations generated.")
-
-        log_message(working_dir, "SYSTEM", "SOM analysis finished successfully.")
-
-    except FileNotFoundError as e:
+        working_dir = run_pipeline(args.input, args.config,
+                                   output_dir=args.output, seed=args.seed)
+        print(f"INFO: Results saved to '{working_dir}'")
+    except (FileNotFoundError, ValueError) as e:
         print(f"ERROR: {e}")
-        if working_dir:
-            log_message(working_dir, "ERROR", str(e))
-        sys.exit(1)
-    except ValueError as e:
-        print(f"ERROR: {e}")
-        if working_dir:
-            log_message(working_dir, "ERROR", str(e))
         sys.exit(1)
     except Exception as e:
         print(f"FATAL ERROR: An unexpected error occurred: {e}")
-        if working_dir:
-            log_message(working_dir, "FATAL ERROR", str(e))
         sys.exit(1)
+
 
 # Entry point for script execution
 if __name__ == "__main__":

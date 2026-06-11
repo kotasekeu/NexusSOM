@@ -1,9 +1,30 @@
+"""
+Input preprocessing stage for the SOM pipeline.
+
+`preprocess_data` is pure: it takes a dataframe + config and returns a
+PreprocessResult (arrays + metadata). It writes nothing to disk and does not
+mutate the config — persistence of artifacts is handled by
+som.persistence.save_preprocess_artifacts, orchestration by som/run.py.
+"""
+import os
+from dataclasses import dataclass
+
+import numpy as np
 import pandas as pd
 from sklearn.preprocessing import MinMaxScaler
-import os
-import numpy as np
-import json
+
 from som.utils import log_message
+
+
+@dataclass
+class PreprocessResult:
+    """Output contract of the preprocessing stage."""
+    training_data: np.ndarray      # normalized (N, dim) matrix for SOM training
+    ignore_mask: np.ndarray        # boolean (N, dim); True = dimension invisible
+    preprocessing_info: dict       # per-column classification and reasons
+    dataset_stats: dict            # ds_* statistics (NN training features)
+    numerical_column: list         # analyzable numeric feature names (no primary ID)
+    categorical_column: list       # analyzable categorical feature names (no primary ID)
 
 def _clean_dataframe_boundaries(df: pd.DataFrame, working_dir: str) -> pd.DataFrame:
     # Remove completely empty rows from the dataframe
@@ -90,20 +111,40 @@ def _compute_dataset_stats(
     }
 
 
-def preprocess_data(df: pd.DataFrame, config: dict, working_dir: str) -> tuple[str, pd.DataFrame, np.ndarray, dict]:
-    """
-    Main function for data preprocessing.
-    Returns (npy_path, original_df, ignore_mask, dataset_stats).
-    dataset_stats is also saved as dataset_meta.json in working_dir.
-    """
-    log_message(working_dir, "SYSTEM", "--- Starting Data Preprocessing ---")
+PREPROCESS_STRATEGIES = ('nexus', 'scale-only', 'none')
 
-    # Prepare output directories and save original input
-    csv_dir = os.path.join(working_dir, "csv")
-    json_dir = os.path.join(working_dir, "json")
-    os.makedirs(csv_dir, exist_ok=True)
-    os.makedirs(json_dir, exist_ok=True)
-    df.to_csv(os.path.join(csv_dir, "original_input.csv"), index=False)
+
+def preprocess_data(df: pd.DataFrame, config: dict, log_fn=None) -> PreprocessResult:
+    """
+    Analyze, clean, encode, and normalize the input dataframe.
+
+    Pure function: no disk writes, no config mutation. Save artifacts with
+    som.persistence.save_preprocess_artifacts(result, df, working_dir).
+    log_fn is an optional callback(message) for progress logging.
+
+    The strategy (config key `preprocess_strategy`) controls how much of the
+    pipeline is applied — the ablation ladder for the preprocessing component:
+
+      - 'nexus' (default): full pipeline — noise-column exclusion, NaN/primary-ID
+        ignore mask, median fill, categorical encoding, MinMax normalization.
+      - 'scale-only': minimal sane preparation — keep all columns, no ignore
+        mask, median fill, categorical encoding, MinMax normalization.
+        Isolates the contribution of the mask + noise exclusion.
+      - 'none': raw values — encoding only (SOM needs numbers), no mask,
+        no normalization. Isolates the contribution of normalization
+        (expected: organization collapses).
+    """
+    _log = log_fn if log_fn is not None else (lambda message: None)
+
+    strategy = config.get('preprocess_strategy', 'nexus')
+    if strategy not in PREPROCESS_STRATEGIES:
+        raise ValueError(f"Unknown preprocess_strategy '{strategy}' "
+                         f"(expected one of {PREPROCESS_STRATEGIES})")
+    exclude_noise = strategy == 'nexus'
+    build_mask = strategy == 'nexus'
+    normalize = strategy in ('nexus', 'scale-only')
+
+    _log(f"--- Starting Data Preprocessing (strategy: {strategy}) ---")
 
     analysis_df = df.copy()
     total_rows = len(analysis_df)
@@ -125,58 +166,54 @@ def preprocess_data(df: pd.DataFrame, config: dict, working_dir: str) -> tuple[s
 
         col_info.update({'type': str(series.dtype), 'nunique': nunique, 'nunique_ratio': nunique_ratio})
 
+        # The primary ID column identifies records — it must not be treated as an
+        # analyzable feature (it is also masked for training further below).
+        is_primary_id = col == primary_id_col
+
         if pd.api.types.is_numeric_dtype(series):
             col_info['base_type'] = 'numeric'
             if nunique <= config.get('categorical_threshold_numeric', 30):
                 col_info['is_categorical'] = True
-                if col_info.get('status') == 'used':
+                if col_info.get('status') == 'used' and not is_primary_id:
                     categorical_column.append(col)
             else:
                 col_info['is_categorical'] = False
-                if col_info.get('status') == 'used':
+                if col_info.get('status') == 'used' and not is_primary_id:
                     numerical_column.append(col)
         else:
             col_info['base_type'] = 'text'
-            if nunique_ratio > config.get('noise_threshold_ratio', 0.2):
+            if exclude_noise and nunique_ratio > config.get('noise_threshold_ratio', 0.2):
                 col_info.update({'status': 'ignored', 'reason': 'High cardinality / noise', 'is_noise': True})
                 cols_to_ignore.append(col)
 
             elif nunique <= config.get('categorical_threshold_text', 30):
                 col_info['is_categorical'] = True
-                if col_info.get('status') == 'used':
+                if col_info.get('status') == 'used' and not is_primary_id:
                     categorical_column.append(col)
             else:
                 col_info['is_categorical'] = False
 
         preprocessing_info[col] = col_info
 
-    log_message(working_dir, "SYSTEM", f"Columns ignored as noise: {cols_to_ignore}")
-
-    info_path = os.path.join(json_dir, "preprocessing_info.json")
-    with open(info_path, 'w', encoding='utf-8') as f:
-        json.dump(preprocessing_info, f, indent=2, ensure_ascii=False, default=str)
-    log_message(working_dir, "SYSTEM", f"Preprocessing analysis saved to '{info_path}'")
-
-    config['numerical_column'] = numerical_column
-    config['categorical_column'] = categorical_column
+    _log(f"Columns ignored as noise: {cols_to_ignore}")
 
     # Create training dataframe by excluding ignored columns
     cols_for_training = [col for col in analysis_df.columns if col not in cols_to_ignore]
     training_df = analysis_df[cols_for_training].copy()
 
-    # Create and save ignore mask for NaN values and primary ID column
-    ignore_mask = training_df.isnull()
+    # Create ignore mask for NaN values and primary ID column
+    if build_mask:
+        ignore_mask = training_df.isnull()
 
-    if primary_id_col and primary_id_col in training_df.columns:
-        ignore_mask[primary_id_col] = True
-        log_message(working_dir, "SYSTEM", f"Primary ID column '{primary_id_col}' marked to be ignored in the mask.")
+        if primary_id_col and primary_id_col in training_df.columns:
+            ignore_mask[primary_id_col] = True
+            _log(f"Primary ID column '{primary_id_col}' marked to be ignored in the mask.")
 
-    ignore_mask_np = ignore_mask.values
-
-    mask_path = os.path.join(csv_dir, "ignore_mask.csv")
-    pd.DataFrame(ignore_mask_np).to_csv(mask_path, index=False, header=False)
-    log_message(working_dir, "SYSTEM",
-                f"Created and saved ignore mask to '{mask_path}' ({ignore_mask_np.sum()} marked values).")
+        ignore_mask_np = ignore_mask.values
+        _log(f"Created ignore mask ({ignore_mask_np.sum()} marked values).")
+    else:
+        ignore_mask_np = np.zeros(training_df.shape, dtype=bool)
+        _log(f"Ignore mask disabled (strategy: {strategy}).")
 
     # Fill missing values in training dataframe
     fill_values = {}
@@ -197,23 +234,28 @@ def preprocess_data(df: pd.DataFrame, config: dict, working_dir: str) -> tuple[s
         else:
             encoded_df[col], _ = pd.factorize(training_df[col], sort=True)
 
-    # Normalize encoded data and save results
-    scaler = MinMaxScaler()
-    scaled_values = scaler.fit_transform(encoded_df)
+    # Normalize encoded data (skipped entirely for the 'none' strategy)
+    if normalize:
+        scaler = MinMaxScaler()
+        scaled_values = scaler.fit_transform(encoded_df)
+    else:
+        scaled_values = encoded_df.values.astype(float)
+        _log(f"Normalization disabled (strategy: {strategy}).")
 
-    npy_path = os.path.join(csv_dir, "training_data.npy")
-    np.save(npy_path, scaled_values)
-    log_message(working_dir, "SYSTEM", f"Normalized training data saved to '{npy_path}'")
+    # Fully-masked columns (primary ID, all-NaN columns) never train — zero
+    # them in the data so they contribute exactly nothing even to computations
+    # that run without the mask. Zero here is NOT a value: the column is inert
+    # on both sides (weights of fully-masked dims are zeroed at train start).
+    # Linking back to the original dataset is done by row order / the ID in
+    # original_input.csv, never through this matrix.
+    if build_mask:
+        fully_masked_cols = ignore_mask_np.all(axis=0)
+        if fully_masked_cols.any():
+            scaled_values[:, fully_masked_cols] = 0.0
+            _log(f"Zeroed {int(fully_masked_cols.sum())} fully-masked column(s) "
+                 f"in the training matrix.")
 
-    readable_csv_path = os.path.join(csv_dir, "training_data_readable.csv")
-    pd.DataFrame(scaled_values).to_csv(readable_csv_path, index=False, header=False)
-    log_message(working_dir, "SYSTEM", f"Readable training data saved to '{readable_csv_path}'")
-
-    config.update({
-        'preprocessing_info': preprocessing_info
-    })
-
-    # Compute and save dataset statistics for ML model training
+    # Compute dataset statistics for ML model training
     dataset_stats = _compute_dataset_stats(
         analysis_df=analysis_df,
         numerical_column=numerical_column,
@@ -224,11 +266,15 @@ def preprocess_data(df: pd.DataFrame, config: dict, working_dir: str) -> tuple[s
         primary_id_col=primary_id_col,
         scaled_values=scaled_values,
     )
-    meta_path = os.path.join(working_dir, "dataset_meta.json")
-    with open(meta_path, 'w', encoding='utf-8') as f:
-        json.dump(dataset_stats, f, indent=2)
-    log_message(working_dir, "SYSTEM", f"Dataset statistics saved to '{meta_path}'")
+    dataset_stats['ds_preprocess_strategy'] = strategy
 
-    log_message(working_dir, "SYSTEM", "--- Data Preprocessing Finished ---")
+    _log("--- Data Preprocessing Finished ---")
 
-    return npy_path, df, ignore_mask_np, dataset_stats
+    return PreprocessResult(
+        training_data=scaled_values,
+        ignore_mask=ignore_mask_np,
+        preprocessing_info=preprocessing_info,
+        dataset_stats=dataset_stats,
+        numerical_column=numerical_column,
+        categorical_column=categorical_column,
+    )

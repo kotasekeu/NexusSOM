@@ -1,13 +1,12 @@
-# som.py
-import sys
-import numpy as np
-import time
+# som.py — core SOM algorithm.
+# Pure compute over numpy arrays: no disk IO, no logging side effects.
+# Persistence of results lives in som/persistence.py; orchestration in som/run.py.
 import math
-from datetime import datetime
-from tqdm import tqdm
-import os
-from som.utils import log_message
+import time
 from collections import deque
+
+import numpy as np
+from tqdm import tqdm
 
 class KohonenSOM:
     def __init__(self, **kwargs):
@@ -75,6 +74,8 @@ class KohonenSOM:
         self.track_sample_coverage = kwargs.get('track_sample_coverage', False)
         # If True, save a checkpoint at every MQE evaluation (ignores checkpoint_count)
         self.checkpoint_every_mqe = kwargs.get('checkpoint_every_mqe', False)
+        # Progress bar — disable for batch contexts (EA runs hundreds of trainings)
+        self.show_progress = kwargs.get('show_progress', True)
 
         if self.map_type == 'hex':
             # Calculate cube coordinates for hexagonal grid
@@ -85,20 +86,11 @@ class KohonenSOM:
             y = -x - z
             self.cube_coords = np.stack([x, y, z], axis=-1)
 
-    def _get_neighbors(self, i: int, j: int) -> list[tuple[int, int]]:
-        neighbors = []
-        for di in [-1, 0, 1]:
-            for dj in [-1, 0, 1]:
-                if di == 0 and dj == 0:
-                    continue
-                ni, nj = i + di, j + dj
-                if 0 <= ni < self.m and 0 <= nj < self.n:
-                    neighbors.append((ni, nj))
-        return neighbors
-
-    def calculate_dead_neurons(self, data: np.ndarray) -> tuple[int, float]:
+    def calculate_dead_neurons(self, data: np.ndarray,
+                               mask: np.ndarray = None) -> tuple[int, float]:
         """
         Calculates the number and percentage of dead neurons (neurons that never won).
+        Masked dimensions are excluded so BMU selection matches training.
         """
         num_neurons = self.m * self.n
         if data.shape[0] == 0:
@@ -106,7 +98,10 @@ class KohonenSOM:
 
         flat_weights = self.weights.reshape(num_neurons, self.dim)
 
-        dists = np.linalg.norm(data[:, np.newaxis, :] - flat_weights[np.newaxis, :, :], axis=2)
+        diffs = data[:, np.newaxis, :] - flat_weights[np.newaxis, :, :]
+        if mask is not None:
+            diffs *= (~mask)[:, np.newaxis, :]
+        dists = np.linalg.norm(diffs, axis=2)
         bmu_indices = np.argmin(dists, axis=1)
 
         hit_counts = np.bincount(bmu_indices, minlength=num_neurons)
@@ -260,11 +255,11 @@ class KohonenSOM:
         # Update weights of neurons based on BMU and neighborhood function
         bmu_i, bmu_j = bmu_idx
 
-        if self.map_type == 'square':
-            distances = np.linalg.norm(self.neuron_coords - np.array([bmu_i, bmu_j]), axis=2)
-        else:  # hex
+        if self.map_type == 'hex':
             bmu_cube_coords = self.cube_coords[bmu_i, bmu_j]
             distances = np.sum(np.abs(self.cube_coords - bmu_cube_coords), axis=2) / 2
+        else:  # square / rect — everything non-hex, same convention as all other branches
+            distances = np.linalg.norm(self.neuron_coords - np.array([bmu_i, bmu_j]), axis=2)
 
         radius_squared = radius ** 2
         influence = np.exp(-distances ** 2 / (2 * radius_squared + 1e-8))
@@ -283,20 +278,6 @@ class KohonenSOM:
         if ratio is None:
             ratio = 1.0
         self.start_radius = ratio * max(self.m, self.n)
-
-    def grid_distance(self, a: tuple[int, int], b: tuple[int, int]) -> float:
-        # Compute grid distance between two neurons (square or hex)
-        i1, j1 = a
-        i2, j2 = b
-        if self.map_type == 'square':
-            return math.hypot(i1 - i2, j1 - j2)
-        q1, r1 = j1, i1
-        q2, r2 = j2, i2
-        x1, z1 = q1, r1
-        y1 = -x1 - z1
-        x2, z2 = q2, r2
-        y2 = -x2 - z2
-        return (abs(x1 - x2) + abs(y1 - y2) + abs(z1 - z2)) / 2
 
     def compute_quantization_error(self, data: np.ndarray,
                                    mask: np.ndarray = None) -> tuple[np.ndarray | None, float]:
@@ -325,10 +306,34 @@ class KohonenSOM:
 
         return neuron_error_map, total_qe
 
-    def train(self, data: np.ndarray, ignore_mask: np.ndarray = None, working_dir: str = '.',
-              lstm_early_stop_fn=None, dynamic_schedule_fn=None) -> dict:
-        # Main training loop for SOM
+    def train(self, data: np.ndarray, ignore_mask: np.ndarray = None,
+              lstm_early_stop_fn=None, dynamic_schedule_fn=None, log_fn=None) -> dict:
+        """
+        Main training loop. Pure compute: writes nothing to disk.
+
+        Args:
+            data: normalized training data (N, dim).
+            ignore_mask: per-sample boolean mask of dimensions to ignore.
+            lstm_early_stop_fn: optional callback(checkpoints) -> (stop, score).
+            dynamic_schedule_fn: optional callback(checkpoint) -> (lr_factor, radius_factor).
+            log_fn: optional callback(message) for progress/intervention logging.
+
+        Returns dict with best_mqe, duration, history, checkpoints, sample_coverage
+        (incl. per-sample counts), convergence flags. Final weights stay on
+        self.weights — persist via som.persistence.save_weights().
+        """
+        _log = log_fn if log_fn is not None else (lambda message: None)
         start_time = time.monotonic()
+
+        if ignore_mask is not None:
+            # Dimensions masked for every sample (e.g. the primary ID column)
+            # can never receive a weight update — their weights would stay
+            # random initialization noise. Zero them so they contribute exactly
+            # nothing to computations that run without the mask (U-matrix
+            # metrics, topological correlation, stored-artifact rendering).
+            fully_masked_dims = ignore_mask.all(axis=0)
+            if fully_masked_dims.any():
+                self.weights[:, :, fully_masked_dims] = 0.0
 
         self.mqe_history = []
         self.best_mqe = float('inf')
@@ -374,7 +379,8 @@ class KohonenSOM:
 
         _coverage = np.zeros(total_samples, dtype=np.int64) if self.track_sample_coverage else None
 
-        pbar = tqdm(range(total_iterations), desc="SOM Training", unit="iter")
+        pbar = tqdm(range(total_iterations), desc="SOM Training", unit="iter",
+                    disable=not self.show_progress)
         iteration = 0  # Initialize iteration variable to avoid scope issues
         for iteration in pbar:
             current_lr = self.get_decay_value(iteration, total_iterations, self.start_learning_rate,
@@ -429,7 +435,7 @@ class KohonenSOM:
                 if (self.save_checkpoints and iteration % checkpoint_interval == 0) \
                         or lstm_early_stop_fn is not None:
                     topo_error = self.calculate_topographic_error(data, mask=ignore_mask)
-                    _, dead_ratio = self.calculate_dead_neurons(data)
+                    _, dead_ratio = self.calculate_dead_neurons(data, mask=ignore_mask)
                     progress = iteration / total_iterations
                     cp = {
                         'iteration': iteration,
@@ -455,20 +461,18 @@ class KohonenSOM:
                         _ctrl_cp_count += 1
                         # Periodic milestone log (every ~10% of training)
                         if _ctrl_cp_count % _ctrl_log_every == 0:
-                            log_message(working_dir, "SYSTEM",
-                                        f"LSTM ctrl @ {progress:.0%}: "
-                                        f"step lr_f={lr_f:.4f} rad_f={rad_f:.4f} | "
-                                        f"cum_lr={_cum_lr_factor:.4f} cum_rad={_cum_radius_factor:.4f}")
+                            _log(f"LSTM ctrl @ {progress:.0%}: "
+                                 f"step lr_f={lr_f:.4f} rad_f={rad_f:.4f} | "
+                                 f"cum_lr={_cum_lr_factor:.4f} cum_rad={_cum_radius_factor:.4f}")
                         # Intervention log: fired when controller deviates >1% from neutral
                         _lr_dev = abs(lr_f - 1.0)
                         _rad_dev = abs(rad_f - 1.0)
                         if _lr_dev > 0.01 or _rad_dev > 0.01:
-                            log_message(working_dir, "SYSTEM",
-                                        f"LSTM ctrl INTERVENTION @ {progress:.1%}: "
-                                        f"lr_f={lr_f:.4f} (Δ{lr_f - 1.0:+.4f}) "
-                                        f"rad_f={rad_f:.4f} (Δ{rad_f - 1.0:+.4f}) | "
-                                        f"effective lr={current_lr:.5f} R={current_radius:.4f} | "
-                                        f"cum_lr={_cum_lr_factor:.4f} cum_rad={_cum_radius_factor:.4f}")
+                            _log(f"LSTM ctrl INTERVENTION @ {progress:.1%}: "
+                                 f"lr_f={lr_f:.4f} (Δ{lr_f - 1.0:+.4f}) "
+                                 f"rad_f={rad_f:.4f} (Δ{rad_f - 1.0:+.4f}) | "
+                                 f"effective lr={current_lr:.5f} R={current_radius:.4f} | "
+                                 f"cum_lr={_cum_lr_factor:.4f} cum_rad={_cum_radius_factor:.4f}")
 
                     if self.save_checkpoints and iteration % checkpoint_interval == 0:
                         checkpoints.append(cp)
@@ -480,9 +484,8 @@ class KohonenSOM:
                             and len(lstm_checkpoints) >= lstm_min_checkpoints:
                         should_stop, lstm_score = lstm_early_stop_fn(lstm_checkpoints)
                         if should_stop:
-                            log_message(working_dir, "SYSTEM",
-                                        f"LSTM early stopping triggered at iteration {iteration} "
-                                        f"(progress={progress:.1%}, score={lstm_score:.3f})")
+                            _log(f"LSTM early stopping triggered at iteration {iteration} "
+                                 f"(progress={progress:.1%}, score={lstm_score:.3f})")
                             converged = True
                             lstm_stopped = True
                             lstm_stop_progress = progress
@@ -517,33 +520,8 @@ class KohonenSOM:
         pbar.close()
 
         duration = time.monotonic() - start_time
-        csv_dir = os.path.join(working_dir, "csv")
-        os.makedirs(csv_dir, exist_ok=True)
 
-        # Save final weights as binary .npy file
-        npy_path = os.path.join(csv_dir, "weights.npy")
-        np.save(npy_path, self.weights)
-        log_message(working_dir, "SYSTEM", f"Final weights saved to '{npy_path}'")
-
-        # Save final weights as readable .csv file for inspection
-        weights_reshaped = self.weights.reshape(-1, self.dim)
-        coords = np.indices((self.m, self.n)).transpose(1, 2, 0).reshape(-1, 2)
-        header = ['neuron_i', 'neuron_j'] + [f'dim_{d}' for d in range(self.dim)]
-        csv_data = np.hstack([coords, weights_reshaped])
-
-        csv_path = os.path.join(csv_dir, "weights_readable.csv")
-        np.savetxt(csv_path, csv_data, delimiter=',', header=','.join(header), comments='')
-        log_message(working_dir, "SYSTEM", f"Readable final weights saved to '{csv_path}'")
-
-        # Save checkpoints for LSTM training if enabled
-        if self.save_checkpoints and checkpoints:
-            import json
-            checkpoints_path = os.path.join(csv_dir, "training_checkpoints.json")
-            with open(checkpoints_path, 'w') as f:
-                json.dump(checkpoints, f, indent=2)
-            log_message(working_dir, "SYSTEM", f"Training checkpoints saved to '{checkpoints_path}'")
-
-        # Save sample coverage stats if tracking was enabled
+        # Sample coverage stats if tracking was enabled (persisted by the caller)
         coverage_stats = None
         if _coverage is not None:
             never_processed = int(np.sum(_coverage == 0))
@@ -555,17 +533,13 @@ class KohonenSOM:
                 'never_processed': never_processed,
                 'never_processed_ratio': round(never_processed / total_samples, 4),
                 'total_samples': total_samples,
+                'counts': _coverage.tolist(),
             }
-            import json as _json
-            coverage_path = os.path.join(csv_dir, "sample_coverage.json")
-            with open(coverage_path, 'w') as f:
-                _json.dump({**coverage_stats, 'counts': _coverage.tolist()}, f)
-            log_message(working_dir, "SYSTEM",
-                        f"Sample coverage: min={coverage_stats['min']} "
-                        f"max={coverage_stats['max']} "
-                        f"mean={coverage_stats['mean']} "
-                        f"never_processed={never_processed} "
-                        f"({coverage_stats['never_processed_ratio']*100:.1f}%)")
+            _log(f"Sample coverage: min={coverage_stats['min']} "
+                 f"max={coverage_stats['max']} "
+                 f"mean={coverage_stats['mean']} "
+                 f"never_processed={never_processed} "
+                 f"({coverage_stats['never_processed_ratio']*100:.1f}%)")
 
         return {
             'best_mqe': self.best_mqe,

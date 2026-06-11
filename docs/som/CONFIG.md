@@ -1,125 +1,158 @@
-# SOM Algorithm Configuration Guide
+# SOM Configuration Guide
 
-This document outlines the configuration for a single run of the Hybrid Kohonen Self-Organizing Map (SOM). All settings are managed through a single, flat `config.json` file.
+Configuration for a single run of the Hybrid Kohonen Self-Organizing Map.
+All settings live in one flat JSON file passed via `-c`. A single file is the
+complete, reproducible definition of one experiment (plus the optional
+`-s/--seed` CLI override for multi-seed studies).
 
-## Usage
+Updated for the refactored module (see `REFACTOR_PLAN.md`, branch `4-som-cleanup`).
 
-This configuration file is a required argument when executing the main SOM script. For detailed instructions on script execution and command-line syntax, please refer to the `RUN.md` file.
-
-### Configuration Philosophy
-
-The configuration file uses a flat, single-level structure for simplicity and clarity. Each key represents a specific hyperparameter or setting for the SOM training, analysis, or preprocessing pipeline. This design ensures that a single file contains the complete, reproducible definition of one experiment.
-
----
-
-## `config.json` File Structure
-
-The configuration file is a single JSON object. It is logically divided into three groups of parameters, even though they are all at the same level:
-
-1.  **Data Preprocessing Parameters**: Settings that control how the input CSV data is cleaned, analyzed, and prepared.
-2.  **SOM Core Parameters**: Hyperparameters that directly define the architecture and training process of the Self-Organizing Map.
-3.  **Analysis Parameters**: Settings for the post-training analysis, such as outlier detection.
-
----
-
-## Parameter Reference
-
-### 1. Data Preprocessing Parameters (`PREPROCES_DATA`)
-
-These settings are used by the `preprocess.py` module.
-
-*   `"primary_id"`: (String) The name of the column to be treated as a unique identifier. This column will be present in the data for analysis but ignored during SOM training.
-*   `"delimiter"`: (String) The delimiter used in the input CSV file (e.g., `","`).
-*   `"categorical_threshold_numeric"`: (Integer) The maximum number of unique values for a numeric column to be classified as categorical.
-*   `"categorical_threshold_text"`: (Integer) The maximum number of unique values for a text column to be classified as categorical.
-*   `"noise_threshold_ratio"`: (Float, 0-1) The ratio of unique values to total rows above which a text column is considered "noise" and completely ignored during processing.
-
-### 2. SOM Core Parameters
-
-These hyperparameters directly influence the SOM's training behavior.
-
-**Core Algorithm Settings**
-*   `"processing_type"`: (String) The training mode.
-    *   `"stochastic"`: Updates weights after each single, randomly chosen data sample. Fast but can be unstable.
-    *   `"deterministic"`: Processes the entire dataset in each iteration. Slow but stable.
-    *   `"hybrid"`: Starts with small batches of data and gradually increases the batch size. A balanced approach.
-*   `"epoch_multiplier"`: (Float) A multiplier that determines the total number of training iterations, calculated as `number_of_samples * epoch_multiplier`.
-
-**Map Structure**
-*   `"m"`: (Integer) The height of the SOM grid.
-*   `"n"`: (Integer) The width of the SOM grid.
-*   `"map_type"`: (String) The topology of the SOM grid. Supported values are `"square"` or `"hex"`.
-
-**Learning Rate Parameters**
-*   `"start_learning_rate"`: (Float, 0-1) The initial magnitude of weight updates at the beginning of training.
-*   `"end_learning_rate"`: (Float, 0-1) The final learning rate at the end of training.
-*   `"lr_decay_type"`: (String) The function defining how the learning rate decreases over time (e.g., `"linear-drop"`, `"exp-drop"`, `"log-drop"`, `"step-down"`).
-
-**Neighborhood Radius Parameters**
-*   `"start_radius"`: (Float) The initial neighborhood radius, defining the initial size of the area where neurons are updated.
-*   `"end_radius"`: (Float) The final radius at the end of training. A value of `1.0` or `0.5` is typical.
-*   `"radius_decay_type"`: (String) The decay function for the radius.
-
-**Hybrid Mode Parameters (only used if `processing_type` is `"hybrid"`)**
-*   `"start_batch_percent"`: (Float) The initial batch size as a percentage of the total dataset.
-*   `"end_batch_percent"`: (Float) The final batch size as a percentage.
-*   `"batch_growth_type"`: (String) The function governing how the batch size increases (`"linear-growth"`, `"exp-growth"`, `"log-growth"`).
-*   `"num_batches"`: (Integer) The number of sections the dataset is split into for hybrid processing.
-
-**General & Advanced Parameters**
-*   `"normalize_weights_flag"`: (Boolean) If `true`, neuron weight vectors are L2-normalized after each update.
-*   `"growth_g"`: (Float) The `G` parameter controlling the steepness of `exp-` and `log-` decay/growth curves. A higher value means a steeper curve.
-*   `"random_seed"`: (Integer or `null`) The seed for the random number generator to ensure reproducibility.
-*   `"mqe_evaluations_per_run"`: (Integer) How many times the Mean Quantization Error (MQE) should be evaluated during the training run. This controls the frequency of checks for early stopping.
-*   `"early_stopping_window"`: (Integer) The number of recent MQE evaluations to average for the moving average early stopping mechanism. A value of `1` effectively disables moving average.
-*   `"max_epochs_without_improvement"`: (Integer) The number of checks without improvement in the moving average before stopping training. This acts as the "patience" parameter. Set to a very high number to disable early stopping.
-
-### 3. Analysis Parameters
-
-Settings for the post-training analysis phase.
-
-*   `"std_threshold"`: (Float) The number of standard deviations from the mean used to classify a value as an outlier during extreme value detection. A typical value is `2.5` or `3.0`.
-
----
-
-## Complete `config.json` Example
+## Example
 
 ```json
 {
-    "primary_id": "primary_id",
+    "preprocess_strategy": "nexus",
+    "primary_id": "ID",
     "delimiter": ",",
-    "categorical_threshold_numeric": 30,
-    "categorical_threshold_text": 30,
+    "categorical_threshold_numeric": 20,
+    "categorical_threshold_text": 20,
     "noise_threshold_ratio": 0.2,
 
-    "processing_type": "hybrid",
-    "epoch_multiplier": 10.0,
-
-    "m": 15,
-    "n": 15,
+    "map_size": [30, 30],
     "map_type": "hex",
+    "random_seed": 42,
+    "epoch_multiplier": 5.0,
 
-    "start_learning_rate": 0.8,
+    "start_learning_rate": 0.9,
     "end_learning_rate": 0.1,
     "lr_decay_type": "linear-drop",
 
-    "start_radius": 7.5,
+    "start_radius_init_ratio": 1.0,
     "end_radius": 1.0,
     "radius_decay_type": "linear-drop",
 
-    "start_batch_percent": 5.0,
-    "end_batch_percent": 100.0,
-    "batch_growth_type": "exp-growth",
-    "num_batches": 5,
+    "start_batch_percent": 0.01,
+    "end_batch_percent": 0.01,
+    "batch_growth_type": "static",
+    "num_batches": 1,
 
-    "normalize_weights_flag": false,
-    "growth_g": 5.0,
-    "random_seed": 42,
-    
-    "mqe_evaluations_per_run": 50,
-    "early_stopping_window": 5,
-    "max_epochs_without_improvement": 10,
+    "mqe_evaluations_per_run": 500,
+    "save_checkpoints": true,
+    "checkpoint_count": 10,
+    "track_sample_coverage": false,
 
-    "std_threshold": 2.5
+    "save_training_plots": true,
+    "save_visualizations": true
 }
 ```
+
+---
+
+## 1. Preprocessing parameters
+
+Used by `som/preprocess.py` (pure stage — returns a `PreprocessResult`,
+artifacts are saved by `som/persistence.py`).
+
+| Key | Default | Description |
+|---|---|---|
+| `preprocess_strategy` | `"nexus"` | How much of the pipeline is applied. `"nexus"` = full (noise exclusion, ignore mask, median fill, encoding, MinMax). `"scale-only"` = keep all columns, no mask, but normalize — isolates the mask contribution. `"none"` = encoding only, no normalization — ablation baseline; organization is expected to collapse. Recorded into `dataset_meta.json` as `ds_preprocess_strategy`. |
+| `primary_id` | `"primary_id"` | Record-identifier column. Always masked for training and excluded from analyzable feature lists. |
+| `delimiter` | `","` | CSV delimiter. |
+| `selected_columns` | — | Optional list; restricts the input to these columns (missing ones raise an error). |
+| `categorical_threshold_numeric` | `30` | Numeric column with ≤ N unique values is treated as categorical. |
+| `categorical_threshold_text` | `30` | Text column with ≤ N unique values is treated as categorical. |
+| `noise_threshold_ratio` | `0.2` | Text column whose unique-value ratio exceeds this is dropped as noise (`nexus` strategy only). |
+
+Missing values: numeric NaN → column median, text NaN → empty string. Under
+`nexus`, originally-missing cells are additionally marked in the **ignore
+mask** so they are invisible to BMU selection, weight updates, and error
+metrics (see `issues.md` #3–4 for why this matters).
+
+## 2. SOM core parameters
+
+Constructor arguments of `KohonenSOM` (`som/som.py`). The data dimension
+(`dim`) is set automatically by the pipeline.
+
+| Key | Default | Description |
+|---|---|---|
+| `map_size` | `[10, 10]` | Grid size `[width, height]`. |
+| `map_type` | — | `"hex"` (6 neighbors, cube coordinates) or `"square"` (Moore neighborhood). |
+| `random_seed` | `null` | Seeds numpy for weight init and batch sampling. Same seed → bit-identical run. Overridable per run via `run_pipeline(seed=...)` / CLI `-s`. |
+| `epoch_multiplier` | — | Total iterations = `epoch_multiplier × n_samples`. |
+| `start_learning_rate` / `end_learning_rate` | — | LR range over training. |
+| `lr_decay_type` | — | Decay curve, see below. |
+| `start_radius_init_ratio` | `1.0` | Initial radius = ratio × `max(map_width, map_height)`. |
+| `end_radius` | — | Final neighborhood radius. |
+| `radius_decay_type` | — | Decay curve, see below. |
+| `start_batch_percent` / `end_batch_percent` | — | Percentage of the dataset sampled per iteration **from each section**. |
+| `batch_growth_type` | — | Curve for batch size evolution (use a `*-growth` type to grow). |
+| `num_batches` | — | Number of sections the shuffled dataset is split into; each iteration samples from every section (hybrid coverage mechanism). |
+| `growth_g` | — | Steepness of `exp-*` and `log-*` curves. |
+| `normalize_weights_flag` | — | Re-normalize weight vectors to unit norm each iteration. EA experience: consistently degrades organization (see `verify_ea_run.py`). |
+| `mqe_evaluations_per_run` | `20` | How many times MQE (and stopping criteria) are evaluated during a run. |
+| `max_epochs_without_improvement` | — | Early-stopping patience. ⚠ Together with `early_stopping_window` this feature is currently **effectively disabled** (defaults 50000) — see `issues.md` #2. |
+| `save_checkpoints` | `false` | Record training checkpoints (progress, MQE, TE, dead ratio, LR, radius) — required for LSTM training data and the multi-seed MQE comparison. |
+| `checkpoint_count` | `10` | Number of checkpoints per run. |
+| `checkpoint_every_mqe` | `false` | Checkpoint at every MQE evaluation instead (dense curves, ~`mqe_evaluations_per_run` points). |
+| `track_sample_coverage` | `false` | Count how many times each input vector is processed → `csv/sample_coverage.json`. ⚠ Open investigation, see `article_implementation.md` item 3. |
+| `show_progress` | `true` | tqdm progress bar. EA and batch tools disable it. |
+
+### Decay types (`lr_decay_type`, `radius_decay_type`, `batch_growth_type`)
+
+`static`, `linear-drop`, `linear-growth`, `exp-drop`, `exp-growth`,
+`log-drop`, `log-growth`, `step-down` (10 steps, factor 0.7).
+
+Domain constraint: LR and radius must **always decrease** during organization
+— use `*-drop` types for them. "Dynamic" control (LSTM controller) modulates
+the decay speed, never the direction. Growth types exist for the batch size.
+
+### Training modes
+
+There is no `processing_type` switch — hybrid sampling covers the extremes
+(`issues.md` #6):
+
+- **deterministic**: `num_batches: 1`, batch percent `100`
+- **stochastic**: `num_batches: 1`, batch percent `≈ 1/n_samples` (1 sample)
+- **hybrid**: anything between; sections + growing batches
+
+## 3. Analysis parameters
+
+| Key | Default | Description |
+|---|---|---|
+| `std_threshold` | `2.5` | Z-score threshold for global and per-neuron (local) outlier detection in `som/analysis.py`. |
+
+## 4. Output control
+
+| Key | Default | Description |
+|---|---|---|
+| `save_training_plots` | `true` | MQE/LR/radius/batch evolution PNGs. Disable for batch runs. |
+| `save_visualizations` | `true` | All maps (U-Matrix, hit, distance, dead neurons, cluster, component planes, pie). Disable for batch runs — maps can be re-rendered later from artifacts via `som.visualization.render_results_dir(results_dir)`. |
+
+EA has its own per-individual switches in `FIXED_PARAMS`:
+`generate_training_plots`, `generate_individual_maps`, `save_individual_weights`
+(default behavior documented in `app/ea/ea.py`).
+
+## 5. Neural-network section (optional)
+
+```json
+"NEURAL_NETWORKS": {
+    "use_lstm": true,
+    "lstm_model_path": "app/lstm/models/....keras",
+    "lstm_scaler_path": "app/lstm/models/....pkl",
+    "lstm_quality_threshold": 0.75,
+
+    "use_lstm_controller": true,
+    "lstm_controller_model_path": "app/lstm/models/....keras",
+    "lstm_controller_scaler_path": "app/lstm/models/....pkl"
+}
+```
+
+| Key | Description |
+|---|---|
+| `use_lstm` | LSTM early stopping — aborts runs predicted to end poorly (fires after ≥ 20 % of training). |
+| `lstm_quality_threshold` | Stop when predicted quality score falls below this (default 0.75). |
+| `use_lstm_controller` | LSTM Phase 3 controller — adjusts LR/radius decay speed per checkpoint (multiplicative cumulative factors). |
+
+Requires the NN extras (`python/requirements_nn.txt`). When a model fails to
+load, the run continues without the feature (warning only). The core pipeline
+has no NN dependency.
