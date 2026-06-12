@@ -7,6 +7,17 @@ correctness. This is the citable baseline for the ablation study (A3/A4 in
 (benchmark generation, `verify_topology.py`, topology plots); tool
 calibration history: `issues.md` #23–#30.
 
+> **Reproducibility note (2026-06-12):** the `sampling_method` default
+> flipped to `reshuffle` after these baselines were recorded (`issues.md`
+> #31). The numbers below come from `random`-sampling runs; a fixed-seed
+> re-run under the new default produces different (statistically
+> equivalent) realizations — for deterministic 100 %-batch configs the
+> method only changes the per-iteration processing order. For a
+> bit-identical replay add `"sampling_method": "random"` to the config.
+> The Swiss Roll / Helix global FAILs are sampling-independent
+> (re-measured under both methods, 10 seeds each: ρ 0.37 vs 0.38 and
+> 0.19 vs 0.19 — `docs/ea/SEARCH_SPACE.md` experiment C).
+
 ## Decision (summary)
 
 **The SOM implementation is mathematically correct and preserves topology

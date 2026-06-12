@@ -30,6 +30,19 @@ class KohonenSOM:
         self.random_seed = kwargs.get('random_seed')
         self.map_type = kwargs.get('map_type')
         self.num_batches = kwargs.get('num_batches')
+        # 'reshuffle' — default: without-replacement epoch shuffling —
+        #               guaranteed equal hit counts, no quality cost,
+        #               faster (docs/ea/SEARCH_SPACE.md step 1, exp A–C)
+        # 'random'    — legacy: np.random.choice per iteration (with
+        #               replacement across iterations, coverage ~ Poisson);
+        #               pre-2026-06-12 runs used this — their configs must
+        #               say so explicitly to stay replayable
+        sampling_method = kwargs.get('sampling_method', 'reshuffle')
+        if sampling_method == 'cycle':  # deprecated alias
+            sampling_method = 'reshuffle'
+        if sampling_method not in ('random', 'reshuffle'):
+            raise ValueError(f"Unknown sampling_method: {sampling_method}")
+        self.sampling_method = sampling_method
         self.max_epochs_without_improvement = kwargs.get('max_epochs_without_improvement')
 
         # Determine SOM map size
@@ -347,9 +360,16 @@ class KohonenSOM:
         epochs_without_improvement = 0
         recent_mqe_history = deque(maxlen=self.early_stopping_window)
 
-        # Prepare batch indices for processing
+        # Prepare batch indices for processing.
+        # The sampling scheme (permutation -> array_split -> per-iteration
+        # ceil + choice/pointer) is replicated in app/tools/coverage_sim.py —
+        # keep both in sync (verified via its `verify` subcommand).
         shuffled_indices = np.random.permutation(total_samples)
         section_indices = np.array_split(shuffled_indices, self.num_batches)
+
+        if self.sampling_method == 'reshuffle':
+            _sec_orders = [np.random.permutation(sec) for sec in section_indices]
+            _sec_positions = [0] * self.num_batches
 
         if self.mqe_evaluations_per_run > 0:
             mqe_compute_interval = max(1, total_iterations // self.mqe_evaluations_per_run)
@@ -397,10 +417,28 @@ class KohonenSOM:
             samples_per_section = max(1, math.ceil(samples_per_section_float))
 
             selected_indices = []
-            for section in section_indices:
-                num_to_take = min(samples_per_section, len(section))
-                chosen = np.random.choice(section, num_to_take, replace=False)
-                selected_indices.extend(chosen)
+            if self.sampling_method == 'reshuffle':
+                for s, section in enumerate(section_indices):
+                    sec_len = len(section)
+                    if sec_len == 0:
+                        continue
+                    remaining = min(samples_per_section, sec_len)
+                    while remaining > 0:
+                        take_now = min(remaining,
+                                       sec_len - _sec_positions[s])
+                        selected_indices.extend(
+                            _sec_orders[s][_sec_positions[s]:
+                                           _sec_positions[s] + take_now])
+                        _sec_positions[s] += take_now
+                        remaining -= take_now
+                        if _sec_positions[s] >= sec_len:
+                            _sec_orders[s] = np.random.permutation(section)
+                            _sec_positions[s] = 0
+            else:
+                for section in section_indices:
+                    num_to_take = min(samples_per_section, len(section))
+                    chosen = np.random.choice(section, num_to_take, replace=False)
+                    selected_indices.extend(chosen)
             indices_to_process = selected_indices
 
             self.history['batch_size'].append((iteration, len(indices_to_process)))
@@ -421,7 +459,9 @@ class KohonenSOM:
             self.total_weight_updates += len(samples_to_process)
 
             if _coverage is not None:
-                _coverage[indices_to_process] += 1
+                # reshuffle can wrap an epoch boundary within one iteration,
+                # producing duplicate indices — np.add.at counts them all
+                np.add.at(_coverage, indices_to_process, 1)
 
             if self.normalize_weights_flag:
                 self.normalize_weights()

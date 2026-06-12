@@ -118,11 +118,11 @@ Typ mřížky (hex/rect) se čte z `run_metrics.json` (klíč `map_topology`). M
 
 ### Maskování dimenzí
 
-Always-masked sloupce (typicky primární ID) jsou odstraněny před projekcí. Bez tohoto kroku by monotónní ID sloupec (0→1) zkreslil PCA/UMAP komponenty. Viz [ISSUES.md #84](../ea/ISSUES.md).
+Always-masked sloupce (typicky primární ID) jsou odstraněny před projekcí. Bez tohoto kroku by monotónní ID sloupec (0→1) zkreslil PCA/UMAP komponenty. Viz [issues.md #84](../ea/issues.md).
 
 ### Hex hrany
 
-Hrany pro hex topologii se počítají v cube koordinátech (6 směrů: `(±1,∓1,0), (±1,0,∓1), (0,±1,∓1)`). Parity-based algoritmus byl buggy a způsoboval "guláš" v grafech — viz [ISSUES.md #82](../ea/ISSUES.md).
+Hrany pro hex topologii se počítají v cube koordinátech (6 směrů: `(±1,∓1,0), (±1,0,∓1), (0,±1,∓1)`). Parity-based algoritmus byl buggy a způsoboval "guláš" v grafech — viz [issues.md #82](../ea/issues.md).
 
 ---
 

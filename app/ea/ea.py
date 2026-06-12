@@ -39,7 +39,6 @@ warnings.warn = _filtered_warn
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from datetime import datetime
-from sklearn.datasets import make_blobs
 from multiprocessing import Pool, cpu_count
 
 from som.preprocess import validate_input_data, preprocess_data
@@ -57,10 +56,7 @@ from ea.nn_integration import NeuralNetworkIntegration
 
 # Global variables
 INPUT_FILE = None
-NORMALIZED_DATA = None
 WORKING_DIR = None
-EVALUATED_CACHE = {}  # Cache for evaluated individuals: {uid: (training_results, config)}
-EVALUATION_STATS = {'total_requested': 0, 'cache_hits': 0, 'new_evaluations': 0}  # Track deduplication stats
 _NN_INTEGRATION_CACHE = {}  # Per-process NN model cache: {cache_key: NeuralNetworkIntegration}
 # Running min/max for objective normalization — updated each generation from all feasible solutions.
 # Shape (3,): [mqe_ratio, topo_error, dead_ratio]. None until first update.
@@ -319,6 +315,9 @@ def tournament_selection(population: list, k: int = 3) -> dict:
     Returns:
         Winning individual (dict).
     """
+    # Clamp tournament size — configs tuned for large populations (k=5) must
+    # not crash small/degenerate populations (issues.md #91)
+    k = max(1, min(k, len(population)))
     # Randomly select tournament participants
     participants = random.sample(population, k)
 
@@ -614,99 +613,21 @@ def apply_dynamic_search_space(search_space: dict, n_samples: int) -> dict:
     return adjusted
 
 
-def load_configuration(json_path: str = None) -> dict:
+def load_configuration(json_path: str) -> dict:
     """
-        Load configuration. Priority: JSON > ea_config.py.
-
-        Args:
-            json_path: Path to JSON config file.
-
-        Returns:
-            Configuration dictionary.
-        """
-    if json_path:
-        print(f"INFO: Using configuration file from argument: {json_path}")
-        if not os.path.exists(json_path):
-            print(f"ERROR: Configuration file {json_path} does not exist.")
-            sys.exit(1)
-        try:
-            with open(json_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except json.JSONDecodeError as e:
-            print(f"ERROR: File {json_path} is not valid JSON: {e}")
-            sys.exit(1)
-    else:
-        print("INFO: Argument --config not provided, searching for ea_config.py.")
-        try:
-            from ea_config import CONFIG
-            print("INFO: ea_config.py found and loaded.")
-            return CONFIG
-        except ImportError:
-            print("ERROR: No configuration file provided and default ea_config.py not found.")
-            print("Solution: Create ea_config.py or use --config <path_to_json> as described in the documentation.")
-            sys.exit(1)
-
-
-def crossover(parent1: dict, parent2: dict, param_space: dict) -> dict:
+    Load the JSON configuration file (see docs/ea/CONFIG.md).
     """
-    Perform crossover between two parents.
+    print(f"INFO: Using configuration file from argument: {json_path}")
+    if not os.path.exists(json_path):
+        print(f"ERROR: Configuration file {json_path} does not exist.")
+        sys.exit(1)
+    try:
+        with open(json_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except json.JSONDecodeError as e:
+        print(f"ERROR: File {json_path} is not valid JSON: {e}")
+        sys.exit(1)
 
-    Args:
-        parent1: First parent configuration.
-        parent2: Second parent configuration.
-        param_space: Search space dictionary.
-
-    Returns:
-        Child configuration dictionary.
-    """
-    child = {}
-    for key in param_space:
-        if isinstance(param_space[key], list):
-            child[key] = random.choice([parent1[key], parent2[key]])
-        else:
-            child[key] = parent1[key]
-    return child
-
-def random_config(param_space: dict) -> dict:
-    """
-    Generate a random configuration from the search space.
-
-    Args:
-        param_space: Search space dictionary.
-
-    Returns:
-        Configuration dictionary.
-    """
-    config = {}
-    for key, value in param_space.items():
-        if isinstance(value, list):
-            config[key] = random.choice(value)
-        else:
-            config[key] = value
-
-    # Validate and fix min/max batch
-    if 'min_batch_percent' in config and 'max_batch_percent' in config:
-        if config['min_batch_percent'] > config['max_batch_percent']:
-            # Simplest fix: swap values, variant generate until correct order
-            config['min_batch_percent'], config['max_batch_percent'] = \
-                config['max_batch_percent'], config['min_batch_percent']
-    return config
-
-def mutate(config: dict, param_space: dict) -> dict:
-    """
-    Mutate a configuration by randomly changing one parameter.
-
-    Args:
-        config: Configuration dictionary.
-        param_space: Search space dictionary.
-
-    Returns:
-        Mutated configuration dictionary.
-    """
-    key = random.choice(list(param_space.keys()))
-    if isinstance(param_space[key], list):
-        config[key] = random.choice(param_space[key])
-    return config
 
 def _run_probe_worker(args: tuple):
     """
@@ -795,12 +716,6 @@ def run_evolution(ea_config: dict, data: np.ndarray, ignore_mask: np.ndarray) ->
     """
     global ARCHIVE
     global WORKING_DIR
-    global EVALUATED_CACHE
-    global EVALUATION_STATS
-
-    # Clear cache and stats at the start of each evolution run
-    EVALUATED_CACHE.clear()
-    EVALUATION_STATS = {'total_requested': 0, 'cache_hits': 0, 'new_evaluations': 0}
 
     population_size = ea_config["EA_SETTINGS"]["population_size"]
     generations = ea_config["EA_SETTINGS"]["generations"]
@@ -837,6 +752,9 @@ def run_evolution(ea_config: dict, data: np.ndarray, ignore_mask: np.ndarray) ->
         print(f"INFO: NN integration enabled — MLP={nn_cfg.get('use_mlp')}, "
               f"LSTM={nn_cfg.get('use_lstm')}, CNN={nn_cfg.get('use_cnn')}, "
               f"LSTM-Controller={nn_cfg.get('use_lstm_controller')}")
+        if use_cnn_objective and not fixed_params.get('generate_individual_maps', False):
+            print("WARNING: use_cnn requires FIXED_PARAMS.generate_individual_maps=true "
+                  "(default false — CNN track is closed); cnn_quality_score will stay empty")
     else:
         print("INFO: NN integration disabled — running EA without neural networks")
 
@@ -851,6 +769,10 @@ def run_evolution(ea_config: dict, data: np.ndarray, ignore_mask: np.ndarray) ->
     # Initialize population using continuous operators
     # Generate initial population and validate/repair constraints
     population = [validate_and_repair(random_config_continuous(search_space)) for _ in range(population_size)]
+
+    # Evaluated survivors of the previous generation (canonical NSGA-II P_{g}).
+    # Carried forward WITH their results so only offspring need evaluation each generation.
+    elite_survivors: list = []
 
     try:
         for gen in range(generations):
@@ -872,9 +794,19 @@ def run_evolution(ea_config: dict, data: np.ndarray, ignore_mask: np.ndarray) ->
                 print("Error: No individual was successfully evaluated. Exiting.")
                 return
 
-            # Combine population and archive (elitism)
-            # Combine current evaluated population with the best individuals from previous generations
-            combined_population = evaluated_population + ARCHIVE
+            # Combine freshly evaluated offspring with the evaluated survivors of the
+            # previous generation (canonical NSGA-II elitism: selection over P ∪ O) and
+            # the archive. Survivors and archive overlap by construction — deduplicate
+            # by uid, keeping the first occurrence (fresh evaluations take precedence).
+            combined_population = evaluated_population + elite_survivors + ARCHIVE
+            _seen_combined: set = set()
+            _deduped_combined = []
+            for cfg, res in combined_population:
+                _uid = res.get('uid')
+                if _uid not in _seen_combined:
+                    _seen_combined.add(_uid)
+                    _deduped_combined.append((cfg, res))
+            combined_population = _deduped_combined
 
             # Fitness calculation using Non-dominated Sorting and Crowding Distance
             # Use improvement ratios (final/initial) instead of absolute values so that
@@ -946,9 +878,11 @@ def run_evolution(ea_config: dict, data: np.ndarray, ignore_mask: np.ndarray) ->
             # Sort the combined population: primarily by rank (ascending), secondarily by crowding distance (descending)
             combined_population.sort(key=lambda x: (x[0]['rank'], -x[0]['crowding_distance']))
 
-            # New population is the first N best individuals from the sorted list
-            # Keep only the dictionaries with configuration, not results
-            population = [cfg for cfg, res in combined_population[:population_size]]
+            # Environmental selection: the first N best individuals form the survivors
+            # P_{g+1}. Kept WITH their results — they re-enter the next combine step
+            # already evaluated; only offspring are evaluated each generation.
+            elite_survivors = combined_population[:population_size]
+            population = [cfg for cfg, res in elite_survivors]
 
             # Update archive - contains only individuals from the best front (rank 0).
             # NOTE: must be built from the sorted list using rank==0 filter, NOT from
@@ -956,9 +890,9 @@ def run_evolution(ea_config: dict, data: np.ndarray, ignore_mask: np.ndarray) ->
             # stale after combined_population.sort() above.
             ARCHIVE = [(cfg, res) for cfg, res in combined_population if cfg.get('rank') == 0]
 
-            # Deduplicate by UID — parallel workers may evaluate the same config multiple times
-            # (EVALUATED_CACHE is not shared across processes). Keep the copy with the highest
-            # crowding distance (most diverse position in objective space).
+            # Deduplicate by UID as a safety net (combined is already deduplicated,
+            # but archive entries persist across generations). Keep the copy with
+            # the highest crowding distance (most diverse position in objective space).
             seen_uids: set = set()
             deduped = []
             for cfg, res in sorted(ARCHIVE, key=lambda x: -x[0].get('crowding_distance', 0)):
@@ -981,11 +915,13 @@ def run_evolution(ea_config: dict, data: np.ndarray, ignore_mask: np.ndarray) ->
                            for _ in range(population_size)]
 
             # Generate exactly population_size unique offspring.
-            # If SBX/mutation produces a duplicate (already in this generation or archive),
-            # retry with a new random pair — up to max_crossovers attempts.
-            archive_uids = {get_uid(cfg) for cfg, _ in ARCHIVE}
+            # If SBX/mutation produces a duplicate (within this batch, or of a
+            # current survivor/archive member — re-evaluating those adds nothing
+            # since survivors carry their results), retry — up to max_crossovers.
+            known_uids = {get_uid(cfg) for cfg, _ in ARCHIVE}
+            known_uids.update(get_uid(cfg) for cfg in population)
             next_gen_offspring: list = []
-            seen_offspring_uids: set = set(archive_uids)  # skip re-generating known archive members
+            seen_offspring_uids: set = known_uids
             max_crossovers = population_size * 3
             crossover_attempts = 0
 
@@ -1019,35 +955,38 @@ def run_evolution(ea_config: dict, data: np.ndarray, ignore_mask: np.ndarray) ->
     except KeyboardInterrupt:
         print("\nTerminating evolutionary algorithm...")
     except Exception as e:
+        # Re-raise: a fatal error must fail the run loudly (non-zero exit),
+        # not truncate it into a successful-looking partial result (issues.md #91)
         print(f"\nFatal error during execution of the evolutionary algorithm: {str(e)}")
+        raise
 
-    # Calculate deduplication statistics from results.csv
-    # (Can't use EVALUATION_STATS due to multiprocessing - globals not shared between processes)
+    # Evaluation summary from results.csv (the authoritative record — worker
+    # processes do not share state with the parent).
     csv_path = os.path.join(WORKING_DIR, "results.csv")
     try:
-        import pandas as pd
         df = pd.read_csv(csv_path)
-        new_evaluations = len(df)  # Unique UIDs in results.csv
-        total_requested = population_size * generations  # Total individual evaluations requested
-        cache_hits = total_requested - new_evaluations  # Duplicates skipped
-    except Exception as e:
-        # Fallback to empty stats if file doesn't exist
-        total_requested = 0
-        new_evaluations = 0
-        cache_hits = 0
+        evaluated = len(df)
+        unique = df['uid'].nunique()
+    except Exception:
+        evaluated = unique = 0
 
     print("Evolution completed.")
-    print(f"Deduplication stats: {new_evaluations} unique configurations evaluated, {cache_hits} duplicates skipped (from {total_requested} total requests)")
-    if total_requested > 0:
-        cache_hit_rate = (cache_hits / total_requested) * 100
-        print(f"Cache hit rate: {cache_hit_rate:.1f}%")
+    print(f"Evaluations: {evaluated} total, {unique} unique configurations "
+          f"(budget: {population_size * generations})")
+
+# NSGA-II selection metadata attached to config dicts during ranking —
+# never part of the genes, must not influence the UID (issues.md #89).
+_NON_GENE_KEYS = frozenset({'rank', 'crowding_distance'})
+
 
 def get_uid(config: dict) -> str:
     """
-    Generate a unique identifier for a configuration.
+    Deterministic UID for a configuration: MD5 over sorted gene items.
+    Selection metadata (rank, crowding_distance) is excluded so the same
+    genes hash identically before and after ranking.
     """
-    config_str = str(sorted(config.items()))
-    return hashlib.md5(config_str.encode()).hexdigest()
+    items = sorted((k, v) for k, v in config.items() if k not in _NON_GENE_KEYS)
+    return hashlib.md5(str(items).encode()).hexdigest()
 
 def log_message(uid: str, message: str, working_dir: str = None) -> None:
     """
@@ -1075,6 +1014,7 @@ def log_result_to_csv(config: dict, results: dict, working_dir: str = None) -> N
     base_fields = ['uid',
                    'dataset_name',
                    'raw_best_mqe', 'raw_topographic_error', 'raw_mqe_improvement_ratio',
+                   'raw_topological_correlation',
                    'best_mqe', 'topographic_error', 'mqe_improvement_ratio',
                    'initial_mqe', 'constraint_violation', 'penalty_factor', 'is_penalized', 'penalty_reason',
                    'duration', 'dead_neuron_ratio', 'map_m', 'map_n',
@@ -1097,38 +1037,6 @@ def log_result_to_csv(config: dict, results: dict, working_dir: str = None) -> N
         if not file_exists:
             writer.writeheader()
         writer.writerow(row)
-
-def log_progress(current: int, total: int) -> None:
-    """
-    Log progress to a file.
-    """
-    global WORKING_DIR
-    progress_path = os.path.join(WORKING_DIR, "progress.log")
-    with open(progress_path, "a", encoding='utf-8') as f:
-        f.write(f"{current}/{total} completed\n")
-
-def get_or_generate_data(sample_size: int, input_dim: int) -> np.ndarray:
-    """
-    Load or generate synthetic data for SOM training.
-
-    Args:
-        sample_size: Number of samples.
-        input_dim: Number of features.
-
-    Returns:
-        Numpy array with data.
-    """
-    global WORKING_DIR
-    file_name = f"data_{sample_size}x{input_dim}.npy"
-    file_path = os.path.join(WORKING_DIR, file_name)
-
-    if os.path.exists(file_path):
-        return np.load(file_path)
-
-    data, _ = make_blobs(n_samples=sample_size, n_features=input_dim, centers=5)
-    np.save(file_path, data)
-    log_message("SYSTEM", f"Generated new data: {file_name}")
-    return data
 
 def log_status_to_csv(uid: str, population_id: int, generation: int, status: str,
                      start_time: str = None, end_time: str = None, working_dir: str = None) -> None:
@@ -1156,55 +1064,6 @@ def log_status_to_csv(uid: str, population_id: int, generation: int, status: str
             'end_time': end_time
         }
         writer.writerow(row)
-
-def log_final_best(uid: str, config: dict, score: float, duration: float) -> None:
-    """
-    Log the best final result to a file.
-    """
-    global WORKING_DIR
-    best_path = os.path.join(WORKING_DIR, "final_best.txt")
-    with open(best_path, "a", encoding='utf-8') as f:
-        f.write(f"UID: {uid}\n")
-        f.write(f"Score (quantization error): {score:.6f}\n")
-        f.write(f"Duration: {duration:.2f} s\n")
-        f.write("Parameters:\n")
-        for k, v in config.items():
-            f.write(f"  {k}: {v}\n")
-
-def load_input_data(input_file: str) -> np.ndarray:
-    sys.exit(0)
-    """
-    Load and normalize input data from a CSV file.
-
-    Args:
-        input_file: Path to input CSV file.
-
-    Returns:
-        Numpy array with normalized data.
-    """
-    global NORMALIZED_DATA
-    global WORKING_DIR
-    
-    if NORMALIZED_DATA is not None:
-        return NORMALIZED_DATA
-
-    preprocess_file = os.path.join(WORKING_DIR, "preprocess-input.csv")
-    # if not os.path.exists(preprocess_file):
-    #     preprocess_file = normalize_data(input_file, {}, {})
-    NORMALIZED_DATA = pd.read_csv(preprocess_file, delimiter=',').values
-    log_message("SYSTEM", f"Loaded and normalized data from external file: {input_file}")
-    return NORMALIZED_DATA
-
-def extract_uid_from_path(file_path: str) -> str:
-    """
-    Extract UID from file path.
-    """
-    parts = file_path.split('/')
-    for part in parts:
-        if part.startswith('nxmpp'):
-            return part
-    return None
-
 
 def copy_maps_to_dataset(uid: str, individual_dir: str, working_dir: str) -> None:
     """
@@ -1251,24 +1110,8 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
     Returns:
         Tuple of (training_results, configuration).
     """
-    global EVALUATED_CACHE
-    global EVALUATION_STATS
-
-    EVALUATION_STATS['total_requested'] += 1
-
     start_time = time.monotonic()
     uid = get_uid(ind)
-
-    # Check if this configuration has already been evaluated
-    if uid in EVALUATED_CACHE:
-        EVALUATION_STATS['cache_hits'] += 1
-        cached_results, cached_config = EVALUATED_CACHE[uid]
-        print(f"[GEN {generation + 1}] Skipping duplicate UID {uid[:8]}... (already evaluated)")
-        log_status_to_csv(uid, population_id, generation, "cached",
-                         start_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"), working_dir=working_dir)
-        return cached_results, cached_config
-
-    EVALUATION_STATS['new_evaluations'] += 1
 
     try:
         print(f"[GEN {generation + 1}] Total RAM used: {psutil.virtual_memory().used // (1024 ** 2)} MB")
@@ -1319,9 +1162,7 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
                     log_status_to_csv(uid, population_id, generation, "mlp_skipped",
                                       start_time=datetime.fromtimestamp(start_time).strftime("%Y-%m-%d %H:%M:%S"),
                                       end_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"), working_dir=working_dir)
-                    result = (penalty_results, copy.deepcopy(ind))
-                    EVALUATED_CACHE[uid] = result
-                    return result
+                    return penalty_results, copy.deepcopy(ind)
 
         # Build LSTM early-stop callback for SOM training
         lstm_early_stop_fn = None
@@ -1447,15 +1288,16 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
             if key.startswith('ds_') or key == 'dataset_name':
                 training_results[key] = value
 
-        # Training plots per individual are optional — hundreds of runs × 4 PNGs
-        # add measurable time; disable via FIXED_PARAMS.generate_training_plots.
-        if fixed_params.get('generate_training_plots', True):
+        # Training plots per individual are opt-in — hundreds of runs × 4 PNGs
+        # add measurable time; enable via FIXED_PARAMS.generate_training_plots.
+        if fixed_params.get('generate_training_plots', False):
             generate_training_plots(training_results, individual_dir)
 
-        # generate_individual_maps: controlled by FIXED_PARAMS.generate_individual_maps
-        # Set to false when CNN visual quality assessment is not needed (spatial analysis
-        # works directly on som.weights — no PNG files required).
-        _gen_maps = fixed_params.get('generate_individual_maps', True)
+        # Per-individual PNG maps are opt-in (FIXED_PARAMS.generate_individual_maps).
+        # They only feed the closed CNN track (visual quality assessment / maps_dataset
+        # for CNN training) — spatial analysis works directly on som.weights, and the
+        # code path is kept for archival data regeneration only.
+        _gen_maps = fixed_params.get('generate_individual_maps', False)
         if _gen_maps:
             generate_individual_maps(som.weights, som.map_type, data, ignore_mask, individual_dir)
 
@@ -1495,11 +1337,7 @@ def evaluate_individual(ind: dict, population_id: int, generation: int,
         if _gen_maps:
             copy_maps_to_dataset(uid, individual_dir, working_dir)
 
-        # Cache the results to avoid re-evaluation of duplicate configurations
-        result = (training_results, copy.deepcopy(ind))
-        EVALUATED_CACHE[uid] = result
-
-        return result
+        return training_results, copy.deepcopy(ind)
 
     except Exception as e:
         import traceback
@@ -1582,59 +1420,46 @@ def main():
     global _OBJ_RUNNING_MIN, _OBJ_RUNNING_MAX
 
     parser = argparse.ArgumentParser(description='Evolutionary optimization of the SOM algorithm')
-    parser.add_argument('-i', '--input', help='Path to the input CSV file')
-    parser.add_argument('-c', '--config', help='Path to a custom configuration file (JSON)')
+    parser.add_argument('-i', '--input', required=True, help='Path to the input CSV file')
+    parser.add_argument('-c', '--config', required=True, help='Path to the configuration file (JSON)')
     args = parser.parse_args()
 
-    if args.input:
-        if not os.path.exists(args.input):
-            print(f"Error: Input file {args.input} does not exist.")
-            sys.exit(1)
-        INPUT_FILE = args.input
+    if not os.path.exists(args.input):
+        print(f"Error: Input file {args.input} does not exist.")
+        sys.exit(1)
+    INPUT_FILE = args.input
 
     config = load_configuration(args.config)
     preprocess_config = config.get("PREPROCES_DATA", {})
 
     # Preprocessing and search space adjustment happen once — shared across all seed runs
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    if INPUT_FILE:
-        base_results_dir = os.path.join(os.path.dirname(os.path.abspath(INPUT_FILE)), "results", timestamp)
-    else:
-        base_results_dir = os.path.join(os.getcwd(), "results", timestamp)
+    base_results_dir = os.path.join(os.path.dirname(os.path.abspath(INPUT_FILE)), "results", timestamp)
     os.makedirs(base_results_dir, exist_ok=True)
 
     print("INFO: Preparing data for evolution...")
-    if INPUT_FILE:
-        input_data_df = validate_input_data(INPUT_FILE, base_results_dir, preprocess_config)
-        pre = preprocess_data(input_data_df, preprocess_config)
-        save_preprocess_artifacts(pre, input_data_df, base_results_dir)
-        loaded_data = pre.training_data
-        ignore_mask = pre.ignore_mask
-        config['PREPROCES_DATA'] = preprocess_config
-        print(f"INFO: Data loaded and normalized from file {INPUT_FILE}. Shape: {loaded_data.shape}")
-    else:
-        data_params = config.get("DATA_PARAMS", {})
-        sample_size = data_params.get("sample_size", 1000)
-        input_dim = data_params.get("input_dim", 10)
-        loaded_data = get_or_generate_data(sample_size, input_dim)
-        ignore_mask = None
-        print(f"INFO: Data has been generated. Number of samples: {sample_size}, dimension: {input_dim}")
+    input_data_df = validate_input_data(INPUT_FILE, base_results_dir, preprocess_config)
+    pre = preprocess_data(input_data_df, preprocess_config)
+    save_preprocess_artifacts(pre, input_data_df, base_results_dir)
+    loaded_data = pre.training_data
+    ignore_mask = pre.ignore_mask
+    config['PREPROCES_DATA'] = preprocess_config
+    print(f"INFO: Data loaded and normalized from file {INPUT_FILE}. Shape: {loaded_data.shape}")
 
     # Adjust search space bounds once from dataset size
     config['SEARCH_SPACE'] = apply_dynamic_search_space(config['SEARCH_SPACE'], loaded_data.shape[0])
 
     # Inject dataset metadata into fixed_params so every results.csv row carries dataset context
     config['FIXED_PARAMS'] = dict(config.get('FIXED_PARAMS', {}))
-    if INPUT_FILE:
-        config['FIXED_PARAMS']['dataset_name'] = os.path.basename(os.path.dirname(os.path.abspath(INPUT_FILE)))
-        meta_path = os.path.join(base_results_dir, "dataset_meta.json")
-        if os.path.exists(meta_path):
-            with open(meta_path, encoding='utf-8') as f:
-                for key, value in json.load(f).items():
-                    config['FIXED_PARAMS'][key] = value
-            print(f"INFO: Dataset metadata loaded from {meta_path}")
-        else:
-            print("INFO: dataset_meta.json not found — dataset columns will be empty")
+    config['FIXED_PARAMS']['dataset_name'] = os.path.basename(os.path.dirname(os.path.abspath(INPUT_FILE)))
+    meta_path = os.path.join(base_results_dir, "dataset_meta.json")
+    if os.path.exists(meta_path):
+        with open(meta_path, encoding='utf-8') as f:
+            for key, value in json.load(f).items():
+                config['FIXED_PARAMS'][key] = value
+        print(f"INFO: Dataset metadata loaded from {meta_path}")
+    else:
+        print("INFO: dataset_meta.json not found — dataset columns will be empty")
 
     # Calibrate org_threshold once — depends on dataset/map size, not on seed
     org_threshold = run_calibration_probe(config, loaded_data, ignore_mask, base_results_dir)
@@ -1664,8 +1489,11 @@ def main():
         _OBJ_RUNNING_MAX = None
         run_evolution(run_config, loaded_data, ignore_mask)
 
-        print(f"\nINFO: Generating RGB images for seed={seed}...")
-        combine_maps_to_rgb(WORKING_DIR)
+        # RGB composites exist only for the closed CNN track — skip unless
+        # per-individual maps were generated (opt-in).
+        if run_config['FIXED_PARAMS'].get('generate_individual_maps', False):
+            print(f"\nINFO: Generating RGB images for seed={seed}...")
+            combine_maps_to_rgb(WORKING_DIR)
 
     print(f"\nINFO: All {len(seeds)} seed runs complete. Results in: {base_results_dir}")
 

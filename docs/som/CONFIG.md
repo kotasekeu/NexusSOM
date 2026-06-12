@@ -86,7 +86,8 @@ Constructor arguments of `KohonenSOM` (`som/som.py`). The data dimension
 | `radius_decay_type` | — | Decay curve, see below. |
 | `start_batch_percent` / `end_batch_percent` | — | Percentage of the dataset sampled per iteration **from each section**. |
 | `batch_growth_type` | — | Curve for batch size evolution (use a `*-growth` type to grow). |
-| `num_batches` | — | Number of sections the shuffled dataset is split into; each iteration samples from every section (hybrid coverage mechanism). |
+| `sampling_method` | `reshuffle` | How samples are drawn per iteration: `reshuffle` (default since 2026-06-12) = without-replacement epoch shuffling — pointer over a per-epoch re-shuffled permutation; every sample hit equally often ±1, **guaranteed coverage**, and faster (O(1) per draw). `random` = legacy behavior: fresh `np.random.choice` each iteration (with replacement *across* iterations — coverage probabilistic, ~Poisson(λ), needs em ≈ 10 for 99.9 %). Measured basis: `docs/ea/SEARCH_SPACE.md` step 1, experiments B (coverage) and C (quality A/B: no regression at equal budget, 7–30 % faster). ⚠ Configs of runs recorded before the flip must state `"sampling_method": "random"` explicitly to stay replayable. `cycle` is a deprecated alias for `reshuffle`. |
+| `num_batches` | — | Number of sections the shuffled dataset is split into; each iteration samples from every section. ⚠ **Measured useless for coverage** (matches the Poisson null model exactly at equal budget; raising it just multiplies per-iteration throughput) — keep at `1`; see `docs/ea/SEARCH_SPACE.md` experiment A. |
 | `growth_g` | — | Steepness of `exp-*` and `log-*` curves. |
 | `normalize_weights_flag` | — | Re-normalize weight vectors to unit norm each iteration. EA experience: consistently degrades organization (see `verify_ea_run.py`). |
 | `mqe_evaluations_per_run` | `20` | How many times MQE (and stopping criteria) are evaluated during a run. |
@@ -94,7 +95,7 @@ Constructor arguments of `KohonenSOM` (`som/som.py`). The data dimension
 | `save_checkpoints` | `false` | Record training checkpoints (progress, MQE, TE, dead ratio, LR, radius) — required for LSTM training data and the multi-seed MQE comparison. |
 | `checkpoint_count` | `10` | Number of checkpoints per run. |
 | `checkpoint_every_mqe` | `false` | Checkpoint at every MQE evaluation instead (dense curves, ~`mqe_evaluations_per_run` points). |
-| `track_sample_coverage` | `false` | Count how many times each input vector is processed → `csv/sample_coverage.json`. ⚠ Open investigation, see `article_implementation.md` item 3. |
+| `track_sample_coverage` | `false` | Count how many times each input vector is processed → `csv/sample_coverage.json`. Tracking verified correct 2026-06-12 (exact replay by `app/tools/coverage_sim.py verify`); see `article_implementation.md` item 3. |
 | `show_progress` | `true` | tqdm progress bar. EA and batch tools disable it. |
 
 ### Decay types (`lr_decay_type`, `radius_decay_type`, `batch_growth_type`)
@@ -113,7 +114,14 @@ There is no `processing_type` switch — hybrid sampling covers the extremes
 
 - **deterministic**: `num_batches: 1`, batch percent `100`
 - **stochastic**: `num_batches: 1`, batch percent `≈ 1/n_samples` (1 sample)
-- **hybrid**: anything between; sections + growing batches
+- **hybrid**: anything between; growing batches
+
+`num_batches > 1` (sections) was part of the original hybrid design but is
+measured to add nothing to coverage — keep it at 1 (`docs/ea/SEARCH_SPACE.md`
+experiment A). The default `sampling_method: reshuffle` gives stochastic
+runs guaranteed coverage at a fraction of the passes (experiment B) with
+no quality cost (experiment C); for deterministic runs (batch 100 %) the
+method only changes the per-iteration processing order.
 
 ## 3. Analysis parameters
 

@@ -50,12 +50,13 @@ The project is extensively documented to guide users and developers. All documen
 | 🖼️ [`som/VISUALIZATIONS.md`](./docs/som/VISUALIZATIONS.md) | A visual guide to all generated maps, training plots, and topology projections. |
 | ✅ [`som/BENCHMARKS.md`](./docs/som/BENCHMARKS.md) | Benchmark battery: dataset descriptions, measured verdicts, SOM correctness assessment. |
 | **Evolutionary Algorithm (`ea/`)** | |
+| 🧬 [`ea/EA.md`](./docs/ea/EA.md) | NSGA-II algorithm as implemented: objectives, constraints, operators, search space. |
 | ⚙️ [`ea/CONFIG.md`](./docs/ea/CONFIG.md) | Guide to configuring the evolutionary optimization. |
 | ▶️ [`ea/RUN.md`](./docs/ea/RUN.md) | How to execute an evolutionary run to find optimal parameters. |
+| 🏆 [`ea/VERIFICATION.md`](./docs/ea/VERIFICATION.md) | Verifying EA runs and interpreting/comparing Pareto fronts. |
 | **Understanding Results** | |
 | 📊 [`RESULTS.md`](./docs/RESULTS.md) | **Essential reading.** Detailed explanation of all output files for a single SOM run. |
-| 📈 [`ea/RESULTS.md`](./docs/ea/RESULTS.md) | **(New)** Explanation of the output structure specific to an EA run. |
-| 🏆 [`ea/PARETO.md`](./docs/ea/PARETO.md) | **(New)** A guide to interpreting the Pareto front—the final output of the EA. |
+| 📈 [`ea/RESULTS.md`](./docs/ea/RESULTS.md) | Explanation of the output structure specific to an EA run. |
 | **General** | |
 | ❓ [`FAQ.md`](./docs/FAQ.md) | Frequently asked questions and troubleshooting tips. |
 ---

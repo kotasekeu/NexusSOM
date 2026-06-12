@@ -44,7 +44,7 @@ Legenda: ✅ implementováno · ⚠️ částečně · ❌ chybí
     > Není implementováno. Používá se výhradně turnajová selekce.
 
 12. ✅ **Elitářství (Elitism):** Automatické zachování $N$ nejlepších jedinců do další generace bez mutace.
-    > `ARCHIVE` uchovává celou Pareto frontu (rank=0). `combined_population = evaluated_population + ARCHIVE` kombinuje aktuální populaci s archivem každou generaci.
+    > Od 2026-06-11 kanonické NSGA-II (issues.md #87): `elite_survivors` = N nejlepších z P ∪ O nese výsledky do dalšího combine kroku; `ARCHIVE` (rank=0, cap) je jen reportovací paměť. Dříve se přeživší zahazovali a elitismus tekl pouze přes ořezaný archiv.
 
 13. ⚠️ **Detekce invalidních jedinců:** Při selhání tréninku SOM (NaN hodnoty) přidělit nejhorší možnou fitness.
     > Jedinci vyfiltrovatelní MLP pre-screenem dostávají `constraint_violation=999.0`. Jedinci které selžou výjimkou jsou z populace vynechání (ne penalizovaní nejhorší fitness). Chybí přidělení worst-case fitness při technickém selhání evaluace.
@@ -91,7 +91,7 @@ Legenda: ✅ implementováno · ⚠️ částečně · ❌ chybí
     > Stav EA (populace, ARCHIVE, random state) není serializován. `pareto_front.csv` a `results.csv` jsou inkrementálně zapisovány, ale nestačí k plné obnově. SOM-level checkpointy (`save_checkpoints: True`) jsou nezávislé.
 
 25. ⚠️ **Archivace historicky nejlepšího:** Nezávislé uložení absolutně nejlepšího nalezeného jedince napříč všemi generacemi.
-    > `ARCHIVE` uchovává celou finální Pareto frontu. `pareto_front.csv` loguje stav fronty po každé generaci. `log_final_best()` je definováno v `ea.py`, ale není voláno v `main()` ani `run_evolution()` — soubor `final_best.txt` se nezapisuje.
+    > `ARCHIVE` uchovává celou finální Pareto frontu; `pareto_front.csv` loguje stav fronty po každé generaci (poslední blok = výsledek běhu). Mrtvá funkce `log_final_best()` byla odstraněna v cleanup fázi 1 (issues.md #88); explicitní export „best config" JSON chybí (viz bod 36).
 
 ---
 
@@ -109,8 +109,8 @@ Legenda: ✅ implementováno · ⚠️ částečně · ❌ chybí
 29. ✅ **Nezávislost na typu dat:** EA nesmí reflektovat význam dat, pracuje pouze se strukturou matice.
     > EA pracuje výhradně s numpy array. Preprocessing (normalizace, ignore_mask) je oddělen v `som.preprocess`.
 
-30. ⚠️ **Nízká paměťová stopa:** Průběžné promazávání instancí SOM z paměti po vyhodnocení jejich fitness.
-    > SOM instance žijí v subprocesech — jsou uvolněny při ukončení procesu. `EVALUATED_CACHE` v hlavním procesu roste neomezeně (bez size limitu). `ARCHIVE` je periodicky deduplikován.
+30. ✅ **Nízká paměťová stopa:** Průběžné promazávání instancí SOM z paměti po vyhodnocení jejich fitness.
+    > SOM instance žijí v subprocesech — jsou uvolněny při ukončení procesu. `EVALUATED_CACHE` byla odstraněna v cleanup fázi 2 (issues.md #89 — nikdy nefungovala přes procesy); `ARCHIVE` je deduplikován a ořezáván na `max_archive_size`.
 
 ---
 
@@ -160,11 +160,11 @@ Legenda: ✅ implementováno · ⚠️ částečně · ❌ chybí
 42. ❌ **Predikce času běhu:** Odhad celkové doby trvání EA na základě velikosti populace a datasetu.
     > Není implementováno.
 
-43. ✅ **Bezobslužný režim:** Schopnost běžet na defaultní konfiguraci bez nutnosti uživatelského zásahu.
-    > `python ea.py -i data.csv` — běží s `ea_config.py` defaults bez dalších parametrů.
+43. ❌ **Bezobslužný režim:** Schopnost běžet na defaultní konfiguraci bez nutnosti uživatelského zásahu.
+    > `ea_config.py` fallback byl odstraněn v cleanup fázi 1 (issues.md #88 — byl nekompatibilní s typovaným search space, nikdy nemohl fungovat). `-i` i `-c` jsou povinné; defaultní konfigurace pro no-code režim by musela vzniknout znovu (generátor configu z dat — patří do UI/MLP Oracle vrstvy).
 
 44. ⚠️ **Asynchronní hlášení stavu:** Posílání procentuálního progresu do webového rozhraní.
-    > `log_progress()` zapisuje do `progress.log`. `status.csv` aktualizován per jedinec. Chybí aktivní push do web rozhraní — pouze file-based polling.
+    > `status.csv` aktualizován per jedinec (started/completed/failed/mlp_skipped) — file-based polling. Mrtvá `log_progress()` odstraněna (issues.md #88). Aktivní push do web rozhraní chybí.
 
 45. ❌ **Detekce nevhodných dat:** Včasné zastavení EA, pokud vstupní data vykazují nulový rozptyl (konstantní sloupce).
     > `validate_input_data()` v `som.preprocess` provádí základní validaci. Explicitní EA-level detekce nulového rozptylu a časné zastavení před první generací chybí.
@@ -180,7 +180,7 @@ Legenda: ✅ implementováno · ⚠️ částečně · ❌ chybí
     > Tři cíle jsou hardcoded v `run_evolution()`. CNN lze přidat jako 4. cíl (`use_cnn_objective`), ale nelze za běhu přepínat mezi subsetem cílů.
 
 48. ❌ **Sledování úspěšnosti mutací:** Statistiky, kolik mutací vedlo k lepší fitness (ladění genetického tlaku).
-    > Není implementováno. `EVALUATION_STATS` sleduje cache hits/misses, ne efektivitu mutací.
+    > Není implementováno. (`EVALUATION_STATS` odstraněny v cleanup fázi 2 — sledovaly fiktivní cache, ne mutace.)
 
 49. ✅ **Kompatibilita s hybridním SOM:** Genom musí nativně podporovat specifické parametry hybridního režimu (např. $g$-modifier).
     > `growth_g` je součástí genomu (`SEARCH_SPACE`). `validate_and_repair()` explicitně ošetřuje jeho sémantiku (0 pro čistě lineární, ≥1.0 pro nelineární křivky).

@@ -1,73 +1,84 @@
 # Running the Evolutionary Algorithm
 
-This document describes how to execute the evolutionary algorithm for SOM optimization using the `run_ea.py` script. You can specify an input data file and/or a configuration file, or rely on default settings.
+One EA run = validate → preprocess (once) → dynamic search-space bounds →
+calibration probe → N independent seeded NSGA-II evolutions, each writing
+its own `seed_<seed>/` directory (see `RESULTS.md`). Algorithm details:
+`EA.md`; configuration reference: `CONFIG.md`.
 
-## Basic Usage
+Always use the project venv interpreter `.venv/bin/python3` from the repo root.
 
-Navigate to the project directory and run:
-
-```bash
-python3 run_ea.py
-```
-
-This will use the default configuration from `ea_config.py` and generate synthetic data according to the configuration parameters.
-
-## Using a Custom Input Data File
-
-To use your own CSV data file as input, specify the path with the `-i` or `--input` argument:
+## CLI
 
 ```bash
-python3 run_ea.py -i /path/to/your/input.csv
+.venv/bin/python3 app/run_ea.py -i data/datasets/Iris/iris.csv -c data/datasets/Iris/config-ea.json
 ```
 
-If no input file is provided, the algorithm will generate synthetic data based on the parameters in the configuration.
+| Argument | Required | Description |
+|---|---|---|
+| `-i`, `--input` | yes | Input CSV file. Results land in `results/<YYYYMMDD_HHMMSS>/` next to it. |
+| `-c`, `--config` | yes | JSON configuration (see `CONFIG.md`). |
 
-## Using a Custom Configuration File
+Both arguments are required since the 2026-06-11 cleanup (`issues.md` #88) —
+the synthetic-data fallback and the `ea_config.py` module fallback were
+removed. A fatal error inside the evolution loop exits non-zero with a full
+traceback (`issues.md` #91); `Ctrl+C` stops gracefully and keeps the CSVs
+written so far.
 
-You can provide a custom configuration in JSON format with the `-c` or `--config` argument:
+## What happens before generation 0 (shared across seeds)
+
+1. **Validation + preprocessing** (`som.preprocess`) — same pipeline as a
+   SOM run; artifacts saved into the run root (`csv/`, `json/`,
+   `dataset_meta.json`).
+2. **Dynamic search space** — `map_size` bounds from the Vesanto heuristic,
+   `epoch_multiplier` bounds from log-interpolated anchors (`EA.md` §5).
+3. **Calibration probe** — `CALIBRATION.n_probes` quick SOM trainings
+   calibrate `org_threshold` (70th percentile); `calibration_probe.csv`.
+   Skip with `"n_probes": 0`.
+4. **Dataset metadata injection** — `ds_*` stats from `dataset_meta.json`
+   are attached to every `results.csv` row (training data for the MLP).
+
+## Multi-seed runs
+
+```json
+"EA_SETTINGS": { "population_size": 50, "generations": 6, "seeds": [42, 1337, 7, 101, 2026] }
+```
+
+Each seed runs an independent evolution into `seed_<seed>/` (fresh archive,
+fresh normalization stats). When `seeds` is omitted, the single
+`FIXED_PARAMS.random_seed` is used. Rationale — post-convergence generations
+produce low-diversity evaluations; several shorter independent runs cover
+the space better (`EA.md` §8).
+
+## Typical workflows
 
 ```bash
-python3 run_ea.py -c /path/to/your/config.json
+# Hyperparameter search for one dataset (fast: no per-individual artifacts beyond checkpoints)
+.venv/bin/python3 app/run_ea.py -i data/datasets/BreastCancer/breast-cancer.csv \
+    -c data/datasets/BreastCancer/config-ea.json
+
+# NN training-data collection: 5 seeds × 50 × 6 (see EA.md §8)
+# → ~1500 evaluations with checkpoints in individuals/<uid>/csv/
+
+# Ablation A3: EA on a benchmark with ground truth, then verify the best
+# configurations with the SOM topology tools (docs/som/RUN.md)
+.venv/bin/python3 app/run_ea.py -i data/datasets/SwissRoll/swiss_roll.csv \
+    -c data/datasets/SwissRoll/config-ea.json
 ```
 
-If no configuration file is specified, the script will attempt to use the default `ea_config.py` file.
+Useful `FIXED_PARAMS` toggles for bulk runs (all default off — see
+`CONFIG.md`): `generate_training_plots`, `generate_individual_maps`
+(CNN-legacy PNG maps + `maps_dataset/` + RGB composites),
+`save_individual_weights`.
 
-## Combining Input and Configuration Files
-
-You may specify both an input data file and a custom configuration file:
+## After the run
 
 ```bash
-python3 run_ea.py -i /path/to/your/input.csv -c /path/to/your/config.json
+# Sanity verification of one seed directory (8 diagnostic sections)
+.venv/bin/python3 app/tools/verify_ea_run.py <run>/seed_42
+
+# End-to-end smoke test of the EA pipeline itself (used as the cleanup gate)
+EA_SMOKE=1 .venv/bin/python3 -m pytest tests/integration/test_ea_smoke.py
 ```
 
-## Argument Summary
-
-- `-i`, `--input` &nbsp;&nbsp;&nbsp;&nbsp; Path to the input CSV data file (optional)
-- `-c`, `--config` &nbsp;&nbsp; Path to the custom configuration JSON file (optional)
-
-If neither argument is provided, the script will use default settings and generate synthetic data.
-
-## Output Directory Structure
-
-All results, logs, and generated files from each run are stored in a dedicated subdirectory under `results/`, named according to the current timestamp (e.g., `results/20240611_153045`). This ensures that outputs from different runs are separated and easily identifiable.
-
-## Example Scenarios
-
-- **Default run (synthetic data, default config):**
-  ```bash
-  python3 run_ea.py
-  ```
-- **Custom data, default config:**
-  ```bash
-  python3 run_ea.py -i data/mydata.csv
-  ```
-- **Synthetic data, custom config:**
-  ```bash
-  python3 run_ea.py -c config/myconfig.json
-  ```
-- **Custom data and custom config:**
-  ```bash
-  python3 run_ea.py -i data/mydata.csv -c config/myconfig.json
-  ```
-
-Refer to the documentation for details on configuration parameters and expected input data format.
+See `VERIFICATION.md` for the full verification toolbox and `RESULTS.md`
+for every output file.

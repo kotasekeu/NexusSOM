@@ -113,7 +113,7 @@ end_learning_rate, end_batch_percent  ≈ 0
 
 Tyto parametry mají vliv na průběh tréninku (tvar křivky), ale výsledná kvalita mapy na nich závisí minimálně — pokud jsou základní parametry (radius, epoch_multiplier, map_size) správně nastavené, tvar poklesu learning rate nebo počet dávek výsledek zásadně nemění.
 
-**Praktický závěr:** Po více bězích EA budou tato data základem pro rozhodnutí co zafixovat nebo zúžit v search space — viz diskuzi v [RESULTS_PREPROCESS.MD](../ea/RESULTS_PREPROCESS.MD).
+**Praktický závěr:** Po více bězích EA budou tato data základem pro rozhodnutí co zafixovat nebo zúžit v search space — viz search space v [EA.md](../ea/EA.md).
 
 ---
 

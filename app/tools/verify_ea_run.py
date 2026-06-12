@@ -94,11 +94,14 @@ def _parse_pareto_csv(path: str) -> list[dict]:
                 map_str = f"{ms[0]}x{ms[1]}"
             except Exception:
                 map_str = ms_raw
+            tc = _fv(row.get('raw_topo_corr'))
             gen_map[gn].append({
                 'uid':        uid,
                 'uid8':       uid[:8],
                 'ratio':      _fv(row.get('raw_mqe_ratio')),
                 'te':         _fv(row.get('raw_te')),
+                'topo_corr':  tc,
+                'one_minus_rho': (1.0 - tc) if tc is not None else None,
                 'time':       _fv(row.get('duration')),
                 'dead':       _fv(row.get('dead_ratio')),
                 'map':        map_str,
@@ -157,8 +160,12 @@ def _parse_pareto_txt(path: str) -> list[dict]:
 
 def _cv_dominates(a: dict, b: dict) -> bool:
     """
-    Constrained dominance (Deb 2002) on 3 raw objectives.
+    Constrained dominance (Deb 2002) on the 3 raw NSGA-II objectives:
+    raw_mqe_ratio, raw_te, 1 - topological_correlation (dead_ratio is a
+    constraint, not an objective — legacy ISSUES.md #85).
     'constraint_violation' key: 0.0 = feasible, >0 = infeasible.
+    Missing objective values are skipped (legacy runs without topo_corr
+    degrade to a 2-objective check).
     """
     cv_a = a.get('constraint_violation', 0.0) or 0.0
     cv_b = b.get('constraint_violation', 0.0) or 0.0
@@ -173,7 +180,7 @@ def _cv_dominates(a: dict, b: dict) -> bool:
         return cv_a < cv_b
 
     # Both feasible: standard Pareto on 3 raw objectives
-    objs = ['ratio', 'te', 'dead']
+    objs = ['ratio', 'te', 'one_minus_rho']
     better = False
     for o in objs:
         av, bv = a.get(o), b.get(o)
@@ -367,7 +374,7 @@ def report_final_archive(gen_data: list[dict], rows: list[dict]):
 
     uid_to_row = {r['uid']: r for r in rows}
     print(f"  Final generation: {gen_num}, archive size: {len(sols)}\n")
-    print(f"  {'UID':10}  {'status':12}  {'raw_ratio':10}  {'raw_TE':8}  {'dead':6}  {'pen_x':7}  {'time':7}  map")
+    print(f"  {'UID':10}  {'status':12}  {'raw_ratio':10}  {'raw_TE':8}  {'rho':6}  {'dead':6}  {'pen_x':7}  {'time':7}  map")
     print(f"  {SEP2}")
     def _fval(row_val, fallback, default=999.0):
         """Safe float: prefer row_val, then fallback, handle 0.0 correctly."""
@@ -386,19 +393,26 @@ def report_final_archive(gen_data: list[dict], rows: list[dict]):
         time_v = _fval(row.get('duration'), s['time'], default=0.0)
         status = _ratio_class(raw_r, is_pen)
         pen_str = f"x{pen_f:.1f}" if is_pen else "—"
-        print(f"  {s['uid8']:10}  {status:12}  {raw_r:10.4f}  {raw_te:8.4f}  {dead:6.3f}  {pen_str:7}  {time_v:7.1f}  {s['map']}")
+        rho_v = s.get('topo_corr')
+        rho_str = f"{rho_v:6.3f}" if rho_v is not None else "     ?"
+        print(f"  {s['uid8']:10}  {status:12}  {raw_r:10.4f}  {raw_te:8.4f}  {rho_str}  {dead:6.3f}  {pen_str:7}  {time_v:7.1f}  {s['map']}")
 
-    # Dominance check using results.csv values (all 4 objectives, first evaluation per UID)
+    # Dominance check using results.csv values (3 raw objectives, first evaluation per UID).
+    # topo_corr: prefer results.csv raw_topological_correlation (present since
+    # cleanup F17), fall back to pareto_front.csv raw_topo_corr; None for legacy runs.
     uid_to_row = {r['uid']: r for r in rows}
     enriched: list[dict] = []
     for s in sols:
         row = uid_to_row.get(s['uid'], {})
         cv = _fv(row.get('constraint_violation'), default=0.0)
+        rho = _fv(row.get('raw_topological_correlation'))
+        if rho is None:
+            rho = s.get('topo_corr')
         enriched.append({
             'uid':                s['uid'],
             'ratio':              _fval(row.get('raw_mqe_improvement_ratio'), s['ratio']),
             'te':                 _fval(row.get('raw_topographic_error'), s['te']),
-            'dead':               _fval(row.get('dead_neuron_ratio'), s['dead']),
+            'one_minus_rho':      (1.0 - rho) if rho is not None else None,
             'constraint_violation': cv,
         })
 
@@ -585,9 +599,9 @@ def report_recommendations(rows: list[dict], gen_data: list[dict], results_dir: 
             )
         else:
             recs.append(
-                f"PARALLEL RE-EVALUATION: {duplicates} duplicate UID rows (identical values — seed is deterministic).\n"
-                f"    Parallel workers evaluated the same config multiple times (no shared EVALUATED_CACHE).\n"
-                f"    Harmless but wasteful — consider SQLite-based shared cache to avoid redundant SOM training."
+                f"DUPLICATE EVALUATIONS: {duplicates} duplicate UID rows (identical values — seed is deterministic).\n"
+                f"    Runs since the 2026-06-11 cleanup (issues.md #89) dedup offspring by gene-only UID\n"
+                f"    before evaluation — duplicates indicate a pre-cleanup run or a regression."
             )
 
     has_dead = any(

@@ -186,8 +186,8 @@ cd app/lstm && ../.venv/bin/python3 src/train_phase3.py
 | [app/lstm/src/train_phase3.py](../../app/lstm/src/train_phase3.py) | LSTM controller trénink |
 | [app/lstm/generate_phase3_data.py](../../app/lstm/generate_phase3_data.py) | Perturbační trajektorie |
 | [docs/TRAINING_PLAN.md](../TRAINING_PLAN.md) | Kompletní 7-fázový plán |
-| [docs/ea/PARETO_METRICS.md](../ea/PARETO_METRICS.md) | HV, Spacing, Spread — assessment a implementace |
-| [docs/ea/ISSUES.md](../ea/ISSUES.md) | Všechny problémy a rozhodnutí EA |
+| [docs/ea/VERIFICATION.md](../ea/VERIFICATION.md) | HV, Spacing, Spread — interpretace a nástroje |
+| [docs/ea/issues.md](../ea/issues.md) | Všechny problémy a rozhodnutí EA |
 | [docs/lstm/LSTM_DYNAMIC_CONTROL.md](../lstm/LSTM_DYNAMIC_CONTROL.md) | Phase 3 controller dokumentace |
 
 ---

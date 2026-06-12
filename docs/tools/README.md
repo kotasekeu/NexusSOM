@@ -1,13 +1,14 @@
-# Nástroje — přehled
+# Tools — overview
 
-Všechny nástroje jsou v [`app/tools/`](../../app/tools/).
+All tools live in [`app/tools/`](../../app/tools/).
 
-| Nástroj | Dokumentace | Účel |
-|---------|-------------|------|
-| `generate_benchmark.py` | [doc](generate_benchmark.md) | Generuje Swiss Roll a Space-filling benchmarky pro ověření SOM |
-| `generate_dataset.py` | [doc](generate_dataset.md) | Generuje syntetická data podle schématu reálného datasetu |
-| `generate_trips_dataset.py` | [doc](generate_trips_dataset.md) | Generuje dataset pracovních cest s injekcí anomálií (ground truth) |
-| `plot_dim_qe.py` | [doc](plot_dim_qe.md) | Heatmapy per-dimenzní QE na SOM mapě |
-| `plot_pareto_evolution.py` | [doc](plot_pareto_evolution.md) | Vizualizace vývoje Pareto fronty přes generace EA |
-| `plot_som_topology.py` | [doc](plot_som_topology.md) | Projekce topologie SOM do 2D/3D/HTML |
-| `verify_ea_run.py` | [doc](verify_ea_run.md) | Diagnostika správnosti EA běhu |
+| Tool | Documentation | Purpose |
+|------|---------------|---------|
+| `coverage_sim.py` | [doc](coverage_sim.md) | Simulates the batch-sampling regime without SOM training; measures dataset coverage (SEARCH_SPACE step 1) |
+| `generate_benchmark.py` | [doc](generate_benchmark.md) | Generates Swiss Roll and space-filling benchmarks for SOM verification |
+| `generate_dataset.py` | [doc](generate_dataset.md) | Generates synthetic data following a real dataset's schema |
+| `generate_trips_dataset.py` | [doc](generate_trips_dataset.md) | Generates a business-trips dataset with injected anomalies (ground truth) |
+| `plot_dim_qe.py` | [doc](plot_dim_qe.md) | Per-dimension QE heatmaps on the SOM map |
+| `plot_pareto_evolution.py` | [doc](plot_pareto_evolution.md) | Visualizes Pareto-front evolution across EA generations |
+| `plot_som_topology.py` | [doc](plot_som_topology.md) | Projects SOM topology to 2D/3D/HTML |
+| `verify_ea_run.py` | [doc](verify_ea_run.md) | EA run correctness diagnostics |

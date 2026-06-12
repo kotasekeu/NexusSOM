@@ -1,179 +1,124 @@
-# Struktura výstupů EA
+# EA Output Structure
 
-Popis adresářové struktury a obsahu souborů generovaných Evolučním Algoritmem (EA).
+Directory layout and file contents produced by one `app/run_ea.py` run.
+Column semantics follow the objectives/constraints defined in `EA.md`.
 
----
+## Run root — `data/datasets/<Name>/results/<YYYYMMDD_HHMMSS>/`
 
-## Organizace dat
-
-```
-data/results/
-├── 01-BreastCancer/
-│   ├── breast-cancer.csv          # původní dataset
-│   ├── config-ea.json             # konfigurace použitá pro tento běh
-│   ├── config-som.json
-│   └── results/
-│       └── breasts-ea-6-50-5/     # {název}-ea-{generace}-{pop}-{seeds}
-├── 02-IndianLiverPatientRecords/
-├── 03-LungCancerDataset/
-└── 04-PimaIndiansDiabetes/
-```
-
-Každý dataset má vlastní složku s prefixem pořadového čísla. Uvnitř `results/` může být více pojmenovaných běhů (jiné konfigurace nebo verze EA).
-
----
-
-## Struktura běhu EA (`{název}-ea-{gen}-{pop}-{seeds}/`)
+Shared by all seeds (preprocessing and calibration run once):
 
 ```
-breasts-ea-6-50-5/
-├── log.txt                        # kompletní log celého EA běhu
-├── calibration_probe.csv          # výsledky kalibračních sond (org_threshold)
-├── dataset_meta.json              # metadata datasetu (n_samples, dimenze, typy sloupců)
+<timestamp>/
+├── dataset_meta.json          # ds_* dataset stats (samples, dims, types, missing ratio)
+├── calibration_probe.csv      # probe_idx, org_max — basis of org_threshold (EA.md §7)
+├── calibration_probes/<i>/    # working dirs of the probe trainings
 ├── csv/
-│   ├── training_data.npy          # normalizovaná trénovací data (numpy, shape: n×d)
-│   ├── training_data_readable.csv # čitelná verze trénovacích dat
-│   ├── ignore_mask.csv            # maska ignorovaných dimenzí (0/1)
-│   └── original_input.csv        # původní data před normalizací
+│   ├── original_input.csv     # input as loaded
+│   ├── training_data.npy      # normalized training matrix (n × d)
+│   ├── training_data_readable.csv
+│   └── ignore_mask.csv        # per-cell ignore mask (primary ID, missing values)
 ├── json/
-│   └── preprocessing_info.json   # detaily předzpracování (scalery, encodery)
-├── calibration_probes/
-│   └── 0/ 1/ ... 14/             # 15 kalibračních SOM tréninků
-│       └── log.txt
-└── seed_42/ seed_7/ seed_101/ seed_1337/ seed_2026/
+│   └── preprocessing_info.json
+├── log.txt                    # validation/preprocess log
+└── seed_<seed>/               # one independent evolution per seed
 ```
 
-### `dataset_meta.json`
+`dataset_meta.json` fields (`ds_n_samples`, `ds_n_active_dimensions`,
+`ds_n_numeric`, `ds_n_categorical`, `ds_missing_ratio`, …) are injected into
+every `results.csv` row — they are the dataset features for MLP training.
 
-Metadata datasetu uložená při předzpracování:
-
-| Pole | Popis |
-|---|---|
-| `ds_n_samples` | Počet vzorků |
-| `ds_n_original_cols` | Původní počet sloupců |
-| `ds_n_active_dimensions` | Počet dimenzí použitých pro trénink |
-| `ds_n_numeric` / `ds_n_categorical` | Typy dimenzí |
-| `ds_n_ignored` | Ignorované sloupce |
-| `ds_missing_ratio` | Podíl chybějících hodnot |
-| `ds_has_primary_id` | Zda dataset obsahuje primární ID sloupec |
-
----
-
-## Struktura seedy (`seed_{X}/`)
+## Seed directory — `seed_<seed>/`
 
 ```
 seed_42/
-├── results.csv        # všichni vyhodnocení jedinci (hyperparametry + metriky)
-├── pareto_front.csv   # Pareto-optimální jedinci na konci běhu
-├── status.csv         # technický log start/konec/chyba každého vyhodnocení
-├── log.txt            # log EA procesu pro tento seed
-└── individuals/
-    └── {md5_hash}/    # jeden jedinec = jedna SOM konfigurace
+├── results.csv          # every evaluated individual (authoritative record)
+├── pareto_front.csv     # archive snapshot per generation
+├── pareto_metrics.csv   # HV / spacing / spread per generation
+├── status.csv           # evaluation lifecycle
+├── log.txt              # per-UID event log
+├── individuals/<uid>/   # per-individual artifacts
+└── maps_dataset/        # only with generate_individual_maps (CNN legacy)
 ```
 
-### `results.csv`
+### `results.csv` — one row per evaluation
 
-Hlavní soubor pro analýzu. Každý řádek = jeden vyhodnocený jedinec.
+UIDs are unique within a run (gene-only hashing + pre-evaluation dedup,
+`issues.md` #89). Groups of columns:
 
-**Výkonnostní metriky:**
-
-| Sloupec | Popis |
+| Group | Columns |
 |---|---|
-| `uid` | Hash konfigurace (= název složky v `individuals/`) |
-| `raw_best_mqe` | Nejlepší MQE dosažené během tréninku |
-| `raw_topographic_error` | Topografická chyba (0–1) |
-| `raw_mqe_improvement_ratio` | Relativní zlepšení MQE (1 - final/initial) |
-| `best_mqe` | MQE po aplikaci penalizace |
-| `topographic_error` | TE po aplikaci penalizace |
-| `duration` | Doba tréninku v sekundách |
-| `dead_neuron_ratio` | Podíl mrtvých neuronů (0–1) |
-| `constraint_violation` | Součet porušení omezení |
-| `is_penalized` | Zda byl jedinec penalizován |
-| `penalty_reason` | Důvod penalizace (dead neurons, org threshold) |
-| `u_matrix_mean/std/max` | Statistiky U-matice |
-| `distance_map_max` | Max vzdálenost v distance mapě |
-| `total_weight_updates` | Celkový počet aktualizací vah |
-| `epochs_ran` | Skutečný počet epoch (po early stopping) |
-| `initial_mqe` | MQE na začátku tréninku |
+| Identity | `uid` (MD5 of genes = directory name in `individuals/`), `dataset_name` |
+| **Raw objectives** (NSGA-II inputs) | `raw_mqe_improvement_ratio` (final/initial MQE, lower=better), `raw_topographic_error`, `raw_topological_correlation` (ρ; objective is `1−ρ`) |
+| Raw support metrics | `raw_best_mqe`, `initial_mqe`, `dead_neuron_ratio`, `dead_neuron_count`, `u_matrix_mean/std/max`, `distance_map_max` |
+| Constraints | `constraint_violation` (0 = feasible), `is_penalized`, `penalty_factor` (=1+CV, reference only), `penalty_reason` (`org(u=…,d=…)` / `dead=…%(thresh=…%)` / `mlp_prescreened`) |
+| Legacy penalized values | `best_mqe`, `topographic_error`, `mqe_improvement_ratio` (today equal to raw — kept for cross-run comparability with historical CSVs) |
+| Run stats | `duration`, `total_weight_updates`, `epochs_ran`, `map_m`, `map_n` |
+| NN | `cnn_quality_score` (empty unless the closed CNN track is enabled) |
+| Dataset context | all `ds_*` fields |
+| Genes | every `SEARCH_SPACE` parameter (`map_size`, learning rates, decay types, …) |
 
-**Hyperparametry:** `map_size`, `start_learning_rate`, `end_learning_rate`, `lr_decay_type`, `start_radius_init_ratio`, `radius_decay_type`, `start_batch_percent`, `end_batch_percent`, `batch_growth_type`, `epoch_multiplier`, `growth_g`, `num_batches`
+### `pareto_front.csv` — archive snapshot per generation
 
-**Metadata datasetu:** všechna pole z `dataset_meta.json` jsou zkopírována do každého řádku (prefix `ds_`)
+One row per (generation, archive member); the archive is the capped rank-0
+front (`max_archive_size`), **not** the survivor population. Columns:
+`generation`, `uid`, `dataset_name`, the three raw objectives as
+`raw_mqe_ratio` / `raw_te` / `raw_topo_corr`, `dead_ratio`,
+`constraint_violation` + penalty metadata, `initial_mqe`, `pen_mqe_ratio`,
+`pen_te`, `map_m`, `map_n`, U-matrix stats, `duration`, `ds_*`, and all
+search-space parameters. The last generation block is the final result of
+the run.
 
-### `pareto_front.csv`
+### `pareto_metrics.csv` — front quality per generation
 
-Podmnožina `results.csv` obsahující pouze Pareto-optimální jedince z pohledu cílů EA (typicky MQE kvalita × čas). Struktura sloupců je stejná.
+`generation`, `front_size`, `hv` (hypervolume vs [1.1]³ in running-min/max
+normalized space; empty without pymoo), `spacing` (0 = uniform),
+`spread_mqe`, `spread_te`, `spread_dead` (≈1 = front spans the observed
+range). Feasible archive members only. See `EA.md` §9.
 
-### `status.csv`
+### `status.csv` — evaluation lifecycle
 
-Technický log sledující průběh vyhodnocení:
+`uid`, `population_id`, `generation` (0-based), `status`
+(`started` / `completed` / `failed` / `mlp_skipped`), `start_time`,
+`end_time`. Each evaluation produces a `started` row and a terminal row —
+`completed` counts per generation are the quickest run-health check.
 
-| Sloupec | Popis |
-|---|---|
-| `uid` | Hash jedince |
-| `population_id` | Pořadí v populaci |
-| `generation` | Generace EA |
-| `status` | `started` / `completed` / `failed` |
-| `start_time` / `end_time` | Časy vyhodnocení |
-
----
-
-## Struktura jedince (`individuals/{uid}/`)
+## Per-individual directory — `individuals/<uid>/`
 
 ```
-0059094ec068aa3be7ec0189e4f53da4/
-├── log.txt                        # log SOM tréninku tohoto jedince
-├── csv/
-│   ├── training_checkpoints.json  # časová řada průběhu tréninku
-│   ├── weights.npy                # natrénované váhy SOM (shape: m×n×d)
-│   └── weights_readable.csv      # čitelná verze vah
-└── visualizations/
-    ├── mqe_evolution.png          # průběh MQE v čase
-    ├── learning_rate_decay.png    # průběh learning rate
-    ├── radius_decay.png           # průběh sousedství
-    ├── batch_size_growth.png      # průběh velikosti dávky
-    ├── u_matrix.png               # U-matice natrénované mapy
-    ├── distance_map.png           # distance mapa
-    ├── dead_neurons_map.png       # mapa mrtvých neuronů
-    └── legends/                  # samostatné soubory legend pro výše uvedené mapy
+<uid>/
+└── csv/
+    ├── training_checkpoints.json   # training time series (LSTM training data)
+    ├── sample_coverage.json        # which samples hit which neurons
+    └── weights.npy                 # only with save_individual_weights
 ```
 
-### `training_checkpoints.json`
+With the opt-in flags, additionally `visualizations/` (U-matrix, distance
+map, dead-neurons map + legends) and training plots (MQE evolution, LR /
+radius decay, batch growth).
 
-Časová řada průběhu tréninku. Seznam ~500 záznamů (dle `mqe_evaluations_per_run`):
+`training_checkpoints.json` is a list of per-checkpoint records:
 
 ```json
-[
-  {
-    "iteration": 0,
-    "progress": 0.0,
-    "mqe": 0.659,
-    "topographic_error": 0.146,
-    "dead_neuron_ratio": 0.847,
-    "learning_rate": 0.648,
-    "radius": 8.61
-  },
-  ...
-]
+{ "iteration": 0, "progress": 0.0, "mqe": 0.659, "topographic_error": 0.146,
+  "dead_neuron_ratio": 0.847, "learning_rate": 0.648, "radius": 8.61 }
 ```
 
-`progress` je normalizovaný čas (0.0–1.0) nezávislý na absolutním počtu iterací — umožňuje porovnávat křivky různě dlouhých tréninků.
+`progress` ∈ [0, 1] normalizes differently long trainings onto one axis;
+`checkpoints[0]` is the random-init baseline used by the MQE-ratio
+objective. With `checkpoint_every_mqe: true` there are
+`mqe_evaluations_per_run` records per individual.
 
-### `weights.npy`
+## `maps_dataset/` (CNN legacy, opt-in)
 
-Natrénované váhy SOM jako numpy array tvaru `(m, n, d)`:
-- `m × n` = rozměry mapy (např. 14×14)
-- `d` = počet dimenzí vstupu
+`<uid>_u_matrix.png`, `<uid>_distance_map.png`, `<uid>_dead_neurons_map.png`
+copies plus `rgb/<uid>_rgb.png` composites (channels R=U-matrix,
+G=distance, B=dead neurons). Produced only with
+`generate_individual_maps: true` — kept for regenerating the CNN-closure
+exhibit data (`issues.md` #90).
 
----
+## Data volume guideline
 
-## Škálování dat
-
-Přibližný objem dat na dataset (5 seedů, ~290 jedinců/seed):
-
-| Typ dat | Počet |
-|---|---|
-| Jedinci celkem | ~1 450 |
-| Checkpointů celkem | ~725 000 |
-| Weight souborů | ~1 450 `.npy` |
-| Vizualizací | ~10 150 `.png` |
+A 5-seed × 50 × 6 collection run ≈ 1 500 evaluations; with
+`checkpoint_every_mqe` at 300 evaluations/run that is ~450 000 checkpoint
+records (~the LSTM training corpus for one dataset). Weights and PNGs stay
+off unless explicitly enabled.

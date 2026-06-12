@@ -1,184 +1,136 @@
-# Evolutionary Algorithm Configuration Guide
+# EA Configuration Reference (`config-ea.json`)
 
-This document outlines the configuration of the evolutionary algorithm used for optimizing the parameters of a Modified Kohonen Self-Organizing Map (SOM). All settings are managed through the `config.json` file.
+Per-dataset configuration for `app/run_ea.py` — lives in
+`data/datasets/<Name>/config-ea.json`. Every key below is verified against
+the code (2026-06-11); keys not listed here are ignored by the EA. `comment`
+keys are allowed anywhere (top level of a section or inside a parameter
+spec) and are skipped by the operators.
 
+Top-level sections:
 
-## Usage
-This configuration file is utilized by passing its path as a command-line argument to the evolutionary algorithm script. For detailed instructions on script execution, please refer to the `RUN.md` file.
-
-### Configuration Design Philosophy
-
-The configuration is structured into distinct sections (EA_SETTINGS, SEARCH_SPACE, FIXED_PARAMS, etc.) to provide a clear and robust definition of the experimental setup. This explicit separation ensures that parameters intended for optimization are distinctly identified from static run-time constants.
-
-## Core Concept: Search Space vs. Fixed Parameters
-The `config.json` file defines both the fixed parameters and the search space for hyperparameters. The logic is simple:
-
-*   **Array of Values** in SEARCH_SPACE: If a parameter is assigned an array of values, it defines the search space for that hyperparameter. The EA will explore combinations of these values.
-*   **Single Value** in FIXED_PARAMS: If a parameter is assigned a single value, it is treated as a fixed constant for the entire run.
-
-#### Configuration Examples:
-
-**NUMERICAL VALUE**
-```json
-"start_learning_rate": 0.5
-```
-> The algorithm will use a fixed `start_learning_rate` of 0.5.
-
-```json
-"start_learning_rate": [0.1, 0.5, 0.9]
-```
-> The evolutionary algorithm will explore these three distinct values for the `start_learning_rate`.
-
-**STRING VALUE**
-```json
-"lr_decay_type": "linear-drop"
-```
-> Only the linear decay function will be used.
-
-```json
-"lr_decay_type": ["linear-drop", "exp-drop"]
-```
-> The algorithm will test both decay function types.
-
-**DIMENSIONAL VALUE (e.g., Map Size)**
-```json
-"map_size": [20, 20]
-```
-> A single, fixed map size of 20x20 will be used.
-
-```json
-"map_size": [[10, 10], [20, 20]]
-```
-> The evolution will explore two different map sizes.
+| Section | Purpose |
+|---|---|
+| `use_nn` | Master switch for all neural-network features (bool) |
+| `EA_SETTINGS` | Evolution scale: population, generations, seeds |
+| `CALIBRATION` | Pre-G0 organization-threshold probe |
+| `SEARCH_SPACE` | Typed hyperparameter specs the EA optimizes |
+| `GENETIC_OPERATORS` | SBX/mutation/tournament parameters |
+| `FIXED_PARAMS` | Constants passed to every SOM training + EA toggles |
+| `NEURAL_NETWORKS` | Model paths and thresholds (active only with `use_nn: true`) |
+| `PREPROCES_DATA` | Preprocessing settings (same semantics as SOM runs) |
 
 ---
 
-## `config.json` File Structure
+## EA_SETTINGS
 
-The configuration file is organized into five primary sections:
+| Key | Default | Description |
+|---|---|---|
+| `population_size` | required | Individuals per generation. Realistic results need ≥ 30 (legacy `ISSUES.md` #18). |
+| `generations` | required | Number of generations. Diversity decays after convergence (~gen 5–8) — prefer more seeds over more generations (`EA.md` §8). |
+| `seeds` | `[FIXED_PARAMS.random_seed]` | List of seeds; each runs an independent evolution into `seed_<seed>/`. |
 
-1.  **`EA_SETTINGS`**: Controls the evolutionary process itself (e.g., population size, number of generations).
-2. **`DATA_PARAMS`**: (Optional) Parameters for auto-generated datasets. Ignored if a real dataset is provided via the command line.
-3. **`PREPROCES_DATA`**: Defines fixed parameters for the data preprocessing step.
-4. **`SEARCH_SPACE`**: The core section defining which SOM parameters and their respective ranges the algorithm should optimize.
-5.  **`FIXED_PARAMS`**: Defines SOM constants that remain unchanged throughout the evolution.
+## CALIBRATION
 
----
+| Key | Default | Description |
+|---|---|---|
+| `n_probes` | 15 | Quick SOM trainings before G0 to calibrate `org_threshold` (70th percentile of `max(u_matrix_max, dist_map_max)`). `0` disables → threshold 1.0. |
+| `probe_epoch_multiplier` | 0.3 | Shortened training length for probes. |
 
-## Parameter Reference
+## SEARCH_SPACE
 
-### 1. `EA_SETTINGS`
-
-Parameters that govern the behavior of the evolutionary algorithm.
-
-*   `"population_size"`: (Integer) The number of individuals (configurations) in each generation.
-*   `"generations"`: (Integer) The total number of generations the evolution will run.
-
-### 2. `DATA_PARAMS`
-
-Used only for synthetic data generation if no input file is specified.
-
-*   `"sample_size"`: (Integer) Number of data points to generate.
-*   `"input_dim"`: (Integer) Number of features (dimensions) for the generated data.
-
-### 3. `PREPROCES_DATA`
-
-Fixed settings for the data preprocessing pipeline.
-
-*   `"primary_id"`: (String) The name of the column to be treated as a unique identifier. This column will be ignored during training via the ignore mask.
-*   `"delimiter"`: (String) The delimiter used in the input CSV file (e.g., `","`).
-*   `"categorical_threshold_numeric"` / `"categorical_threshold_text"`: (Integer) The maximum number of unique values for a numeric/text column to be considered categorical.
-*   `"noise_threshold_ratio"`: (Float, 0-1) The ratio of unique values to total rows above which a text column is considered noise and ignored.
-
-### 4. `SEARCH_SPACE` & `FIXED_PARAMS`
-
-These two sections define the hyperparameter space for the SOM. Parameters can be placed in either section.
-
-**Core Algorithm Parameters**
-*   `"processing_type"`: (String) The training mode. Can be `"stochastic"`, `"deterministic"`, or `"hybrid"`.
-*   `"epoch_multiplier"`: (Float) A multiplier that determines the total number of training iterations, calculated as `number_of_samples * epoch_multiplier`.
-
-**Map Structure**
-*   `"map_size"`: (Array of Arrays) Defines the map dimensions `[height, width]` to be tested.
-*   `"map_type"`: (String) The topology of the SOM grid (`"square"` or `"hex"`).
-
-**Learning Rate Parameters**
-*   `"start_learning_rate"`: (Float, 0-1) The initial magnitude of weight updates.
-*   `"end_learning_rate"`: (Float, 0-1) The final learning rate at the end of training.
-*   `"lr_decay_type"`: (String) The decay function for the learning rate (e.g., `"linear-drop"`, `"exp-drop"`, `"log-drop"`, `"step-down"`).
-
-**Neighborhood Radius Parameters**
-*   `"start_radius_init_ratio"`: (Float) Initial neighborhood radius as a ratio of the map's largest dimension.
-*   `"end_radius"`: (Float) The final radius at the end of training.
-*   `"radius_decay_type"`: (String) The decay function for the radius.
-
-**Hybrid Mode Parameters (ignored for other modes)**
-*   `"start_batch_percent"`: (Float) The initial batch size as a percentage of the total dataset.
-*   `"end_batch_percent"`: (Float) The final batch size as a percentage.
-*   `"batch_growth_type"`: (String) The function governing how the batch size increases (`"linear-growth"`, `"exp-growth"`, `"log-growth"`).
-*   `"num_batches"`: (Integer) The number of sections the dataset is split into for hybrid processing.
-
-**General & Advanced Parameters**
-*   `"normalize_weights_flag"`: (Boolean) If `true`, neuron weight vectors are normalized after each update.
-*   `"growth_g"`: (Float) The `G` parameter controlling the steepness of `exp-` and `log-` decay/growth curves.
-*   `"random_seed"`: (Integer or `null`) The seed for the random number generator.
-*   `"mqe_evaluations_per_run"`: (Integer) How many times the MQE should be evaluated during a single training run.
-*   `"early_stopping_window"`: (Integer) The number of recent MQE evaluations to average for the moving average early stopping.
-*   `"max_epochs_without_improvement"`: (Integer) The number of checks without improvement in the moving average before stopping training (patience).
-
----
-
-## Complete `config.json` Example
+Each entry is a typed spec; the operators per type are described in
+`EA.md` §5.
 
 ```json
-{
-  "EA_SETTINGS": {
-    "population_size": 20,
-    "generations": 30
-  },
-  "SEARCH_SPACE": {
-    "map_size": [
-      [8, 8],
-      [10, 10],
-      [15, 15]
-    ],
-    "processing_type": ["stochastic", "deterministic", "hybrid"],
-    
-    "start_learning_rate": [0.9, 0.8, 0.7, 0.6, 0.5],
-    "end_learning_rate": [0.2, 0.1, 0.05, 0.01],
-    "lr_decay_type": ["linear-drop", "exp-drop", "log-drop", "step-down"],
-
-    "start_radius_init_ratio": [1.0, 0.75, 0.5, 0.25, 0.1],  
-    "radius_decay_type": ["linear-drop", "exp-drop", "log-drop", "step-down"],
-
-    "start_batch_percent": [0.025, 0.5, 1.0, 5.0, 10.0],
-    "end_batch_percent": [3.0, 5.0, 7.5, 10.0, 15.0],
-    "batch_growth_type": ["linear-growth", "exp-growth", "log-growth"],
-
-    "epoch_multiplier": [5.0, 10.0 , 15.0],
-    "normalize_weights_flag": [false, true],
-    "growth_g": [1.0, 5.0, 15.0, 25.0, 35.0],
-       
-    "num_batches": [1, 3, 5, 10, 20],
-    "map_type": ["hex","square"]
-  },
-  "FIXED_PARAMS": {
-    "end_radius": 1.0,
-    "random_seed": 42,
-    "mqe_evaluations_per_run": 500,
-    "max_epochs_without_improvement": 50,
-    "early_stopping_window": 5
-  },
-  "PREPROCES_DATA": {
-    "delimiter": ",",
-    "categorical_threshold_numeric": 30,    
-    "categorical_threshold_text": 30,
-    "noise_threshold_ratio": 0.2,
-    "primary_id": "primary_id"    
-  },
-  "DATA_PARAMS": {
-    "sample_size": 1000,
-    "niput_dim": 10
-  }
-}
+"start_learning_rate": { "type": "float", "min": 0.5, "max": 1.0, "log_scale": true }
+"lr_decay_type":       { "type": "categorical", "values": ["linear-drop", "exp-drop", "log-drop", "step-down"] }
+"num_batches":         { "type": "int", "min": 1, "max": 20 }
+"map_size":            { "type": "discrete_int_pair" }
 ```
+
+- `float` — uniform sampling/SBX/polynomial mutation in [min, max];
+  `"log_scale": true` moves all three to log-space (use for learning rates
+  and radius ratios — see `EA.md` §5).
+- `int` — SBX/mutation + rounding.
+- `categorical` — uniform swap / random replacement from `values`.
+- `discrete_int_pair` — square map side `[s, s]`.
+- A non-dict value is passed through as a fixed gene (not searched).
+
+**Dynamic bounds**: `map_size` and `epoch_multiplier` may omit `min`/`max` —
+`apply_dynamic_search_space()` always overwrites them from the dataset size
+(Vesanto corridor; epoch-multiplier anchor table in `EA.md` §5). Any values
+you write there are ignored.
+
+Searched SOM hyperparameters in the standard configs:
+`map_size`, `start_learning_rate`, `end_learning_rate`, `lr_decay_type`,
+`start_radius_init_ratio`, `radius_decay_type`, `start_batch_percent`,
+`end_batch_percent`, `batch_growth_type`, `epoch_multiplier`, `growth_g`,
+`num_batches`. Parameter meanings are SOM semantics — see
+`docs/som/CONFIG.md`.
+
+Deliberately **not** searched (results of earlier experiments):
+`map_type` (hex, fixed), `normalize_weights_flag` (true ⇒ 100 % penalized,
+legacy `ISSUES.md` #26), `end_radius` (1.0), and the lower bounds of
+`start_learning_rate`/`start_radius_init_ratio` are kept ≥ 0.5 so every
+candidate retains a global organization phase (legacy `ISSUES.md` #52).
+
+## GENETIC_OPERATORS
+
+| Key | Default | Description |
+|---|---|---|
+| `sbx_eta` | 20.0 | SBX distribution index — higher = children closer to parents. |
+| `mutation_eta` | 20.0 | Polynomial-mutation distribution index. |
+| `mutation_prob` | 0.1 | Per-gene mutation probability. `0` disables mutation (ablation switch). |
+| `tournament_k` | `max(2, population_size // 10)` | Tournament size; clamped to the population size at selection time (`issues.md` #91). |
+
+(`crossover_prob` was removed 2026-06-11 — it was never read; SBX applies
+per-gene with a fixed internal 50 % probability, `issues.md` #88.)
+
+## FIXED_PARAMS
+
+Everything here is merged into each individual's SOM parameters
+(`{**genes, **FIXED_PARAMS}` — fixed params win on conflict). SOM-semantic
+keys (`end_radius`, `map_type`, `mqe_evaluations_per_run`,
+`early_stopping_window`, `max_epochs_without_improvement`,
+`normalize_weights_flag`, `save_checkpoints`, `checkpoint_every_mqe`,
+`checkpoint_count`, `random_seed`) are documented in `docs/som/CONFIG.md`.
+EA-specific keys:
+
+| Key | Default | Description |
+|---|---|---|
+| `max_archive_size` | 0 (off) | Cap on the result Pareto archive; trimmed by crowding distance. Reporting concern only — elitism does not depend on it (`issues.md` #87). Typical: 10–25. |
+| `generate_training_plots` | false | Per-individual MQE/LR/radius/batch PNG plots (opt-in). |
+| `generate_individual_maps` | false | Per-individual U-matrix/distance/dead-neuron PNGs + `maps_dataset/` + RGB composites. **CNN-legacy path** — the CNN track is closed; enable only to regenerate archival example data (`issues.md` #90). |
+| `save_individual_weights` | false | Persist `weights.npy` per individual (nothing downstream reads it since the CNN closure). |
+
+Notes:
+- `save_checkpoints: true` + `checkpoint_every_mqe: true` is the standard
+  setting — checkpoints are the LSTM training data and the source of
+  `initial_mqe` for the MQE-ratio objective (without checkpoints the
+  objective falls back to absolute `raw_best_mqe`).
+- `org_threshold` is set internally from the calibration probe — do not put
+  it in the config.
+
+## NEURAL_NETWORKS
+
+Active only when top-level `use_nn` is `true`; each hook is independent
+(see `NN_INTEGRATION.md`):
+
+| Key | Default | Description |
+|---|---|---|
+| `use_mlp` | false | MLP pre-screen: skip SOM training for configs with low predicted quality. Requires `mlp_filter_bad_configs: true` to actually skip. |
+| `use_lstm` | false | LSTM early stopping of weak SOM trainings. |
+| `use_lstm_controller` | false | Phase 3 dynamic LR/radius control (experimental — credit assignment problem, legacy `ISSUES.md` #79). |
+| `use_cnn` | false | CNN visual quality as a 4th objective. **Closed track**; requires `generate_individual_maps: true`, otherwise a warning is printed and the score stays empty. |
+| `mlp_model_path`, `mlp_scaler_path`, `lstm_model_path`, `lstm_scaler_path`, `cnn_model_path`, `lstm_controller_model_path`, `lstm_controller_scaler_path` | null | Explicit model paths; `null` auto-detects `*_latest.keras` / newest `*_best.keras` in `app/{mlp,lstm,cnn}/models/`. |
+| `mlp_filter_bad_configs` | false | Enable the actual skipping (with `use_mlp`). |
+| `mlp_bad_quality_threshold` | 0.5 | Skip when predicted `raw_mqe_improvement_ratio` < threshold (**higher prediction = better** — the comparison direction matters, legacy `ISSUES.md` #58). |
+| `lstm_quality_threshold` | 1.0 | Stop training when predicted badness score exceeds this (lower score = better; legacy `ISSUES.md` #57/#68). |
+| `verbose` | false | NN status messages. |
+
+## PREPROCES_DATA
+
+Identical semantics to the SOM pipeline (`docs/som/CONFIG.md`): `delimiter`,
+`primary_id`, `categorical_threshold_numeric`, `categorical_threshold_text`,
+`noise_threshold_ratio`. Preprocessing runs once per EA run and is shared by
+all seeds.
