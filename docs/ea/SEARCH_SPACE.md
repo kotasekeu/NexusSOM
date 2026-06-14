@@ -28,7 +28,7 @@ A hyperparameter belongs in the EA search space only if:
 | `map_size` | **search** (int, dynamic Vesanto corridor) | The corridor [0.7, 1.3]·side already cuts extremes; the size within it is a legitimate question (~7–8 values). |
 | `start_radius_init_ratio` | **fix 1.0** | User decision, backed by run evidence (legacy `issues.md` #52: EA converged to small R₀ — excellent MQE, but the map never passed the global organization phase and broke). Ratio 1.0 = radius starts across the whole map; `end_radius` 1.0 because below one neuron it is meaningless. ⚠ Configs still search 0.5–1.0 — to be updated. |
 | `map_type` | fixed `hex` | Square is dropped from the search; a fixed-seed hex-vs-square comparison is a separate closing experiment, not an EA dimension. |
-| `epoch_multiplier` | **open problem — see below** | Neither searchable nor naively fixable. Resolution depends on the coverage analysis (step 1). |
+| `epoch_multiplier` | **open problem — experiment D running (step 2 protocol below)** | Neither searchable nor naively fixable. Plan: per-regime fixed budgets in regime-native units (deterministic: epochs; stochastic+hybrid: shared em), values from measured saturation curves. |
 | `start_learning_rate` | **search** | Core search dimension. |
 | `end_learning_rate` | **search** | Core search dimension. |
 | `lr_decay_type`, `radius_decay_type` | **search** (categorical, 4 values) | With R₀ fixed at 1.0 the decay curve shape becomes the only lever over the radius schedule — it gains importance. Cheap. |
@@ -402,6 +402,141 @@ Conclusions section appended here; `docs/ea/issues.md` (and
 `docs/som/issues.md` for the tracking-correctness part) entries; rewording
 input for `docs/som/article_implementation.md` item 3.
 
+## Step 2 protocol — fixing the training budget (experiment D)
+
+Resolves the `epoch_multiplier` open problem. Pre-registered 2026-06-12,
+before the experiment ran. Tool: `app/tools/budget_saturation.py`
+(driver + report; usage in the tool docstring and
+`docs/tools/coverage_sim.md`'s sibling doc).
+
+### The two quantities `epoch_multiplier` conflates
+
+Training length involves **two independent needs** that each regime couples
+differently:
+
+1. **Schedule steps** — the number of iterations over which LR and radius
+   decay. Too few steps = coarse annealing (a 10-epoch deterministic run
+   has 10 LR values total).
+2. **Per-sample exposures (P)** — how many times each sample updates the
+   map. With `reshuffle` sampling, P is exact for stochastic runs.
+
+With the current code (`total_iterations = N·em`, each iteration processes
+`ceil(N·pct/100)` samples):
+
+| Regime | Iterations (= schedule steps) | Updates/iteration | Exposures per sample | Total updates |
+|---|---|---|---|---|
+| deterministic (pct 100) | N·em | N | N·em | **N²·em** |
+| stochastic (1 sample) | N·em | 1 | em | N·em |
+| hybrid (pct curve, mean p̄) | N·em | ≈N·p̄/100 | ≈em·N·p̄/100 | ≈em·N²·p̄/100 |
+
+Two consequences. (a) **The "fixed multiplier explodes on large data"
+fear is an artifact of em units, not of the problem**: at equal exposures
+P the total update count is identical in every regime (N·P) — e.g. "each
+sample 10×" costs 60 000 updates on N = 6 000 whether done as 10
+deterministic epochs or 60 000 stochastic iterations. The N² blow-up only
+appears when em itself is held fixed across regimes (deterministic em=10
+on N = 6 000 → 360 M updates, each sample seen 60 000×). (b) **The hybrid
+regime is the decoupler**: many cheap schedule steps early (fine annealing
+during global organization) plus high throughput late (fine-tuning) —
+note its iteration count is N-independent at fixed exposure budget
+(iterations = P·100/p̄). This replaces the retired "coverage mechanism"
+rationale of the hybrid mode (step 1) with a measurable one.
+
+### Proposal under test
+
+Per-regime fixed budgets, in regime-native units (user decision 2026-06-12,
+refined):
+
+- **Deterministic: fixed epoch count E** (`em = E/N` derived in
+  preprocessing). Batch-SOM literature converges in tens of epochs.
+- **Stochastic + hybrid: one shared fixed em** — they share schedule
+  length N·em; stochastic exposures = em exactly (reshuffle). The hybrid's
+  larger late-phase spend (factor N·p̄/100) is intentional but must be
+  shown to buy quality, not assumed.
+- **Early stopping** is *not* part of the EA answer (it biases fitness
+  toward early-plateau configs — legacy `issues.md` #36 class; EA budgets
+  must stay fixed). For production single runs it is a legitimate
+  follow-up once SOM early stopping is repaired (`docs/som/issues.md` #2 —
+  currently effectively disabled); the fixed budget then acts as a cap.
+
+### Design (experiment D — budget saturation curves)
+
+- **Datasets**: Iris (150), SwissRoll (2 000, ground truth), Helix
+  (2 000, ground truth), WineQuality (6 496) — same battery as experiment C.
+- **Arms** (19 per dataset; everything else identical to the expC base
+  configs, `sampling_method: reshuffle`, `num_batches: 1`):
+  - deterministic, epochs E ∈ {3, 10, 30, 100, 300, 1000} (pct 100 static),
+  - stochastic, em ∈ {1, 3, 10, 30, 100, 300, 1000} (pct 0.01 static =
+    1 sample/iter),
+  - hybrid, exposure budget B ∈ {3, 10, 30, 100, 300, 1000} (pct 1→5
+    linear-growth, em derived so that nominal exposures ≈ B).
+- **Seeds**: 10 per arm (`multi_seed_som.py`); 760 runs total.
+- **X-axis**: *measured* per-sample exposures (mean of
+  `sample_coverage.json` counts) — never nominal em (ceil quantization).
+- **Metrics**: MQE, TE, dead_ratio, trustworthiness/continuity,
+  clustering-stability ARI, duration; ground-truth `verify_topology.py`
+  per seed on SwissRoll/Helix (pairwise-distance Spearman ρ, grid_param_R²).
+
+### Pre-registered criteria
+
+- **Saturation point b\*** (per regime × dataset): the smallest budget
+  from which **every further grid step improves the median MQE by < 2 %
+  per doubling of budget**, with TE / T&C / ρ not significantly worse
+  (Mann-Whitney p < 0.05) than at the best-MQE budget. *(Criterion
+  refined 2026-06-12 after the 2-seed smoke run, before the full
+  experiment: MQE-vs-budget decays power-law-like with no hard plateau,
+  so the originally drafted "median within 2 % of the best" clause would
+  always pull b\* to the grid edge by construction; the marginal-gain
+  form is honest on a finite grid. The grid was extended to 1000 at the
+  same time — the smoke run showed ≥ 5 %/doubling gains still at 300,
+  and a credible overtraining probe needs headroom past saturation.)*
+  If even the largest tested budget still gains ≥ 2 %/doubling,
+  saturation is "not reached" and the fixed value becomes an explicit
+  *operating point* on the diminishing-returns curve (quality per
+  compute, duration reported), documented as such rather than dressed
+  up as a measured plateau.
+- **Undertraining evidence**: budgets below b\* must show the documented
+  pathology — significantly worse MQE, elevated across-seed variance,
+  lower ARI stability, higher dead_ratio. This is the thesis exhibit for
+  "what an undertrained map looks like".
+- **Overtraining check**: a budget above b\* where MQE stays equal or
+  improves while TE, T&C, or ground-truth ρ is significantly worse than at
+  b\* ⇒ overtraining demonstrated (topology sacrificed to quantization).
+  If absent across the tested range, that is the documented finding
+  instead: with monotonic annealing *stretched over* the run length
+  (decay is indexed by iteration/total), extra budget reshapes the
+  schedule rather than over-fitting it. Either outcome is evidence.
+- **Fixed-value decision**: if b\* is stable across dataset sizes within a
+  regime → fix E\* (deterministic) and em\* (stochastic+hybrid) as the
+  smallest grid values ≥ every dataset's b\*. If b\* trends with N →
+  a fixed value is rejected; the budget stays a dynamic-calibration
+  output and `_EM_MAX_ANCHORS` is re-anchored to the measured curve.
+- **Hybrid justification**: at matched *measured* exposures, hybrid must
+  be no worse than stochastic (Mann-Whitney, same overlap reading as
+  experiment C); if it is better, the late-phase throughput narrative is
+  confirmed, if equal, hybrid is justified only by its N-independent
+  iteration count (wall-clock), if worse, stochastic becomes the default
+  recommendation.
+- **Post-EA cross-check** (planned, after the EA module closes): run the
+  EA with em temporarily restored to the gene space (no duration
+  objective) on 1–2 datasets and compare the Pareto-front em values
+  against the fixed choice — an independent validation that the fixed
+  budget is not pessimal. Recorded as an open item; not part of D.
+
+### Run commands
+
+```bash
+# full grid (resumable — finished arms are skipped):
+.venv/bin/python3 app/tools/budget_saturation.py run
+
+# report + plots from whatever has finished so far:
+.venv/bin/python3 app/tools/budget_saturation.py report
+```
+
+Outputs: per-arm results in
+`data/datasets/<ds>/results/expD_<regime>-<budget>/` (config snapshot
+included), aggregated report + figures in `data/expD/`.
+
 ## Open items
 
 - [x] Step 1a: build + validate the coverage tool
@@ -429,8 +564,12 @@ input for `docs/som/article_implementation.md` item 3.
       **Step 1 is closed.** Article R1.3: "guarantees coverage" is now
       literally true for default runs — wording input recorded in
       `docs/som/article_implementation.md` item 3.
-- [ ] Step 2: `epoch_multiplier` resolution (depends on step 1; early
-      stopping bias must be addressed if stopping is part of the answer).
+- [ ] Step 2: `epoch_multiplier` resolution — protocol pre-registered
+      2026-06-12 (see "Step 2 protocol" above), experiment D launched;
+      conclusions pending.
+- [ ] Post-EA cross-check of the fixed budget: EA with em in the gene
+      space on 1–2 datasets, Pareto em values vs the fixed choice (after
+      the EA module closes — see step 2 criteria).
 - [ ] Step 3: confirm grids; update `config-ea.json` files
       (`start_radius_init_ratio` → FIXED_PARAMS 1.0).
 - [ ] Step 4: implement grid snapping in `validate_and_repair` + tests.

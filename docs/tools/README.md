@@ -4,6 +4,7 @@ All tools live in [`app/tools/`](../../app/tools/).
 
 | Tool | Documentation | Purpose |
 |------|---------------|---------|
+| `budget_saturation.py` | [doc](budget_saturation.md) | Experiment D driver + report: quality-vs-training-budget saturation curves per processing regime (SEARCH_SPACE step 2) |
 | `coverage_sim.py` | [doc](coverage_sim.md) | Simulates the batch-sampling regime without SOM training; measures dataset coverage (SEARCH_SPACE step 1) |
 | `generate_benchmark.py` | [doc](generate_benchmark.md) | Generates Swiss Roll and space-filling benchmarks for SOM verification |
 | `generate_dataset.py` | [doc](generate_dataset.md) | Generates synthetic data following a real dataset's schema |
